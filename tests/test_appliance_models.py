@@ -1,16 +1,14 @@
 """Priority 7 — appliance_models unit tests.
 
 Covers build_output_list (filtering, ordering, normalization),
-build_equaliser_state (schema, live status, config load failure),
+build_equaliser_state (schema, live status),
 apply_eq_field / apply_eq_reset (validation, clamping, persistence,
-live-apply routing), and the federation deadline timeout policy for
-build_home_state.
+live-apply routing), and build_home_state.
 """
 from __future__ import annotations
 
 import json
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -23,6 +21,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_appliance_models as models
+from autostream_config import parse_config
+from autostream_state import store
 from autostream_players import ActionResult, OutputInfo
 from fake_store import FakeStore, fake_outputs
 
@@ -134,6 +134,11 @@ def _make_config_file(tmp_path: Path, extra: dict | None = None) -> Path:
     return p
 
 
+def _parsed_from(cfg_path: Path):
+    """The settings the file at *cfg_path* holds, parsed."""
+    return parse_config(json.loads(Path(cfg_path).read_text(encoding="utf-8")))
+
+
 def _deep_update(d: dict, u: dict) -> dict:
     for k, v in u.items():
         if isinstance(v, dict) and isinstance(d.get(k), dict):
@@ -231,13 +236,13 @@ class TestBuildEqualizerState:
     def test_ok_true_on_valid_config(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with patch("autostream_appliance_models.get_live_output_eq_status", return_value=None):
-            result = models.build_equaliser_state(str(cfg_path))
+            result = models.build_equaliser_state(_parsed_from(cfg_path))
         assert result["ok"] is True
 
     def test_required_keys_present(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
         with patch("autostream_appliance_models.get_live_output_eq_status", return_value=None):
-            result = models.build_equaliser_state(str(cfg_path))
+            result = models.build_equaliser_state(_parsed_from(cfg_path))
         for field in ("gain_db", "auto_trim_enabled", "peq1_db", "peq2_db",
                       "peq3_db", "peq4_db", "peq5_db", "peq6_db"):
             assert field in result, f"Missing key: {field}"
@@ -245,7 +250,7 @@ class TestBuildEqualizerState:
     def test_config_values_returned(self, tmp_path):
         cfg_path = _make_config_file(tmp_path, {"output_eq": {"gain_db": 3.5, "peq2_db": -1.0}})
         with patch("autostream_appliance_models.get_live_output_eq_status", return_value=None):
-            result = models.build_equaliser_state(str(cfg_path))
+            result = models.build_equaliser_state(_parsed_from(cfg_path))
         assert result["gain_db"] == pytest.approx(3.5)
         assert result["peq2_db"] == pytest.approx(-1.0)
 
@@ -253,18 +258,9 @@ class TestBuildEqualizerState:
         cfg_path = _make_config_file(tmp_path)
         live = {"output_auto_trim_enabled": True, "output_auto_trim_db": -1.2}
         with patch("autostream_appliance_models.get_live_output_eq_status", return_value=live):
-            result = models.build_equaliser_state(str(cfg_path))
+            result = models.build_equaliser_state(_parsed_from(cfg_path))
         assert result.get("output_auto_trim_enabled") is True
         assert result.get("output_auto_trim_db") == pytest.approx(-1.2)
-
-    def test_config_load_exception_returns_ok_false(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.locked_load_config",
-                   side_effect=OSError("read error")), \
-             patch("autostream_appliance_models.get_live_output_eq_status", return_value=None):
-            result = models.build_equaliser_state(str(cfg_path))
-        assert result["ok"] is False
-        assert "error" in result
 
 
 # ---------------------------------------------------------------------------
@@ -409,14 +405,13 @@ class TestApplyEqReset:
 
 class TestBuildHomeStateLocal:
     def _patch_home(self, cfg_path, *, outputs=None, vu_ms=100):
-        buf_result = MagicMock(ok=True, value=str(vu_ms))
         playback = MagicMock()
         playback.to_public_dict.return_value = {}
         playback.stylus_banner_text = ""
         playback.belt_banner_text = ""
         playback.bearing_banner_text = ""
         return (
-            patch("autostream_appliance_models.get_setting", return_value=buf_result),
+            patch("autostream_start_buffer_cache.current_ms", return_value=vu_ms),
             fake_outputs(outputs or []),
             fake_levels([]),
             fake_playback(playback),
@@ -430,7 +425,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["ok"] is True
 
     def test_required_keys_present(self, tmp_path):
@@ -438,7 +433,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         for key in ("appliance", "preferences", "playback", "input_levels",
                     "warnings", "outputs", "vu_delay_ms"):
             assert key in result, f"Missing key: {key}"
@@ -449,7 +444,7 @@ class TestBuildHomeStateLocal:
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6], \
              fake_levels([], banner="banner text"):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["warnings"]["sample_rate"] == "banner text"
 
     def test_sample_rate_warning_is_empty_with_no_mismatch(self, tmp_path):
@@ -457,17 +452,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(str(cfg_path))
-        assert result["warnings"]["sample_rate"] == ""
-
-    def test_failure_path_has_an_empty_sample_rate_warning(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.locked_load_config",
-                   side_effect=OSError("read error")), \
-             patch("autostream_appliance_models.get_appliance_id", return_value=""), \
-             patch("autostream_appliance_models.get_system_hostname", return_value=""), \
-             patch("autostream_appliance_models.get_app_version", return_value=""):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["warnings"]["sample_rate"] == ""
 
     def test_vu_delay_ms_from_owntone_setting(self, tmp_path):
@@ -475,7 +460,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path, vu_ms=350)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["vu_delay_ms"] == 350
 
     def test_appliance_info_shape(self, tmp_path):
@@ -483,7 +468,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6]:
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         app = result["appliance"]
         assert "id" in app and "hostname" in app and "version" in app
         assert app["hostname"] == "test-host"
@@ -497,18 +482,8 @@ class TestBuildHomeStateLocal:
              patch("autostream_appliance_models.get_app_version", return_value="1.0"):
             with patch("autostream_appliance_models.get_system_hostname",
                        return_value="mybox.local"):
-                result = models.build_home_state(str(cfg_path))
+                result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["appliance"]["hostname"] == "mybox"
-
-    def test_config_load_failure_returns_ok_false(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.locked_load_config",
-                   side_effect=OSError("read error")), \
-             patch("autostream_appliance_models.get_appliance_id", return_value=""), \
-             patch("autostream_appliance_models.get_system_hostname", return_value=""), \
-             patch("autostream_appliance_models.get_app_version", return_value=""):
-            result = models.build_home_state(str(cfg_path))
-        assert result["ok"] is False
 
     def test_session_key_always_present(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)
@@ -518,7 +493,7 @@ class TestBuildHomeStateLocal:
              patches[4], patches[5], patches[6], \
              fake_session(session), \
              fake_repeat(None):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["session"] == session
 
     def test_repeat_key_present_when_daemon_reports_it(self, tmp_path):
@@ -529,7 +504,7 @@ class TestBuildHomeStateLocal:
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
              fake_repeat(repeat_block):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["repeat"] == repeat_block
 
     def test_repeat_requested_minutes_survives_passthrough(self, tmp_path):
@@ -547,7 +522,7 @@ class TestBuildHomeStateLocal:
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
              fake_repeat(repeat_block):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert result["repeat"]["requested_minutes"] == 80
         assert result["repeat"] == repeat_block
 
@@ -558,66 +533,40 @@ class TestBuildHomeStateLocal:
              patches[4], patches[5], patches[6], \
              fake_session({"active": False, "source": None}), \
              fake_repeat(None):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         assert "repeat" not in result
 
-    def test_config_load_failure_still_includes_session_key(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.locked_load_config",
-                   side_effect=OSError("read error")), \
-             patch("autostream_appliance_models.get_appliance_id", return_value=""), \
-             patch("autostream_appliance_models.get_system_hostname", return_value=""), \
-             patch("autostream_appliance_models.get_app_version", return_value=""), \
-             fake_session({"active": False, "source": None}):
-            result = models.build_home_state(str(cfg_path))
-        assert "session" in result
-
 
 # ---------------------------------------------------------------------------
-# build_home_state — federation deadline mode
+# build_home_state — no player call
 # ---------------------------------------------------------------------------
 
-class TestBuildHomeStateFederation:
-    def test_federation_completes_within_budget(self, tmp_path):
+class TestBuildHomeStateNoPlayerCall:
+    def test_the_player_is_not_asked_and_vu_delay_follows_the_cache(self, tmp_path):
+        import autostream_start_buffer_cache as cache
         cfg_path = _make_config_file(tmp_path)
-        buf_result = MagicMock(ok=True, value="100")
         playback = MagicMock()
         playback.to_public_dict.return_value = {}
         playback.stylus_banner_text = ""
         playback.belt_banner_text = ""
         playback.bearing_banner_text = ""
-        deadline = time.monotonic() + 5.0
 
-        with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
+        with patch("autostream_start_buffer_cache._fetch",
+                   side_effect=AssertionError("the player was asked")), \
              fake_outputs([]), \
              fake_levels([]), \
              fake_playback(playback), \
              patch("autostream_appliance_models.get_appliance_id", return_value=""), \
              patch("autostream_appliance_models.get_system_hostname", return_value=""), \
              patch("autostream_appliance_models.get_app_version", return_value=""):
-            result = models.build_home_state(str(cfg_path), deadline=deadline)
+            cache.note_saved(1500)
+            try:
+                result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+            finally:
+                cache.reset()
 
         assert result["ok"] is True
-        assert time.monotonic() < deadline
-
-    def test_expired_deadline_returns_ok_true_with_defaults(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        playback = MagicMock()
-        playback.to_public_dict.return_value = {}
-        playback.stylus_banner_text = ""
-        playback.belt_banner_text = ""
-        playback.bearing_banner_text = ""
-        deadline = time.monotonic() - 1.0  # already expired
-
-        with fake_levels([]), \
-             fake_playback(playback), \
-             patch("autostream_appliance_models.get_appliance_id", return_value=""), \
-             patch("autostream_appliance_models.get_system_hostname", return_value=""), \
-             patch("autostream_appliance_models.get_app_version", return_value=""):
-            result = models.build_home_state(str(cfg_path), deadline=deadline)
-
-        assert result["ok"] is True
-        assert result["outputs"] == []
+        assert result["vu_delay_ms"] == 1500
 
 
 # ---------------------------------------------------------------------------
@@ -633,7 +582,6 @@ class TestBuildHomeStateAnnotation:
         from unittest.mock import MagicMock, patch
         import autostream_output_usage as ou
 
-        buf_result = MagicMock(ok=True, value="100")
         playback = MagicMock()
         playback.to_public_dict.return_value = {}
         playback.stylus_banner_text = ""
@@ -665,7 +613,7 @@ class TestBuildHomeStateAnnotation:
 
         @contextmanager
         def _ctx():
-            with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
+            with patch("autostream_start_buffer_cache.current_ms", return_value=100), \
                  fake_outputs(owntone_outputs), \
                  fake_levels([]), \
                  fake_playback(playback), \
@@ -693,7 +641,7 @@ class TestBuildHomeStateAnnotation:
 
         outputs = [self._make_out("1", "Kitchen", selected=False)]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
         assert result["ok"] is True
         out_dict = result["outputs"][0]
@@ -712,7 +660,7 @@ class TestBuildHomeStateAnnotation:
 
         outputs = [self._make_out("1", "Kitchen", selected=True)]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
         out_dict = result["outputs"][0]
         assert out_dict["remote_in_use"] is False
@@ -721,7 +669,7 @@ class TestBuildHomeStateAnnotation:
         cfg_path = _make_config_file(tmp_path)
         outputs = [self._make_out("1", "Bedroom", selected=False)]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
         out_dict = result["outputs"][0]
         assert out_dict["remote_in_use"] is False
@@ -737,7 +685,7 @@ class TestBuildHomeStateAnnotation:
             self._make_out("2", "Mango"),
         ]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-            result = models.build_home_state(str(cfg_path))
+            result = models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
         names = [o["name"] for o in result["outputs"]]
         assert names[0] == "Zulu"
@@ -753,7 +701,7 @@ class TestBuildHomeStateAnnotation:
         try:
             outputs = [self._make_out("1", "Kitchen")]
             with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-                models.build_home_state(str(cfg_path))
+                models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
         finally:
             ou.refresh_now = orig_refresh
         assert not refresh_calls, "build_home_state must not trigger refresh_now"

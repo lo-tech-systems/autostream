@@ -300,6 +300,7 @@ class TestFederationErrorContract:
         sent = []
         with patch("autostream_webui_api.send_json",
                    side_effect=lambda h, c, d: sent.append((c, d))), \
+             patch("autostream_webui_api._config_snapshot", return_value=object()), \
              patch("autostream_webui_api.build_home_state",
                    return_value={"ok": True, "outputs": [], "appliance": {},
                                  "preferences": {}, "playback": {}, "input_levels": [],

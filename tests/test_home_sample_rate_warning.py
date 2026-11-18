@@ -26,6 +26,7 @@ if _CORE not in sys.path:
 
 from fake_store import FakeStore, fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_track
 import autostream_appliance_models as models
+from autostream_state import store
 from autostream_input_status import SAMPLE_RATE_MISMATCH_BANNER_TEXT
 from autostream_webui_api import send_status_json
 from autostream_webui_page_airplay import send_airplay_page
@@ -116,10 +117,7 @@ def _home_state(tmp_path) -> dict:
     playback.bearing_banner_text = ""
     with ExitStack() as stack:
         for p in (
-            patch("autostream_appliance_models.locked_load_config", return_value={}),
-            patch("autostream_appliance_models.parse_config", return_value=MagicMock()),
-            patch("autostream_appliance_models.get_setting",
-                  return_value=MagicMock(ok=True, value="2250")),
+            patch("autostream_start_buffer_cache.current_ms", return_value=2250),
             fake_outputs([]),
             fake_playback(playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
@@ -127,7 +125,7 @@ def _home_state(tmp_path) -> dict:
             patch("autostream_appliance_models.get_app_version", return_value="2.0.0"),
         ):
             stack.enter_context(p)
-        return models.build_home_state(str(cfg))
+        return models.build_home_state(store().snapshot(), MagicMock())
 
 
 class TestHomeState:

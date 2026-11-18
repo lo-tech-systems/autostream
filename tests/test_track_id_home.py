@@ -22,6 +22,8 @@ if _CORE not in sys.path:
 
 from fake_store import fake_levels, fake_outputs, fake_playback, fake_track
 import autostream_appliance_models as models
+from autostream_config import parse_config
+from autostream_state import store
 import autostream_core as core
 from track_id.models import (
     STATE_DISABLED,
@@ -73,9 +75,12 @@ def _make_config_file(tmp_path: Path) -> Path:
     return p
 
 
+def _parsed_from(cfg_path: Path):
+    return parse_config(json.loads(Path(cfg_path).read_text(encoding="utf-8")))
+
+
 def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
     """Call build_home_state() with all external dependencies patched."""
-    buf_result = MagicMock(ok=True, value="100")
     playback = MagicMock()
     playback.to_public_dict.return_value = {}
     playback.stylus_banner_text = ""
@@ -85,7 +90,7 @@ def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
     snap = ti_snapshot if ti_snapshot is not None else disabled_snapshot()
 
     patches = [
-        patch("autostream_appliance_models.get_setting", return_value=buf_result),
+        patch("autostream_start_buffer_cache.current_ms", return_value=100),
         fake_outputs([]),
         fake_levels([]),
         fake_playback(playback),
@@ -97,7 +102,7 @@ def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
     with ExitStack() as stack:
         for p in patches:
             stack.enter_context(p)
-        return models.build_home_state(str(cfg_path))
+        return models.build_home_state(store().snapshot(), _parsed_from(cfg_path))
 
 
 # ---------------------------------------------------------------------------
@@ -110,18 +115,6 @@ class TestTrackIdentificationKeyPresent:
         cfg_path = _make_config_file(tmp_path)
         result = _run_home(cfg_path)
         assert "track_identification" in result
-
-    def test_key_present_on_config_failure(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        with patch("autostream_appliance_models.locked_load_config",
-                   side_effect=OSError("fail")), \
-             patch("autostream_appliance_models.get_appliance_id", return_value=""), \
-             patch("autostream_appliance_models.get_system_hostname", return_value=""), \
-             patch("autostream_appliance_models.get_app_version", return_value=""):
-            result = models.build_home_state(str(cfg_path))
-        assert result["ok"] is False
-        assert "track_identification" in result
-        assert result["track_identification"]["state"] == STATE_DISABLED
 
 
 # ---------------------------------------------------------------------------

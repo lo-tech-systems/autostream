@@ -42,6 +42,7 @@ import time
 from typing import Optional
 
 from autostream_intents import Intent, Origin, submit
+from autostream_state import store
 from autostream_pin_pairing import REQUESTER_WEBUI
 from autostream_appliance_models import (
     submit_output_change,
@@ -59,12 +60,12 @@ from autostream_appliances import (
     scanner_ready,
 )
 from autostream_federation import EXPIRY_SECONDS as _FED_EXPIRY_SECONDS, FEDERATION_VERSION as _FED_VERSION
-from autostream_config import DEFAULT_AIRPLAY_MODE, parse_config
+from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_state.live import get_live_output_eq_status
 from autostream_player_service import config_airplay_mode_to_backend
 from autostream_rpi import get_appliance_id
 from autostream_webui_api import apply_repeat_arm_request, send_browser_api_error, send_json
-from autostream_webui_common import locked_load_config
+from autostream_webui_common import _config_snapshot
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -727,11 +728,13 @@ def send_gateway_home_json(handler, state, appliance_id: str) -> None:
         return
 
     if resolution == "bound":
-        home = build_home_state(state.config_path, deadline=time.monotonic() + 1.5)
-        if not home.get("ok"):
+        try:
+            parsed = _config_snapshot(state)
+        except Exception as e:
+            logging.error("gateway home (bound): config error: %s", e)
             send_json(handler, 500, {"ok": False, "error": "internal_error"})
             return
-        send_json(handler, 200, home)
+        send_json(handler, 200, build_home_state(store().snapshot(), parsed))
         return
 
     status, data = _coalesced_remote_get(appliance_id, sighting, "/api/federation/v1/home")
@@ -773,8 +776,7 @@ def send_gateway_output_json(handler, state, appliance_id: str, body_str: str) -
 
     if resolution == "bound":
         try:
-            cfg = locked_load_config(state.config_path)
-            parsed = parse_config(cfg)
+            parsed = _config_snapshot(state)
             offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id)
             offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None
             mode_text = parsed.owntone.output_airplay_modes.get(out_id, DEFAULT_AIRPLAY_MODE)
@@ -811,11 +813,13 @@ def send_gateway_equaliser_json(handler, state, appliance_id: str) -> None:
         return
 
     if resolution == "bound":
-        eq = build_equaliser_state(state.config_path)
-        if not eq.get("ok"):
+        try:
+            parsed = _config_snapshot(state)
+        except Exception as e:
+            logging.error("gateway equaliser (bound): config error: %s", e)
             send_json(handler, 500, {"ok": False, "error": "internal_error"})
             return
-        send_json(handler, 200, eq)
+        send_json(handler, 200, build_equaliser_state(parsed))
         return
 
     status, data = _coalesced_remote_get(appliance_id, sighting, "/api/federation/v1/equaliser")

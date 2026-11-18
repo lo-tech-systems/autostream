@@ -62,8 +62,6 @@ def _backend_down() -> ExitStack:
     stack = ExitStack()
     for target in (
         "autostream_player_service.get_setting",
-        "autostream_appliance_models.get_setting",
-        "autostream_appliance_models.locked_load_config",
         "autostream_webui_common.locked_load_config",
         "autostream_config.load_config",
         "autostream_appliance_models.get_system_hostname",

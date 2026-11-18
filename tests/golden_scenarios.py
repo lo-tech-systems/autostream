@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
-import functools
 import io
 import json
 import re
@@ -427,6 +426,7 @@ def _unpatched(recorder: Recorder, name: str) -> Callable:
 def apply(scenario: Scenario, monkeypatch) -> Recorder:
     """Install *scenario* into every seam the golden routes read; return the recorder."""
     import autostream_appliance_models as models
+    import autostream_appliance_gateway as gateway
     import autostream_dial_warnings  # noqa: F401  binds the live warnings reads
     import autostream_monitor_client as monitor_client
     import autostream_federation as federation
@@ -507,17 +507,10 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              get_live_output_eq_status=lambda: scenario.eq_status)
     setattrs(models, **{k: v for k, v in shared.items() if k not in ("get_app_version", "list_outputs")},
              get_app_version=lambda: FIXED_APP_VERSION,
-             get_setting=get_setting,
              get_system_hostname=lambda: "golden.local",
              _wall=lambda: FIXED_WALL_CLOCK,
-             get_live_output_eq_status=lambda: scenario.eq_status,
-             locked_load_config=lambda path: {
-                 "audio1": {"enabled": True, "input_type": "turntable"},
-                 "audio2": {"enabled": True, "input_type": "cd"},
-                 "owntone": {"output_name": "Speaker A", "volume_percent": 20},
-                 "output_eq": {"gain_db": 1.0, "peq1_db": 2.0, "peq6_db": -3.0},
-             },
-             parse_config=functools.partial(_parse_without_hardware_probe))
+             get_live_output_eq_status=lambda: scenario.eq_status)
+    setattrs(gateway, _config_snapshot=lambda state: cfg)
     setattrs(airplay, **{k: v for k, v in shared.items()
                          if k in ("get_appliance_id", "_dial_update_banner_text")},
              _config_snapshot=lambda state: cfg,
@@ -558,11 +551,6 @@ def _begin_mute(scenario: Scenario, fake, monkeypatch) -> None:
     ])
     get_authority().mute_all(Origin.USER)
     fake.outputs(list(scenario.outputs))
-
-
-def _parse_without_hardware_probe(data: dict, state: Optional[dict] = None):
-    from autostream_config import parse_config
-    return parse_config(data, state, high_perf=False)
 
 
 def make_state():

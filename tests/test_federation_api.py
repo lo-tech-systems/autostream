@@ -361,8 +361,7 @@ class TestFederationHome:
         playback.bearing_banner_text = ""
         with fake_levels([]), \
              fake_playback(playback), \
-             patch("autostream_appliance_models.get_setting",
-                   return_value=MagicMock(ok=True, value="100")), \
+             patch("autostream_start_buffer_cache.current_ms", return_value=100), \
              patch("autostream_appliance_models.get_appliance_id", return_value="aabb"), \
              patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
              patch("autostream_appliance_models.get_app_version", return_value="1.0"):
@@ -511,14 +510,14 @@ class TestFederationRepeat:
     def test_valid_armed_true_applies_and_returns_ok(self, tmp_path):
         with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value={"ok": True}) as m:
             code, data = self._call_repeat(tmp_path, json.dumps({"armed": True}).encode())
-        m.assert_called_once_with(True, requester="webui")
+        m.assert_called_once_with(True, requester="peer")
         assert code == 200
         assert data == {"ok": True, "armed": True}
 
     def test_valid_armed_false_applies_and_returns_ok(self, tmp_path):
         with patch("autostream_monitor_control.set_live_repeat_armed_ack", return_value={"ok": True}) as m:
             code, data = self._call_repeat(tmp_path, json.dumps({"armed": False}).encode())
-        m.assert_called_once_with(False, requester="webui")
+        m.assert_called_once_with(False, requester="peer")
         assert code == 200
         assert data["ok"] is True
 

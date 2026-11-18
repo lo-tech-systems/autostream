@@ -495,27 +495,24 @@ class TestBuildOutputListAndHomeStateMuteAware:
         import autostream_appliance_models as models
         FakeStore().outputs([OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=40)])
         get_authority().mute_all(Origin.USER)
-        with patch("autostream_appliance_models.locked_load_config", return_value={}), \
-             patch("autostream_appliance_models.parse_config") as mock_parse, \
+        parsed = SimpleNamespace(
+            owntone=SimpleNamespace(base_url="http://x", output_name="Speaker"),
+            webui=SimpleNamespace(show_master_volume=True, show_input_detail=False, hidden_outputs=()),
+        )
+        with patch("autostream_start_buffer_cache.current_ms", return_value=2250), \
              fake_levels([]), \
              fake_playback_mock() as mock_playback, \
-             patch("autostream_appliance_models.get_setting") as mock_setting, \
              patch("autostream_appliance_models.active_track") as mock_ti, \
              fake_session({"active": False, "source": None}), \
              fake_repeat(None), \
              patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
              patch("autostream_appliance_models.get_app_version", return_value="1.0"), \
              patch("autostream_appliance_models.get_appliance_id", return_value="id"):
-            mock_parse.return_value = SimpleNamespace(
-                owntone=SimpleNamespace(base_url="http://x", output_name="Speaker"),
-                webui=SimpleNamespace(show_master_volume=True, show_input_detail=False, hidden_outputs=()),
-            )
             mock_playback.return_value = SimpleNamespace(
                 to_public_dict=lambda: {}, stylus_banner_text="", belt_banner_text="", bearing_banner_text="",
             )
-            mock_setting.return_value = SimpleNamespace(ok=False, value=None)
             mock_ti.return_value = SimpleNamespace(to_public_dict=lambda: {})
-            home = models.build_home_state("dummy.json")
+            home = models.build_home_state(store().snapshot(), parsed)
         assert home["muted"] is True
 
     def test_owntone_outputs_state_route_carries_muted(self, writes):

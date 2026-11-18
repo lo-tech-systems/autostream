@@ -1072,6 +1072,9 @@ class TestSendAppliancesJson:
 # send_gateway_home_json
 # ---------------------------------------------------------------------------
 
+PARSED = object()
+
+
 class TestSendGatewayHomeJson:
     def _run(self, aid, resolution, sighting=None, home_data=None):
         handler = _make_handler()
@@ -1091,13 +1094,15 @@ class TestSendGatewayHomeJson:
 
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=(resolution, sighting)), \
+             patch("autostream_appliance_gateway._config_snapshot", return_value=PARSED), \
              patch("autostream_appliance_gateway.build_home_state",
-                   return_value=home_data or {"ok": True}), \
+                   return_value=home_data or {"ok": True}) as build, \
              patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json), \
              patch("autostream_appliance_gateway.send_browser_api_error",
                    side_effect=fake_browser_err):
             gw.send_gateway_home_json(handler, state, aid)
 
+        self.build = build
         return sent_codes, sent_data, sent_browser_errors
 
     def test_invalid_id_returns_404(self):
@@ -1119,6 +1124,9 @@ class TestSendGatewayHomeJson:
         codes, data, _ = self._run("a" * 20, "bound", home_data=home)
         assert codes == [200]
         assert data[0]["ok"] is True
+        snapshot, parsed = self.build.call_args.args
+        assert parsed is PARSED
+        assert snapshot is not None
 
     def test_remote_success_forwarded(self):
         sighting = _make_sighting()
@@ -1249,9 +1257,7 @@ class TestSendGatewayOutputJsonSilenceChoice:
 
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=("bound", None)), \
-             patch("autostream_appliance_gateway.locked_load_config",
-                   return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
-             patch("autostream_appliance_gateway.parse_config") as mock_parse, \
+             patch("autostream_appliance_gateway._config_snapshot") as mock_parse, \
              patch("autostream_appliance_gateway.send_json", side_effect=fake_send_json), \
              patch("autostream_player_service.update_output", return_value=ActionResult(ok=True)), \
              patch("autostream_player_service.submit_output_pin", return_value=ActionResult(ok=True)):
@@ -1536,8 +1542,7 @@ class TestGatewayOutputRequester:
         parsed.owntone.output_airplay_modes = {}
         with patch("autostream_appliance_gateway.resolve_appliance",
                    return_value=("bound", None)), \
-             patch("autostream_appliance_gateway.locked_load_config", return_value={}), \
-             patch("autostream_appliance_gateway.parse_config", return_value=parsed), \
+             patch("autostream_appliance_gateway._config_snapshot", return_value=parsed), \
              patch("autostream_appliance_gateway.send_json"), \
              patch("autostream_appliance_gateway.submit_output_change",
                    return_value={"ok": True}) as mut:

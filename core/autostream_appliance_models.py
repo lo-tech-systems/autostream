@@ -8,21 +8,18 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
-import logging
 import math
 import time
 from typing import Optional
 
-from autostream_config import parse_config
 from autostream_pin_pairing import PIN_RE
-from autostream_state.live import get_live_output_eq_status, get_setting, pin_claim
+from autostream_state.live import get_live_output_eq_status, pin_claim, start_buffer_ms
 from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
-from autostream_state import Origin, active_track, store
-from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
+from autostream_state import Origin, active_track
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
-from autostream_webui_common import get_app_version, locked_load_config
+from autostream_webui_common import get_app_version
 
 # ---------------------------------------------------------------------------
 # Output-list builder (shared between Home page and federation)
@@ -85,67 +82,22 @@ def build_output_list(parsed, units) -> list[dict]:
 # build_home_state
 # ---------------------------------------------------------------------------
 
-def build_home_state(
-    config_path: str,
-    *,
-    deadline: Optional[float] = None,
-) -> dict:
-    """Build the aggregate Home state dict.
+def build_home_state(snap, parsed) -> dict:
+    """Build the aggregate Home state dict for the federation home route and
+    the gateway's bound branch, from the caller's one snapshot and parsed
+    settings. No file is read and the player is not asked: vu_delay_ms comes
+    from the start-buffer cache.
 
-    The output list comes from the output authority's snapshot. When *deadline*
-    is set (a time.monotonic() value), the one remaining OwnTone call (the
-    start-buffer setting) is given what is left of the federation 1.5-second
-    internal budget; a call that misses it produces the reachable-appliance
-    waiting model rather than falsely marking the appliance offline.
-
-    When *deadline* is None (local mode) the existing timeout is used.
-
-    Returns a dict with keys: ok, appliance, preferences, playback, input_levels,
-    warnings, outputs, vu_delay_ms.
+    Keys: ok, appliance, preferences, playback, input_levels, warnings,
+    outputs, muted, vu_delay_ms, track_identification, session, and repeat
+    (only when the daemon has reported one).
     """
-    snap = store().snapshot()
-    try:
-        parsed = parse_config(locked_load_config(config_path))
-    except Exception as e:
-        logging.warning("build_home_state: config load failed: %s", e)
-        from track_id.models import disabled_snapshot
-        return {
-            "ok": False,
-            "error": str(e),
-            "appliance": _local_appliance_info(),
-            "preferences": {},
-            "playback": {},
-            "input_levels": [],
-            "warnings": {
-                "stylus": "", "belt": "", "bearing": "", "dial_update": "", "sample_rate": "",
-            },
-            "outputs": [],
-            "muted": snap.outputs.muted_all,
-            "vu_delay_ms": SETTING_START_BUFFER_MS_DEFAULT,
-            "track_identification": disabled_snapshot().to_public_dict(),
-            **_session_and_repeat_fields(snap),
-        }
-
     input_levels = snap.inputs.levels()
 
     playback = snap.playback
 
-    owntone_base_url = parsed.owntone.base_url
-    vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT
+    vu_delay_ms = start_buffer_ms(parsed.owntone.base_url)
     outputs: list[dict] = []
-
-    if deadline is None:
-        try:
-            buf_result = get_setting(owntone_base_url, SETTING_START_BUFFER_MS, timeout=1)
-            vu_delay_ms = int(buf_result.value) if buf_result.ok else SETTING_START_BUFFER_MS_DEFAULT
-        except Exception:
-            vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT
-    else:
-        # Federation mode: the one call shares what is left of the budget.
-        # Reserve a small margin for overhead.
-        per_call = min(max(0.0, deadline - time.monotonic()), 1.5)
-        if per_call > 0.05:
-            vu_delay_ms = _safe_get_setting(owntone_base_url, per_call)
 
     if snap.outputs.connected:
         outputs = build_output_list(parsed, snap.outputs.units)
@@ -266,22 +218,6 @@ def _session_and_repeat_fields(snap) -> dict:
     return fields
 
 
-def _safe_get_setting(base_url: str, timeout: float) -> int:
-    try:
-        result = get_setting(base_url, SETTING_START_BUFFER_MS, timeout=timeout)
-        return int(result.value) if result.ok else SETTING_START_BUFFER_MS_DEFAULT
-    except Exception:
-        return SETTING_START_BUFFER_MS_DEFAULT
-
-
-def _local_appliance_info() -> dict:
-    return {
-        "id": get_appliance_id() or "",
-        "hostname": _format_hostname(get_system_hostname()),
-        "version": get_app_version(),
-    }
-
-
 def _format_hostname(raw: str) -> str:
     hostname = str(raw or "").strip()
     if hostname.lower().endswith(".local"):
@@ -293,21 +229,14 @@ def _format_hostname(raw: str) -> str:
 # build_equaliser_state
 # ---------------------------------------------------------------------------
 
-def build_equaliser_state(config_path: str) -> dict:
-    """Build the aggregate Equaliser state dict.
+def build_equaliser_state(parsed) -> dict:
+    """Build the aggregate Equaliser state dict from the parsed settings.
 
     Returns a dict with all EQ config fields plus the live auto-trim status
     from the monitor (if available).  Keys: ok, gain_db, auto_trim_enabled,
     peq1_db ... peq6_db, output_auto_trim_enabled, output_auto_trim_db,
     effective_output_gain_db.
     """
-    try:
-        cfg = locked_load_config(config_path)
-        parsed = parse_config(cfg)
-    except Exception as e:
-        logging.warning("build_equaliser_state: config load failed: %s", e)
-        return {"ok": False, "error": str(e)}
-
     oeq = parsed.output_eq
     state: dict = {
         "ok": True,

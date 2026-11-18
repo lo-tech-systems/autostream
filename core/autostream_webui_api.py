@@ -749,14 +749,15 @@ def send_output_eq_status_json(handler) -> None:
 _audio_status_fail_count = 0
 
 
-def _session_playing() -> bool:
-    """Whether a playback session is active (live input or repeat replay).
+def _session_playing(snap=None) -> bool:
+    """Whether a playback session is active (live input or repeat replay), in
+    *snap* or, when none is given, in the store's current snapshot.
 
     The outward-facing "is this appliance playing" answer for neighbours,
     dials, and local automation: reads the unified session state so repeat
     replay counts.
     """
-    return bool(store().snapshot().session.active)
+    return bool((snap if snap is not None else store().snapshot()).session.active)
 
 
 def send_audio_status_json(handler, state: WebUIState) -> None:
@@ -768,7 +769,8 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
     failure and then at most once a minute; DEBUG between.
     """
     global _audio_status_fail_count
-    playing = _session_playing()
+    snap = store().snapshot()
+    playing = _session_playing(snap)
     try:
         parsed = _config_snapshot(state)
     except Exception as e:
@@ -776,7 +778,7 @@ def send_audio_status_json(handler, state: WebUIState) -> None:
         send_json(handler, 200, {"playing": playing, "outputs": None,
                                  "error": "backend_unavailable"})
         return
-    part = store().snapshot().outputs
+    part = snap.outputs
     if not part.connected:
         _audio_status_fail_count += 1
         n = _audio_status_fail_count
@@ -997,7 +999,8 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
     if dial_id is None:
         return
 
-    playing = _session_playing()
+    snap = store().snapshot()
+    playing = _session_playing(snap)
 
     try:
         parsed = _config_snapshot(state)
@@ -1007,7 +1010,6 @@ def send_dial_status_post_json(handler, state: WebUIState, json_obj: dict) -> No
         send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
 
-    snap = store().snapshot()
     if not snap.outputs.connected:
         logging.warning("dial status: the player is not answering")
         send_json(handler, 200, {"ok": False, "error": "backend_unavailable"})
@@ -1422,12 +1424,13 @@ def send_federation_session_json(handler, source_ip: str) -> None:
 
 def send_federation_home_json(handler, state: WebUIState) -> None:
     """GET /api/federation/v1/home — return aggregate Home state."""
-    deadline = time.monotonic() + 1.5
-    home = build_home_state(state.config_path, deadline=deadline)
-    if not home.get("ok"):
-        send_json(handler, 500, {"ok": False, "error": home.get("error", "internal_error")})
+    try:
+        parsed = _config_snapshot(state)
+    except Exception as e:
+        logging.warning("federation home: settings unavailable: %s", e)
+        send_json(handler, 500, {"ok": False, "error": str(e)})
         return
-    send_json(handler, 200, home)
+    send_json(handler, 200, build_home_state(store().snapshot(), parsed))
 
 
 def send_federation_output_json(handler, state: WebUIState, body_str: str) -> None:
@@ -1476,11 +1479,13 @@ def send_federation_output_json(handler, state: WebUIState, body_str: str) -> No
 
 def send_federation_equaliser_json(handler, state: WebUIState) -> None:
     """GET /api/federation/v1/equaliser — return aggregate Equaliser state."""
-    eq = build_equaliser_state(state.config_path)
-    if not eq.get("ok"):
-        send_json(handler, 500, {"ok": False, "error": eq.get("error", "internal_error")})
+    try:
+        parsed = _config_snapshot(state)
+    except Exception as e:
+        logging.warning("federation equaliser: settings unavailable: %s", e)
+        send_json(handler, 500, {"ok": False, "error": str(e)})
         return
-    send_json(handler, 200, eq)
+    send_json(handler, 200, build_equaliser_state(parsed))
 
 
 def send_federation_eq_config_json(handler, state: WebUIState, body_str: str) -> None:
@@ -1811,7 +1816,7 @@ def send_settings_post_json(handler, state, json_obj: dict) -> None:
     send_json(handler, 200, resp)
 
 
-def apply_repeat_arm_request(body: str) -> tuple[int, dict]:
+def apply_repeat_arm_request(body: str, *, requester: str = REQUESTER_WEBUI) -> tuple[int, dict]:
     """Validate and apply an {"armed": bool} repeat arm/disarm request.
 
     Shared core logic for POST /api/repeat (below), POST
@@ -1846,7 +1851,7 @@ def apply_repeat_arm_request(body: str) -> tuple[int, dict]:
     if not isinstance(armed, bool):
         return 400, {"ok": False, "error": "armed must be true or false"}
 
-    reply = submit(Intent("repeat.arm", {"armed": armed}, Origin.USER, "webui"))
+    reply = submit(Intent("repeat.arm", {"armed": armed}, Origin.USER, requester))
     ack = reply.result.get("ack")
     ok = bool(ack and ack.get("ok"))
     if not ok:
@@ -1871,7 +1876,7 @@ def send_federation_repeat_json(handler, state: WebUIState, body_str: str) -> No
     appliance.  Same request/response contract as POST /api/repeat -- see
     apply_repeat_arm_request().
     """
-    status, resp = apply_repeat_arm_request(body_str)
+    status, resp = apply_repeat_arm_request(body_str, requester="peer")
     send_json(handler, status, resp)
 
 
