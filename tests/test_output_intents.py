@@ -989,6 +989,26 @@ class TestPinWithSelectOnAnAsyncPlayer:
         assert pairing.holder(ID) == "webui"
         assert snap().unit(ID).selected is False
 
+    def test_a_level_change_while_the_pin_is_answered_keeps_the_claim_for_the_verdict(self, a, player, monkeypatch):
+        import autostream_player_service as ps
+        answer = ps.submit_output_pin
+
+        def submit_output_pin(*args, **kw):
+            # The person moves the level while the player takes the PIN
+            a._started = True
+            try:
+                a.set_volume(ID, 55, Origin.USER)
+            finally:
+                a._started = False
+            return answer(*args, **kw)
+
+        monkeypatch.setattr(ps, "submit_output_pin", submit_output_pin)
+        t = self.settle_later(a, state_event(ID, "password", "pin_invalid", selected=False, pin_pending=True))
+        r = change(self.pin())
+        t.join(5)
+        assert r["ok"] is False and r["pin_invalid"] is True and r["new_pin"] is True
+        assert pairing.holder(ID) == "webui"
+
     def test_a_late_outcome_replies_pending_and_keeps_the_claim(self, a, player):
         r = submit(Intent("output.pin.submit", {"id": ID, "pin": "1234", "selected": True}, Origin.USER,
                           "webui", context="webui"), wait=0.05)

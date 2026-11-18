@@ -2745,21 +2745,27 @@ class OutputAuthority:
         """A PIN sent with its select. The player accepted it: the pairing
         runs, and the event that ends it answers the request (parked here
         until then, or until PIN_OUTCOME_S passes). A refusal is a failed
-        start, as a select's would be; any 400 to a PIN reads as a wrong PIN."""
+        start, as a select's would be; any 400 to a PIN reads as a wrong PIN.
+
+        The request is parked even when the unit's desired state moved
+        while it was queued (a level change while the PIN was typed): the
+        pairing runs on the player all the same, so its outcome, not the
+        answer, says whether the PIN was right, and the claim stays until it
+        does."""
         stale = u is None or u.desired_seq != w.seq
         if r.ok and u is not None and self._async_outputs_cap:
-            if not stale:
-                u.own_write_at = now
-                u.start_pending_until = now + START_PENDING_S
-                u.pin_sinks.extend(w.sinks)
-                u.pin_deadline = now + PIN_OUTCOME_S
-                fx.republish = True
-                return None
             r_now = u.reported
-            if u.outcome_applied and r_now is not None and r_now.session_state in ("failed", "password"):
+            if stale and u.outcome_applied and r_now is not None and r_now.session_state in ("failed", "password"):
                 # The verdict came as an event before this answer
                 code = {"timeout": "timed_out", "none": "failed"}.get(r_now.session_failure, r_now.session_failure)
                 return WriteOutcome(ok=False, error_code=code, error=code)
+            u.own_write_at = now
+            if not stale or (u.desired.selected and not u.outcome_applied):
+                u.start_pending_until = now + START_PENDING_S
+            u.pin_sinks.extend(w.sinks)
+            u.pin_deadline = now + PIN_OUTCOME_S
+            fx.republish = True
+            return None
         return self._record_select_locked(w, r, u, now, fx)
 
     def _select_outcome_locked(self, u: UnitState, code: str, notice: str, requester: Optional[str],

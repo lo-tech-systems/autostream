@@ -3568,6 +3568,40 @@ class TestPinWithSelect:
         out = ew.a.submit_pin("1", "0000", select=True, volume=30).outcome.result(1)[0]
         assert (out.ok, out.error_code) == (False, "pin_invalid")
 
+    def level_change_during(self, ew):
+        """The player's PIN call, with a level change on the unit made while
+        it is answered, so the answer is to a request older than the unit's
+        desired state. The change's own write runs after the PIN's."""
+        original = ew.fb.submit_output_pin
+
+        def submit(output_id, pin, timeout, **kw):
+            ew.a._started = True
+            try:
+                ew.a.set_volume("1", 45, Origin.USER)
+            finally:
+                ew.a._started = False
+            return original(output_id, pin, timeout, **kw)
+
+        ew.fb.submit_output_pin = submit
+
+    def test_a_level_change_before_its_204_still_parks_it(self, ew):
+        self.level_change_during(ew)
+        applied = ew.a.submit_pin("1", "0000", select=True, volume=30, claimant="webui")
+        assert not applied.outcome.done() and unit_state(ew).pin_sinks
+        assert unit_state(ew).start_pending_until == T0 + START_PENDING_S
+        send(ew, "1", "password", "pin_invalid", selected=False, pin_pending=True, at_s=1)
+        out = applied.outcome.result(1)[0]
+        assert (out.ok, out.error_code) == (False, "pin_invalid")
+        assert snap().start_failure.reason == "pin_invalid"
+
+    def test_a_level_change_before_its_204_waits_for_the_pairing_to_succeed(self, ew):
+        self.level_change_during(ew)
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        send(ew, "1", "connecting", selected=False, pin_pending=True, at_s=0.5)
+        assert not applied.outcome.done()
+        send(ew, "1", "stopped", selected=True, pin_pending=False, at_s=1)
+        assert applied.outcome.result(1) == (WriteOutcome(ok=True),)
+
     def test_a_refused_pin_reverts_like_a_refused_select(self, ew):
         ew.fb.results = [error("pin_invalid", "PIN was rejected")]
         out = ew.a.submit_pin("1", "0000", select=True, volume=30).outcome.result(1)[0]
