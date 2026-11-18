@@ -60,7 +60,7 @@ from autostream_appliances import (
 )
 from autostream_federation import EXPIRY_SECONDS as _FED_EXPIRY_SECONDS, FEDERATION_VERSION as _FED_VERSION
 from autostream_config import DEFAULT_AIRPLAY_MODE, parse_config
-from autostream_core import get_live_output_eq_status
+from autostream_state.live import get_live_output_eq_status
 from autostream_player_service import config_airplay_mode_to_backend
 from autostream_rpi import get_appliance_id
 from autostream_webui_api import apply_repeat_arm_request, send_browser_api_error, send_json

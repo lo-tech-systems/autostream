@@ -26,6 +26,7 @@ from .parts import (
     active_track,
     empty_playback_snapshot,
     eq_band_digest,
+    format_khz,
     outputs_list_digest,
     outputs_mute_digest,
     outputs_volume_digest,
@@ -45,7 +46,7 @@ __all__ = [
     "OutputsPart", "OutputUnitView", "StartFailure", "EqPart", "eq_band_digest",
     "outputs_list_digest", "outputs_volume_digest", "outputs_mute_digest",
     "RATE_MATCHING_NOTE_DEFAULT", "SAMPLE_RATE_TEXT_NOT_RUNNING", "MISSING_RATE_TEXTS",
-    "empty_playback_snapshot", "repeat_digest", "track_digest",
+    "empty_playback_snapshot", "format_khz", "repeat_digest", "track_digest",
     "replay_origin_input", "repeat_recording_origin",
     "session_source_input_index", "active_track", "track_for_input",
 ]

@@ -231,6 +231,15 @@ class TestDeepFreeze:
         assert deep_freeze(None) is None and deep_freeze("x") == "x" and deep_freeze(1.5) == 1.5
 
 
+class TestFormatKhz:
+    @pytest.mark.parametrize("hz,text", [
+        (44100, "44.1 kHz"), (48000, "48 kHz"), (96000.0, "96 kHz"),
+        (0, ""), (-1, ""), (float("nan"), ""), (float("inf"), ""), ("x", ""), (None, ""),
+    ])
+    def test_rates_are_formatted_or_empty(self, hz, text):
+        assert state.format_khz(hz) == text
+
+
 class TestHelpers:
     def test_replay_origin_input(self):
         block = {"replay": {"active": True}, "recording": {"origin_input": 2}}

@@ -548,6 +548,7 @@ import autostream_session as session
 from fake_store import fake_repeat, fake_session
 import autostream_repeat as repeat
 import autostream_live_config as live_config
+import autostream_state as state
 
 
 def _inputs():
@@ -1754,7 +1755,7 @@ class TestFormatKhz:
         ("x", ""),
     ])
     def test_formatting(self, hz, text):
-        assert core.format_khz(hz) == text
+        assert state.format_khz(hz) == text
 
 
 class TestSampleRateBanner:

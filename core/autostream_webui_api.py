@@ -89,8 +89,8 @@ from autostream_dials import (
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, session_source_input_index, store
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
+from autostream_state.live import get_live_output_eq_status
 from autostream_core import (
-    get_live_output_eq_status,
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,

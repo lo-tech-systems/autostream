@@ -22,7 +22,7 @@ import math
 from typing import Optional
 
 from autostream_appliances import get_all_appliances
-from autostream_core import get_live_monitor_output_rate
+from autostream_state.live import get_live_monitor_output_rate
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
@@ -87,7 +87,7 @@ def _curve_fs() -> int:
     """Return the sample rate to use for the EQ curve's biquad math.
 
     Sourced live from the monitor's get_status() "output_rate" field (see
-    autostream_core.get_live_monitor_output_rate()) so this stays in sync
+    autostream_state.live.get_live_monitor_output_rate()) so this stays in sync
     with the daemon's actual OUTPUT_RATE instead of a hand-synced constant.
     Falls back to _CURVE_FS_FALLBACK when the monitor is unreachable.
     """

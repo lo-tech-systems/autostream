@@ -42,6 +42,18 @@ SAMPLE_RATE_TEXT_NOT_RUNNING = "Sample rate: not running"
 MISSING_RATE_TEXTS = (RATE_MATCHING_NOTE_DEFAULT, SAMPLE_RATE_TEXT_NOT_RUNNING)
 
 
+def format_khz(hz: float) -> str:
+    """'44.1 kHz' / '48 kHz': one decimal, trimmed when the rounded value is
+    whole; '' for a non-positive or non-finite value."""
+    try:
+        khz = round(float(hz) / 1000.0, 1)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(khz) or khz <= 0:
+        return ""
+    return f"{int(khz)} kHz" if khz == int(khz) else f"{khz:.1f} kHz"
+
+
 # ---------------------------------------------------------------------------
 # Parts
 # ---------------------------------------------------------------------------

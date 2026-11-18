@@ -104,7 +104,7 @@ DENIED_FOR_WEBUI: dict[str, frozenset[str]] = {
     "autostream_config": frozenset({"load_config", "locked_load_config"}),
 }
 # Names of autostream_state.live an L3 module may use.
-LIVE_PINNED: frozenset[str] = frozenset()
+LIVE_PINNED: frozenset[str] = frozenset({"get_live_output_eq_status", "get_live_monitor_output_rate"})
 
 # Packages whose public names (from __all__) an L3 module may import.
 _PUBLIC_PACKAGES = ("autostream_state", "autostream_intents")
@@ -334,19 +334,14 @@ def l2_cycle(edges) -> list[str] | None:
 # ---------------------------------------------------------------------------
 
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
-    ('A', 'autostream_appliance_gateway', 'autostream_core', 'get_live_output_eq_status'),
-    ('A', 'autostream_appliance_models', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_auth', 'autostream_webui_common', 'send_html'),
     ('A', 'autostream_dial_push', 'autostream_webui_dials', 'enqueue_fanout'),
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_bearing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_belt'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_stylus'),
     ('A', 'autostream_webui_api', 'autostream_core', 'update_playback_input_config'),
-    ('A', 'autostream_webui_page_airplay', 'autostream_core', 'format_khz'),
-    ('A', 'autostream_webui_page_equaliser', 'autostream_core', 'get_live_monitor_output_rate'),
     ('A', 'autostream_webui_page_first_boot', 'autostream_core', 'update_playback_input_config'),
     ('A', 'autostream_webui_routes', 'autostream_webui', '*'),
     ('C', 'autostream_appliance_gateway', 'autostream_appliances', 'ApplianceSighting'),

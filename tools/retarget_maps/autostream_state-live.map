@@ -1,0 +1,2 @@
+# The kHz formatter moved into the state helpers.
+autostream_core.format_khz -> autostream_state.format_khz  alias=state

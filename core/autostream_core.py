@@ -19,7 +19,6 @@ import importlib
 import os
 import json
 import logging
-import math
 import random
 import sys
 import time
@@ -1081,18 +1080,6 @@ def _install_signal_handlers() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
 
 
-def format_khz(hz: float) -> str:
-    """'44.1 kHz' / '48 kHz': one decimal, trimmed when the rounded value is
-    whole; '' for a non-positive or non-finite value."""
-    try:
-        khz = round(float(hz) / 1000.0, 1)
-    except (TypeError, ValueError):
-        return ""
-    if not math.isfinite(khz) or khz <= 0:
-        return ""
-    return f"{int(khz)} kHz" if khz == int(khz) else f"{khz:.1f} kHz"
-
-
 SAMPLE_RATE_MISMATCH_BANNER_TEXT = "Sample Rate Mismatch: Please enable Dynamic Rate Matching"
 
 
@@ -1109,8 +1096,8 @@ def _rate_matching_note_for(mon: Optional["AudioMonitor"]) -> str:
         return RATE_MATCHING_NOTE_MONITOR_OLD
     if not mon.dynamic_rate_matching and mon.rate_mismatch_hz > 0:
         return (
-            f"This input is delivering {format_khz(mon.rate_mismatch_hz)} but the "
-            f"device was opened at {format_khz(mon.negotiated_hz)}. Turn this on "
+            f"This input is delivering {autostream_state.format_khz(mon.rate_mismatch_hz)} but the "
+            f"device was opened at {autostream_state.format_khz(mon.negotiated_hz)}. Turn this on "
             f"to follow the source."
         )
     return autostream_state.RATE_MATCHING_NOTE_DEFAULT
@@ -1120,19 +1107,19 @@ def _sample_rate_text_for(mon: Optional["AudioMonitor"], connected: bool) -> str
     if mon is None or not connected or not mon.rate_lock:
         return autostream_state.SAMPLE_RATE_TEXT_NOT_RUNNING
     # A non-breaking space keeps each rate with its unit when the line wraps
-    # on a narrow screen; format_khz itself keeps its plain space.
+    # on a narrow screen; autostream_state.format_khz itself keeps its plain space.
     def keep_unit(text: str) -> str:
         return text.replace(" ", "\u00a0")
 
-    opened = format_khz(mon.negotiated_hz)
+    opened = autostream_state.format_khz(mon.negotiated_hz)
     if mon.rate_mismatch_hz > 0 and opened:
         return (
             f"Sample rate: {keep_unit(opened)} (source is sending "
-            f"{keep_unit(format_khz(mon.rate_mismatch_hz))})"
+            f"{keep_unit(autostream_state.format_khz(mon.rate_mismatch_hz))})"
         )
     if mon.rate_lock == "acquiring":
         return "Sample rate: checking"
-    running = format_khz(mon.detected_hz)
+    running = autostream_state.format_khz(mon.detected_hz)
     if not running:
         return autostream_state.SAMPLE_RATE_TEXT_NOT_RUNNING
     # Compared as text so a device that opens at 47999 Hz still reads as
@@ -1163,12 +1150,12 @@ def _build_inputs_part(monitors: list, connected: bool) -> "autostream_state.Inp
             "label": f"Input {mon.input_index}",
             "dbfs": round(mon.poll_peak_dbfs, 1),
             "detected_hz": round(mon.detected_hz, 1),
-            "detected_khz": format_khz(mon.detected_hz),
+            "detected_khz": autostream_state.format_khz(mon.detected_hz),
             "negotiated_hz": mon.negotiated_hz,
             "rate_lock": mon.rate_lock,
             "relock_count": mon.relock_count,
             "rate_mismatch_hz": mon.rate_mismatch_hz,
-            "rate_mismatch_khz": format_khz(mon.rate_mismatch_hz),
+            "rate_mismatch_khz": autostream_state.format_khz(mon.rate_mismatch_hz),
             "dynamic_rate_matching": mon.dynamic_rate_matching,
             "monitor_supports_rate_matching": mon.monitor_dynamic_rate_matching is not None,
             "is_above_threshold": not mon.is_silent,
@@ -1303,63 +1290,6 @@ def get_available_monitor_devices(
     except Exception as e:
         logging.warning("Could not query autostream_monitor devices: %s", e)
         return []
-
-
-def get_live_output_eq_status(
-    socket_path: Optional[str] = None,
-) -> Optional[dict]:
-    """Return current output EQ status from autostream_monitor, or None if unavailable.
-
-    Returned dict contains:
-      output_auto_trim_enabled  bool
-      output_auto_trim_db       float  (current accumulated trim; 0.0 or negative)
-      effective_output_gain_db  float
-    """
-    try:
-        with monitor_client._connected_monitor(socket_path) as client:
-            if client is None:
-                return None
-            status = client.get_status()
-            if not status:
-                return None
-            return {
-                "output_auto_trim_enabled": bool(status.get("output_auto_trim_enabled", False)),
-                "output_auto_trim_db": float(status.get("output_auto_trim_db", 0.0)),
-                "effective_output_gain_db": float(status.get("effective_output_gain_db", 0.0)),
-            }
-    except Exception as e:
-        logging.warning("Could not get live output EQ status: %s", e)
-        return None
-
-
-def get_live_monitor_output_rate(
-    fallback: int = 48000,
-    socket_path: Optional[str] = None,
-) -> int:
-    """Return the monitor's live-reported output sample rate in Hz.
-
-    Reads the "output_rate" field from get_status() (added alongside
-    output_bits/output_channels for the 48k/32-bit IPC flip). Returns
-    *fallback* whenever the monitor is unreachable, the field is missing,
-    or the reported value is not a sane positive number -- callers must
-    never hardcode a rate assumption instead.
-    """
-    try:
-        with monitor_client._connected_monitor(socket_path) as client:
-            if client is None:
-                return fallback
-            status = client.get_status()
-            if not status:
-                return fallback
-            rate = status.get("output_rate")
-            if isinstance(rate, bool) or not isinstance(rate, (int, float)):
-                return fallback
-            if rate <= 0:
-                return fallback
-            return int(rate)
-    except Exception as e:
-        logging.warning("Could not get live monitor output rate: %s", e)
-        return fallback
 
 
 def _default_nowplaying_title(input_type: str) -> str:

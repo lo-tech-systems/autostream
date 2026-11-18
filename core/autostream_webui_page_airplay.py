@@ -16,11 +16,8 @@ from typing import Optional
 
 from autostream_appliance_models import _dial_update_banner_text, build_output_list
 from autostream_appliances import get_all_appliances
-from autostream_core import (
-    format_khz,
-)
 from autostream_player_service import get_setting
-from autostream_state import active_track, store
+from autostream_state import active_track, format_khz, store
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_config import input_type_label, normalize_input_type
 from autostream_rpi import get_appliance_id

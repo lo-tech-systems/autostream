@@ -15,7 +15,7 @@ from typing import Optional
 
 import autostream_pin_pairing as pairing
 from autostream_config import parse_config
-from autostream_core import get_live_output_eq_status
+from autostream_state.live import get_live_output_eq_status
 from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, store
