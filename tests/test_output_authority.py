@@ -1475,3 +1475,318 @@ class TestVolumeStepResult:
         assert down.outcome is None and (down.master, down.muted) == (60, True)
         up = w.a.step_volume(5, Origin.USER, default_level=50)
         assert (up.restored, up.muted, up.master) == (True, False, 60)
+
+
+# ---------------------------------------------------------------------------
+# Mute tokens, per-unit restores and the marks a policy reads
+# ---------------------------------------------------------------------------
+
+def _marks(w, uid):
+    m = w.a.unit_marks(uid)
+    return (m.mute_token, m.mute_joined)
+
+
+class TestMuteTokens:
+    def test_mute_all_returns_the_tokens_of_only_the_units_it_muted(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50), row(3)])
+        w.a.mute("1", Origin.DEVICE)
+        applied = w.a.mute_all(Origin.DEVICE)
+        assert [uid for uid, _ in applied.mute_tokens] == ["2"]
+        assert applied.token_at == applied.mute_tokens[0][1] > _marks(w, "1")[0] > 0
+        assert w.a.unit_marks("3").mute_token == 0
+
+    def test_tokens_increase_with_each_mute(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50)])
+        first = w.a.mute("1", Origin.DEVICE)
+        second = w.a.mute("2", Origin.DEVICE)
+        assert first.mute_tokens[0][1] < second.mute_tokens[0][1] == second.token_at
+
+    def test_a_user_mute_all_restamps_a_unit_that_is_already_muted_with_no_write(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        old = w.a.mute("1", Origin.DEVICE).mute_tokens[0][1]
+        w.fb.calls.clear()
+        applied = w.a.mute_all(Origin.USER)
+        assert w.fb.calls == []
+        assert applied.mute_tokens == (("1", old + 1),) and _marks(w, "1") == (old + 1, False)
+
+    def test_a_user_mute_restamps_but_a_device_mute_does_not(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        old = w.a.mute("1", Origin.DEVICE).mute_tokens[0][1]
+        w.fb.calls.clear()
+        again = w.a.mute("1", Origin.DEVICE)
+        assert again.mute_tokens == () and _marks(w, "1")[0] == old
+        user = w.a.mute("1", Origin.USER)
+        assert user.mute_tokens == (("1", old + 1),) and w.fb.calls == []
+
+    def test_a_unit_joining_a_muted_selection_gets_a_joined_token(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
+        w.a.mute_all(Origin.DEVICE)
+        w.a.select("2", Origin.USER, volume=30)
+        assert _marks(w, "2")[1] is True and _marks(w, "2")[0] > _marks(w, "1")[0]
+        assert _marks(w, "1")[1] is False
+
+    @pytest.mark.parametrize("clear", [
+        lambda a: a.set_volume("1", 20, Origin.USER),
+        lambda a: a.unmute_all(Origin.USER, default_level=50),
+        lambda a: a.step_volume(5, Origin.USER, default_level=50),
+        lambda a: a.unmute("1", Origin.DEVICE, default_level=50),
+        lambda a: a.device_volume_seen("1"),
+        lambda a: a.deselect("1", Origin.USER),
+        lambda a: a.deselect_all(Origin.USER),
+    ])
+    def test_every_way_a_mute_ends_clears_its_token_and_flag(self, w, clear):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
+        w.a.mute_all(Origin.DEVICE)
+        assert _marks(w, "1")[0] > 0
+        clear(w.a)
+        assert _marks(w, "1") == (0, False)
+
+    def test_a_louder_read_adopted_on_a_muted_unit_clears_its_token(self, w):
+        put(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        w.t[0] += 5
+        put(w, [row(1, selected=True, volume_percent=40)])
+        at(w, 5.1)
+        assert _marks(w, "1") == (0, False)
+
+    def test_a_failed_start_that_is_reverted_clears_the_token(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
+        w.a.mute_all(Origin.DEVICE)
+        w.fb.results = [error("boom")]
+        w.a.select("2", Origin.USER, volume=30)
+        assert snap().unit("2").selected is False
+        assert _marks(w, "2") == (0, False)
+
+    def test_unmute_with_a_token_restores_only_while_that_mute_stands(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        token = w.a.mute("1", Origin.DEVICE).mute_tokens[0][1]
+        w.fb.calls.clear()
+        w.a.unmute("1", Origin.DEVICE, default_level=0, only_token=token)
+        assert snap().unit("1").muted is False
+        assert w.fb.updates() == [("1", dict(volume_percent=40, timeout=3.0))]
+
+    @pytest.mark.parametrize("how", ["moved", "unmuted", "restamped"])
+    def test_a_token_mismatch_changes_nothing_and_tells_nobody(self, w, how):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        token = w.a.mute("1", Origin.DEVICE).mute_tokens[0][1]
+        if how == "moved":
+            token -= 1
+        elif how == "unmuted":
+            w.a.unmute_all(Origin.USER, default_level=50)
+        else:
+            w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        changes = []
+        state.store().subscribe(changes.append)
+        before = state.store().snapshot().version
+        applied = w.a.unmute("1", Origin.DEVICE, default_level=0, only_token=token)
+        assert applied.outcome is None and applied.refused is None
+        assert w.fb.calls == [] and changes == []
+        assert state.store().snapshot().version == before
+        assert snap().unit("1").muted is (how != "unmuted")
+
+    def test_unmuting_a_unit_that_is_not_muted_publishes_nothing(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        changes = []
+        state.store().subscribe(changes.append)
+        applied = w.a.unmute("1", Origin.DEVICE, default_level=50)
+        assert applied.outcome is None and changes == [] and w.fb.calls == []
+
+    def test_unmuting_an_unknown_unit_is_refused(self, w):
+        assert w.a.unmute("9", Origin.DEVICE, default_level=0).refused == "unknown_output"
+
+    def test_a_unit_muted_at_zero_comes_back_at_zero_with_no_write(self, w):
+        merge(w, [row(1, selected=True, volume_percent=0)])
+        token = w.a.mute("1", Origin.DEVICE).mute_tokens[0][1]
+        assert w.fb.calls == []
+        w.a.unmute("1", Origin.DEVICE, default_level=0, only_token=token)
+        assert snap().unit("1").muted is False and snap().unit("1").volume == 0
+        assert w.fb.calls == []
+
+    def test_unmute_joined_restores_only_joined_mutes_after_the_token(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2), row(3), row(4)])
+        w.a.mute_all(Origin.DEVICE)
+        since = w.a.mute_all(Origin.DEVICE).token_at       # nothing new; the counter as it stands
+        w.a.select("2", Origin.USER, volume=30)            # joins muted
+        w.a.select("3", Origin.USER, volume=35)            # joins muted
+        w.fb.calls.clear()
+        w.a.unmute_joined(since, Origin.DEVICE, default_level=0)
+        p = snap()
+        assert not p.unit("2").muted and not p.unit("3").muted
+        assert p.unit("1").muted
+        assert dict(w.fb.updates()) == {"2": dict(volume_percent=30, timeout=3.0),
+                                        "3": dict(volume_percent=35, timeout=3.0)}
+
+    def test_unmute_joined_leaves_a_join_from_before_the_token(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
+        w.a.mute_all(Origin.DEVICE)
+        w.a.select("2", Origin.USER, volume=30)
+        since = w.a.unit_marks("2").mute_token
+        w.a.unmute_joined(since, Origin.DEVICE, default_level=0)
+        assert snap().unit("2").muted is True
+
+    def test_unmute_joined_with_nothing_to_restore_publishes_nothing(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.DEVICE)
+        changes = []
+        state.store().subscribe(changes.append)
+        applied = w.a.unmute_joined(0, Origin.DEVICE, default_level=0)
+        assert applied.outcome is None and changes == []
+
+    def test_the_mute_hold_ends_with_the_last_per_unit_restore(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50)])
+        applied = w.a.mute_all(Origin.DEVICE)
+        tokens = dict(applied.mute_tokens)
+        w.a.unmute("1", Origin.DEVICE, default_level=0, only_token=tokens["1"])
+        assert w.a._mute_held is True
+        w.a.unmute("2", Origin.DEVICE, default_level=0, only_token=tokens["2"])
+        assert w.a._mute_held is False and snap().muted_all is False
+
+
+class TestSelectSeq:
+    def test_it_moves_when_the_selection_goes_from_off_to_on(self, w):
+        merge(w, [row(1), row(2, selected=True, volume_percent=30)])
+        assert w.a.unit_marks("1").select_seq == 0 and w.a.unit_marks("2").select_seq == 1
+        w.a.select("1", Origin.USER, volume=20)
+        assert w.a.unit_marks("1").select_seq == 1
+        w.a.select("1", Origin.USER, volume=25)
+        assert w.a.unit_marks("1").select_seq == 1
+        w.a.deselect("1", Origin.USER)
+        w.a.select("1", Origin.USER, volume=25)
+        assert w.a.unit_marks("1").select_seq == 2
+
+    def test_a_volume_or_a_reapply_does_not_move_it(self, w):
+        merge(w, [row(1, selected=True, volume_percent=30)])
+        w.a.set_volume("1", 50, Origin.USER)
+        w.a.mute_all(Origin.USER)
+        w.a.reapply_selected(recovery_volume=40)
+        assert w.a.unit_marks("1").select_seq == 1
+
+    def test_an_unknown_unit_has_no_marks(self, w):
+        assert w.a.unit_marks("nope") is None
+
+
+# ---------------------------------------------------------------------------
+# What the player can report, and the policy hooks
+# ---------------------------------------------------------------------------
+
+class RecordingPolicy:
+    def __init__(self):
+        self.calls = []
+        self.deadline = None
+        self.fail = False
+
+    def on_device_event(self, ev, outputs, now):
+        self.calls.append(("event", ev.verb, now, outputs.unit("1").muted if outputs.unit("1") else None))
+        if self.fail:
+            raise RuntimeError("policy broke")
+
+    def on_timer(self, now, outputs):
+        self.calls.append(("timer", now))
+        if self.fail:
+            raise RuntimeError("policy broke")
+
+    def next_deadline(self):
+        return self.deadline
+
+    def on_session(self, active):
+        self.calls.append(("session", active))
+        if self.fail:
+            raise RuntimeError("policy broke")
+
+
+class TestCapabilityFlags:
+    def test_device_events_follow_the_hello_capabilities(self, w):
+        assert snap().device_events is False
+        w.a.on_connected(ConnectInfo("b0", 1, frozenset({"device_volume", "receiver_command"}), "unix_socket"))
+        w.a.step(now=T0)
+        assert snap().device_events is True
+        w.a.on_connected(ConnectInfo("b0", 1, frozenset({"changed"}), "unix_socket"))
+        w.a.step(now=T0)
+        assert snap().device_events is False
+
+    def test_a_connect_that_changes_nothing_publishes_nothing(self, w):
+        info = ConnectInfo("b0", 1, frozenset({"device_volume", "receiver_command"}), "unix_socket")
+        w.a.on_connected(info)
+        w.a.step(now=T0)
+        version = state.store().snapshot().version
+        w.a.on_connected(info)
+        w.a.step(now=T0)
+        assert state.store().snapshot().version == version
+
+    def test_a_degraded_channel_clears_device_events(self, w):
+        w.a.on_connected(ConnectInfo("b0", 1, frozenset({"device_volume", "receiver_command"}), "unix_socket"))
+        w.a.step(now=T0)
+        w.a._source_factory = lambda info, base_url, *, poll_interval: FakeSource()
+        w.a.on_disconnected(DEGRADED)
+        w.a.step(now=T0)
+        assert snap().device_events is False and snap().event_source == "poll"
+
+    def test_include_tv_supported_comes_from_the_first_row_with_has_homepods(self, w):
+        merge(w, [row(1)])
+        assert snap().include_tv_supported is False
+        merge(w, [row(1), homepods_row(2, "streaming")])
+        assert snap().include_tv_supported is True
+
+
+class TestPolicyHooks:
+    @pytest.fixture
+    def pol(self, w):
+        p = RecordingPolicy()
+        w.a.set_policy(p)
+        return p
+
+    def test_a_device_event_reaches_the_policy_with_the_state_after_its_own_handling(self, w, pol):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute("1", Origin.USER)
+        w.a.on_device_event(DeviceEvent("device_volume", "1", None, "volumeup", "45", 1, 1.0))
+        w.a.step(now=T0 + 3)
+        assert ("event", "volumeup", T0 + 3, False) in pol.calls
+
+    def test_the_policy_is_told_the_clock_read_after_the_wait(self, w, pol):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.t[0] = T0 + 1.5
+        w.a.on_device_event(DeviceEvent("receiver_command", "1", None, "paus", None, 1, 1.0))
+        w.a.step(block=0.5)
+        assert [c for c in pol.calls if c[0] == "event"] == [("event", "paus", T0 + 1.5, False)]
+
+    def test_on_timer_runs_every_step_with_the_step_time(self, w, pol):
+        w.a.step(now=T0 + 1)
+        w.a.step(now=T0 + 2)
+        assert pol.calls == [("timer", T0 + 1), ("timer", T0 + 2)]
+
+    def test_next_deadline_shortens_the_wait(self, w, pol):
+        merge(w, [row(1)])
+        assert w.a._next_wait(T0) == 1.0
+        pol.deadline = T0 + 0.4
+        assert w.a._next_wait(T0) == pytest.approx(0.4)
+        pol.deadline = T0 - 5
+        assert w.a._next_wait(T0) == 0.05
+
+    def test_both_session_edges_reach_the_policy_in_queue_order_with_events(self, w, pol):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.note_session(True)
+        w.a.on_device_event(DeviceEvent("receiver_command", "1", None, "paus", None, 1, 1.0))
+        w.a.note_session(False)
+        w.a.step(now=T0)
+        order = [c[:2] if c[0] == "event" else c for c in pol.calls if c[0] != "timer"]
+        assert order == [("session", True), ("event", "paus"), ("session", False)]
+
+    def test_a_raising_hook_is_logged_and_the_next_step_runs(self, w, pol, caplog):
+        pol.fail = True
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.note_session(True)
+        w.a.on_device_event(DeviceEvent("receiver_command", "1", None, "paus", None, 1, 1.0))
+        with caplog.at_level(logging.ERROR, logger="autostream.outputs"):
+            w.a.step(now=T0)
+            w.a.step(now=T0 + 1)
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "device event" in text and "session edge" in text and "timer" in text
+        assert pol.calls[-1] == ("timer", T0 + 1)
+
+    def test_a_bound_policy_suppresses_the_no_policy_line(self, w, pol, caplog):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        with caplog.at_level(logging.INFO, logger="autostream.outputs"):
+            w.a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "paus", None, 2, 2.0))
+            w.a.step(now=T0)
+        assert "no policy" not in "\n".join(r.getMessage() for r in caplog.records)

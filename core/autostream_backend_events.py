@@ -17,7 +17,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional, Protocol, Sequence
+from typing import Callable, Mapping, Optional, Protocol, Sequence
 from urllib.parse import urlparse
 
 import autostream_runtime as runtime
@@ -99,6 +99,34 @@ def _call_sink(method: Callable, *args) -> None:
         method(*args)
     except Exception:
         LOG.exception("Event sink call failed")
+
+
+def parse_event(msg: Mapping, received: float) -> Optional[DeviceEvent]:
+    """One server "event" message as a DeviceEvent (member_id included), or
+    None for an unknown kind or a message without a speaker or verb (a DEBUG
+    line)."""
+    kind = msg.get("kind")
+    if kind not in ("receiver_command", "device_volume"):
+        return None
+    speaker = msg.get("speaker")
+    verb = msg.get("verb")
+    if not isinstance(speaker, dict) or not isinstance(verb, str) or speaker.get("id") is None:
+        LOG.debug("owntone-mini events: %s event without a speaker or verb ignored", kind)
+        return None
+    name = speaker.get("name")
+    member_id = speaker.get("member_id")
+    value = msg.get("value")
+    at_ms = msg.get("at_ms")
+    return DeviceEvent(
+        kind=kind,
+        speaker_id=str(speaker.get("id")),
+        speaker_name=name if isinstance(name, str) else None,
+        verb=verb,
+        value=None if value is None or kind != "device_volume" else str(value),
+        at_ms=at_ms if isinstance(at_ms, int) and not isinstance(at_ms, bool) else 0,
+        received=received,
+        member_id=member_id if isinstance(member_id, str) else None,
+    )
 
 
 class _Closed(Exception):
@@ -292,7 +320,7 @@ class UnixSocketEventSource(EventSource):
                 if msg.get("what") == "outputs":
                     _call_sink(sink.on_outputs_changed)
             elif mtype == "event":
-                event = self._device_event(msg)
+                event = parse_event(msg, self._clock())
                 if event is not None:
                     _call_sink(sink.on_device_event, event)
             elif mtype == "pong":
@@ -304,30 +332,6 @@ class UnixSocketEventSource(EventSource):
                 return "error:" + code
             # Any other type is from a newer protocol revision: ignored.
         return "stopped"
-
-    def _device_event(self, msg: dict) -> Optional[DeviceEvent]:
-        kind = msg.get("kind")
-        if kind not in ("receiver_command", "device_volume"):
-            return None
-        speaker = msg.get("speaker")
-        verb = msg.get("verb")
-        if not isinstance(speaker, dict) or not isinstance(verb, str) or speaker.get("id") is None:
-            LOG.debug("owntone-mini events: %s event without a speaker or verb ignored", kind)
-            return None
-        name = speaker.get("name")
-        member_id = speaker.get("member_id")
-        value = msg.get("value")
-        at_ms = msg.get("at_ms")
-        return DeviceEvent(
-            kind=kind,
-            speaker_id=str(speaker.get("id")),
-            speaker_name=name if isinstance(name, str) else None,
-            verb=verb,
-            value=None if value is None or kind != "device_volume" else str(value),
-            at_ms=at_ms if isinstance(at_ms, int) and not isinstance(at_ms, bool) else 0,
-            received=self._clock(),
-            member_id=member_id if isinstance(member_id, str) else None,
-        )
 
     # ------------------------------------------------------------ line I/O
 

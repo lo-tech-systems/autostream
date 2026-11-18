@@ -205,6 +205,8 @@ class OutputsPart:
     muted_all: bool = False                 # the appliance-level mute shown by dials and Home
     silence_chosen: bool = False            # per session: the user turned every speaker off
     start_failure: Optional[StartFailure] = None
+    device_events: bool = False             # the player reports receiver commands and device volumes
+    include_tv_supported: bool = False      # rows carry has_homepods: an Apple TV's HomePods can play without it
 
     def unit(self, unit_id: str) -> Optional[OutputUnitView]:
         for u in self.units:
@@ -380,6 +382,7 @@ def _outputs_digest(p: OutputsPart) -> tuple:
         ),
         p.connected, p.muted_all, p.silence_chosen,
         p.start_failure.seq if p.start_failure is not None else 0,
+        p.device_events, p.include_tv_supported,
     )
 
 

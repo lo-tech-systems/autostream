@@ -412,3 +412,20 @@ class TestOutputsPart:
         frozen = deep_freeze(part)
         assert frozen.units[0].reported.extra == (("k", (1, 2)),)
         assert frozen.units[0].reported.has_homepods is True
+
+
+class TestOutputsCapabilityFlags:
+    def test_both_default_off(self):
+        p = state.OutputsPart()
+        assert p.device_events is False and p.include_tv_supported is False
+
+    def test_the_digest_moves_on_each_flag_but_the_sub_digests_do_not(self):
+        from autostream_state.parts import (
+            outputs_list_digest, outputs_mute_digest, outputs_volume_digest)
+        d = DIGESTS["outputs"]
+        base = state.OutputsPart()
+        for flag in ("device_events", "include_tv_supported"):
+            other = state.OutputsPart(**{flag: True})
+            assert d(other) != d(base)
+            for sub in (outputs_list_digest, outputs_mute_digest, outputs_volume_digest):
+                assert sub(other) == sub(base)

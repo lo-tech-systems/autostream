@@ -120,6 +120,30 @@ class Applied:
     master: Optional[int] = None                       # volume and mute intents: the master level the request leaves
     muted: Optional[bool] = None                       # volume and mute intents: whether the selection is muted after it
     restored: bool = False                             # a volume step that was a restore from mute
+    mute_tokens: tuple = ()                            # ((unit id, token), ...) for every unit a mute call muted or re-stamped
+    token_at: int = 0                                  # the mute token counter after a mute call
+
+
+@dataclass(frozen=True)
+class UnitMarks:
+    """What a policy needs to know about one unit's history without reading
+    the authority's internals."""
+    select_seq: int       # +1 each time the desired selection goes from off to on
+    mute_token: int       # the token of the unit's current mute; 0 when not muted
+    mute_joined: bool     # the current mute came from joining a muted selection
+
+
+class PolicyHook(Protocol):
+    """What set_policy() takes. Every method is called on the worker thread
+    with no authority lock held."""
+
+    def on_device_event(self, ev: DeviceEvent, outputs: OutputsPart, now: float) -> None: ...
+
+    def on_timer(self, now: float, outputs: OutputsPart) -> None: ...
+
+    def next_deadline(self) -> Optional[float]: ...
+
+    def on_session(self, active: bool) -> None: ...
 
 
 def wait_outcome(applied: Applied, wait: float) -> tuple:
@@ -212,6 +236,8 @@ class UnitDesired:
     remembered_level: Optional[int]   # the level a muted speaker returns to; None: the default
     cause: Origin
     changed_at: float
+    mute_token: int = 0               # the token of the current mute; 0 when not muted
+    mute_joined: bool = False         # the current mute came from joining a muted selection
 
 
 @dataclass
@@ -236,6 +262,7 @@ class UnitState:
     after_boot: bool = False          # the player restarted since this unit last matched
     diff_since: dict = field(default_factory=dict)
     requester: Optional[str] = None   # who asked for the current attempt
+    select_seq: int = 0               # +1 each time the desired selection goes from off to on
 
 
 class _OwnedLock:
@@ -367,6 +394,7 @@ class OutputAuthority:
         self._backend_boot = ""
         self._event_kind = "poll"
         self._mute_held = False
+        self._mute_counter = 0
         self._silence_chosen = False
         self._start_failure: Optional[StartFailure] = None
         self._failure_seq = 0
@@ -559,6 +587,7 @@ class OutputAuthority:
             units=tuple(views), connected=self._connected, backend_boot=self._backend_boot,
             event_source=self._event_kind, muted_all=self._muted_all_locked(),
             silence_chosen=self._silence_chosen, start_failure=self._start_failure,
+            device_events=self._delivers_device_events, include_tv_supported=self._include_tv_supported,
         )
 
     def _publish_locked(self, origin: Optional[Origin], requester: Optional[str]):
@@ -578,7 +607,25 @@ class OutputAuthority:
     def _unit_for_device_locked(self, device_id: str) -> Optional[str]:
         return device_id if device_id in self._units else None
 
+    def unit_marks(self, unit_id: str) -> Optional[UnitMarks]:
+        with self._lock:
+            u = self._units.get(unit_id)
+            if u is None:
+                return None
+            return UnitMarks(u.select_seq, u.desired.mute_token, u.desired.mute_joined)
+
     # -- intents -------------------------------------------------------------
+
+    def _next_token_locked(self) -> int:
+        self._mute_counter += 1
+        return self._mute_counter
+
+    @staticmethod
+    def _clear_mute_locked(d: UnitDesired) -> None:
+        d.muted = False
+        d.remembered_level = None
+        d.mute_token = 0
+        d.mute_joined = False
 
     def _stamp(self, u: UnitState, cause: Origin, now: float) -> None:
         u.desired.cause = cause
@@ -622,10 +669,15 @@ class OutputAuthority:
                 # Joining a muted session: silent, and the level asked for is
                 # what a later restore brings it to.
                 d.remembered_level = (vol or d.volume) or None
+                if not d.muted:
+                    d.mute_token = self._next_token_locked()
+                    d.mute_joined = True
                 d.muted = True
                 d.volume = 0
             elif vol is not None:
                 d.volume = vol
+            if not d.selected:
+                u.select_seq += 1
             d.selected = True
             u.retry_allowed = cause != Origin.USER
             u.attempt = True
@@ -648,8 +700,7 @@ class OutputAuthority:
     def _deselect_locked(self, u: UnitState, cause: Origin, now: float) -> None:
         d = u.desired
         d.selected = False
-        d.muted = False
-        d.remembered_level = None
+        self._clear_mute_locked(d)
         u.attempt = False
         u.retry_at = None
         u.start_pending_until = 0.0
@@ -704,8 +755,7 @@ class OutputAuthority:
             if d.muted:
                 if cause == Origin.USER:
                     # A deliberate level change on a muted speaker is its unmute.
-                    d.muted = False
-                    d.remembered_level = None
+                    self._clear_mute_locked(d)
                     d.volume = vol
                     self._mute_held = False
                 else:
@@ -739,9 +789,8 @@ class OutputAuthority:
         for u in self._selected_locked():
             d = u.desired
             if d.muted:
-                d.muted = False
                 d.volume = d.remembered_level if d.remembered_level is not None else level
-                d.remembered_level = None
+                self._clear_mute_locked(d)
             elif d.volume == 0:
                 d.volume = level
             else:
@@ -799,12 +848,21 @@ class OutputAuthority:
             if not selected:
                 return self._refused("no_active_outputs")
             changed = []
+            tokens = []
             for u in selected:
                 d = u.desired
                 if d.muted:
+                    if cause == Origin.USER:
+                        # The user's Mute owns a mute a device Pause made.
+                        d.mute_token = self._next_token_locked()
+                        d.mute_joined = False
+                        tokens.append((u.id, d.mute_token))
                     continue
                 d.remembered_level = d.volume if d.volume > 0 else None
                 d.muted = True
+                d.mute_token = self._next_token_locked()
+                d.mute_joined = False
+                tokens.append((u.id, d.mute_token))
                 self._stamp(u, cause, now)
                 if d.volume > 0:
                     d.volume = 0
@@ -812,8 +870,12 @@ class OutputAuthority:
             self._mute_held = True
             future = self._queue_volume_writes_locked(changed)
             master = self._master_locked()
+            token_at = self._mute_counter
             pending = self._publish_locked(cause, requester)
-        return self._finish_intent(pending, future, master=master, muted=True)
+        return self._finish_intent(
+            pending, future, master=master, muted=True,
+            mute_tokens=tuple(tokens), token_at=token_at,
+        )
 
     def unmute_all(self, cause: Origin, *, default_level: int,
                    requester: Optional[str] = None) -> Applied:
@@ -839,19 +901,46 @@ class OutputAuthority:
                 return self._refused("unknown_output")
             d = u.desired
             changed = []
+            tokens = []
             if d.selected and not d.muted:
                 d.remembered_level = d.volume if d.volume > 0 else None
                 d.muted = True
+                d.mute_token = self._next_token_locked()
+                d.mute_joined = False
+                tokens.append((u.id, d.mute_token))
                 self._stamp(u, cause, now)
                 if d.volume > 0:
                     d.volume = 0
                     changed.append(u)
+            elif d.selected and cause == Origin.USER:
+                # The user's Mute owns a mute a device Pause made.
+                d.mute_token = self._next_token_locked()
+                d.mute_joined = False
+                tokens.append((u.id, d.mute_token))
             future = self._queue_volume_writes_locked(changed)
+            token_at = self._mute_counter
             pending = self._publish_locked(cause, requester)
-        return self._finish_intent(pending, future)
+        return self._finish_intent(pending, future, mute_tokens=tuple(tokens), token_at=token_at)
+
+    def _restore_locked(self, u: UnitState, cause: Origin, default_level: int, now: float) -> bool:
+        """End a unit's mute. True when its level moves, so a write is due."""
+        d = u.desired
+        before = d.volume
+        d.volume = d.remembered_level if d.remembered_level is not None else _clamp(default_level)
+        self._clear_mute_locked(d)
+        self._stamp(u, cause, now)
+        return d.volume != before
+
+    def _release_mute_hold_locked(self) -> None:
+        if not any(u.desired.muted for u in self._selected_locked()):
+            self._mute_held = False
 
     def unmute(self, unit_id: str, cause: Origin, *, default_level: int,
-               requester: Optional[str] = None) -> Applied:
+               requester: Optional[str] = None, only_token: Optional[int] = None) -> Applied:
+        """End one unit's mute. With *only_token*, only while the unit's
+        current mute is the one that token names, checked and changed under
+        one hold of the lock. A call that changes nothing makes no write and
+        publishes nothing."""
         self._touched = True
         now = self._clock()
         with self._lock:
@@ -859,13 +948,30 @@ class OutputAuthority:
             if u is None:
                 return self._refused("unknown_output")
             d = u.desired
-            changed = []
-            if d.muted:
-                d.muted = False
-                d.volume = d.remembered_level if d.remembered_level is not None else _clamp(default_level)
-                d.remembered_level = None
-                self._stamp(u, cause, now)
-                changed.append(u)
+            if not d.muted or (only_token is not None and d.mute_token != only_token):
+                return Applied(version=store().snapshot().version, outcome=None)
+            changed = [u] if self._restore_locked(u, cause, default_level, now) else []
+            self._release_mute_hold_locked()
+            future = self._queue_volume_writes_locked(changed)
+            pending = self._publish_locked(cause, requester)
+        return self._finish_intent(pending, future)
+
+    def unmute_joined(self, since_token: int, cause: Origin, *, default_level: int,
+                      requester: Optional[str] = None) -> Applied:
+        """End the mute of every selected unit whose mute came from joining a
+        muted selection after *since_token*. Changes nothing, writes nothing
+        and publishes nothing when there is none."""
+        self._touched = True
+        now = self._clock()
+        with self._lock:
+            ended = [
+                u for u in self._selected_locked()
+                if u.desired.muted and u.desired.mute_joined and u.desired.mute_token > since_token
+            ]
+            if not ended:
+                return Applied(version=store().snapshot().version, outcome=None)
+            changed = [u for u in ended if self._restore_locked(u, cause, default_level, now)]
+            self._release_mute_hold_locked()
             future = self._queue_volume_writes_locked(changed)
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future)
@@ -895,6 +1001,7 @@ class OutputAuthority:
         self._touched = True
         with self._lock:
             self._session_active = bool(active)
+            self._items.put(("session", bool(active)))
             if active:
                 return
             self._silence_chosen = False
@@ -918,8 +1025,7 @@ class OutputAuthority:
             d = u.desired
             if not d.muted:
                 return
-            d.muted = False
-            d.remembered_level = None
+            self._clear_mute_locked(d)
             self._mute_held = False
             if u.reported is not None:
                 d.volume = u.reported.volume_percent
@@ -965,6 +1071,15 @@ class OutputAuthority:
             wait = min(wait, max(0.0, self._read_retry_at - now))
         if self._next_safety_read is not None:
             wait = min(wait, max(0.0, self._next_safety_read - now))
+        policy = self._policy
+        if policy is not None:
+            try:
+                deadline = policy.next_deadline()
+            except Exception:
+                LOG.exception("Output policy failed to give its next deadline")
+                deadline = None
+            if deadline is not None:
+                wait = min(wait, max(0.0, deadline - now))
         return max(0.05, wait)
 
     def step(self, now: Optional[float] = None, *, block: float = 0.0) -> bool:
@@ -972,10 +1087,15 @@ class OutputAuthority:
         or a read is due, run timers. The thread loops on it; tests call it
         directly. True when a stop was requested."""
         self._touched = True
+        clock = None
         if now is None:
             now = self._clock()
-        if self._take_items(block, now):
+            clock = self._clock
+        if self._take_items(block, now, clock):
             return True
+        if clock is not None:
+            # The wait for the first item may have taken a while.
+            now = clock()
         self._maintain_source(now)
         read_due = (self._dirty and now >= self._read_retry_at) or (
             self._next_safety_read is not None and now >= self._next_safety_read
@@ -983,9 +1103,16 @@ class OutputAuthority:
         if read_due:
             self._read_once(now)
         self._run_timers(now)
+        policy = self._policy
+        if policy is not None:
+            try:
+                policy.on_timer(now, store().snapshot().outputs)
+            except Exception:
+                LOG.exception("Output policy failed on a timer")
         return False
 
-    def _take_items(self, block: float, now: float) -> bool:
+    def _take_items(self, block: float, now: float,
+                    clock: Optional[Callable[[], float]] = None) -> bool:
         items = []
         try:
             if block > 0:
@@ -996,6 +1123,8 @@ class OutputAuthority:
                 items.append(self._items.get_nowait())
         except queue.Empty:
             pass
+        if clock is not None and block > 0:
+            now = clock()
         stop = False
         for kind, payload in items:
             if kind == "stop":
@@ -1008,7 +1137,18 @@ class OutputAuthority:
                 self._handle_disconnected(payload, now)
             elif kind == "event":
                 self._handle_event(payload, now)
+            elif kind == "session":
+                self._handle_session(payload)
         return stop
+
+    def _handle_session(self, active: bool) -> None:
+        policy = self._policy
+        if policy is None:
+            return
+        try:
+            policy.on_session(active)
+        except Exception:
+            LOG.exception("Output policy failed on a session edge")
 
     def _note_boot(self, boot: str) -> None:
         if self._boot_id is not None and boot != self._boot_id:
@@ -1020,7 +1160,13 @@ class OutputAuthority:
             self._note_boot(info.boot)
         else:
             self._boot_id = None
-        self._delivers_device_events = {"device_volume", "receiver_command"} <= set(info.capabilities)
+        delivers = {"device_volume", "receiver_command"} <= set(info.capabilities)
+        with self._lock:
+            changed = delivers != self._delivers_device_events
+            self._delivers_device_events = delivers
+            pending = self._publish_locked(Origin.BACKEND, None) if changed else None
+        if pending is not None:
+            pending.notify()
         self._dirty = True
 
     def _handle_disconnected(self, reason: str, now: float) -> None:
@@ -1075,6 +1221,8 @@ class OutputAuthority:
         self._source = new
         with self._lock:
             self._event_kind = new.kind
+            if new.kind != "unix_socket":
+                self._delivers_device_events = False
             pending = self._publish_locked(Origin.BACKEND, None)
         pending.notify()
         if old is not None:
@@ -1161,8 +1309,7 @@ class OutputAuthority:
     def _revert_locked(self, u: UnitState, now: float) -> None:
         d = u.desired
         d.selected = False
-        d.muted = False
-        d.remembered_level = None
+        self._clear_mute_locked(d)
         u.attempt = False
         u.retry_at = None
         u.start_pending_until = 0.0
@@ -1218,6 +1365,7 @@ class OutputAuthority:
                         remembered_level=None, cause=Origin.ADOPTED, changed_at=now,
                     ),
                     reported=row, seen_at=now,
+                    select_seq=1 if row.selected else 0,
                 )
                 self._units[uid] = u
             else:
@@ -1287,8 +1435,7 @@ class OutputAuthority:
         if d.muted:
             # A level above silence on a muted speaker is a change made on the
             # speaker; without device events nothing else can be told apart.
-            d.muted = False
-            d.remembered_level = None
+            self._clear_mute_locked(d)
             self._mute_held = False
         d.volume = r.volume_percent
         d.cause = Origin.DEVICE if now - u.device_volume_at < DEVICE_VOLUME_MARK_S else Origin.BACKEND
@@ -1378,8 +1525,7 @@ class OutputAuthority:
                     # A player without session reports deselected itself (a
                     # device pause, a failed start): follow it.
                     d.selected = False
-                    d.muted = False
-                    d.remembered_level = None
+                    self._clear_mute_locked(d)
                     d.cause = Origin.BACKEND
                     u.attempt = False
                     u.desired_seq += 1
@@ -1439,7 +1585,7 @@ class OutputAuthority:
         policy = self._policy
         if policy is not None:
             try:
-                policy.on_device_event(ev, store().snapshot().outputs)
+                policy.on_device_event(ev, store().snapshot().outputs, now)
             except Exception:
                 LOG.exception("Output policy failed on a device event")
 

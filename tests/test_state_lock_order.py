@@ -18,6 +18,7 @@ authority (20):
   8. No call to the player is made while the authority lock is held.
   9. No subscriber is called while either authority lock is held.
  10. submit() holds no lock when it calls a handler.
+ 11. The authority calls the policy with no authority lock held.
  12. The event source thread takes no authority lock; it only enqueues.
 """
 from __future__ import annotations
@@ -290,6 +291,8 @@ def _every_intent(a, merge):
     a.unmute_all(Origin.USER, default_level=50)
     a.mute("1", Origin.POLICY)
     a.unmute("1", Origin.POLICY, default_level=50)
+    a.mute("1", Origin.DEVICE)
+    a.unmute("1", Origin.DEVICE, default_level=0, only_token=1)
     a.deselect("3", Origin.USER)
     a.submit_pin("3", "1234")
     a.reapply_selected(recovery_volume=40)
@@ -381,6 +384,40 @@ def test_a_merge_notifies_after_the_authority_lock_is_released(authority):
     a.step(now=100.0)
     assert a.held_when_told and all(h == frozenset() for h in a.held_when_told)
     assert state.store().lock_violations == []
+
+
+def test_the_policy_is_told_with_no_authority_lock_held(authority):
+    from autostream_backend_events import DeviceEvent
+
+    a = authority
+    held = []
+
+    class Recorder:
+        def on_device_event(self, ev, outputs, now):
+            held.append(("event", lockcheck.held()))
+
+        def on_timer(self, now, outputs):
+            held.append(("timer", lockcheck.held()))
+
+        def next_deadline(self):
+            held.append(("deadline", lockcheck.held()))
+            return None
+
+        def on_session(self, active):
+            held.append(("session", lockcheck.held()))
+
+    a.set_policy(Recorder())
+    a.merge_for_tests([row(1, selected=True, volume_percent=40)], boot="b0")
+    a.note_session(True)
+    a.on_device_event(DeviceEvent("receiver_command", "1", None, "paus", None, 1, 1.0))
+    a.note_session(False)
+    a.step(now=100.0)
+    a._next_wait(100.0)
+    assert {kind for kind, _ in held} == {"event", "timer", "deadline", "session"}
+    assert [kind for kind, _ in held].count("session") == 2
+    assert all(h == frozenset() for _, h in held)
+    assert lockcheck.ORDER_VIOLATIONS == []
+    assert lockcheck.ACQUIRED_UNDER_STORE == []
 
 
 def test_the_event_thread_only_enqueues(authority):

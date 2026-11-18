@@ -611,3 +611,39 @@ def test_the_installer_installs_the_websocket_package_softly_after_requests():
     requests_at = text.index("apt_install --soft python3-requests")
     websocket_at = text.index("apt_install --soft python3-websocket")
     assert websocket_at > requests_at
+
+
+class TestParseEvent:
+    @staticmethod
+    def msg(**over):
+        base = {"type": "event", "seq": 3, "kind": "receiver_command", "verb": "paus",
+                "speaker": {"id": "1001", "member_id": "1002", "name": "Speaker A"}, "at_ms": 190511}
+        base.update(over)
+        return base
+
+    def test_a_receiver_command(self):
+        ev = be.parse_event(self.msg(), 12.5)
+        assert ev == be.DeviceEvent("receiver_command", "1001", "Speaker A", "paus", None, 190511, 12.5, "1002")
+
+    def test_a_device_volume_carries_its_value(self):
+        ev = be.parse_event(self.msg(kind="device_volume", verb="volumeup", value=45), 1.0)
+        assert (ev.kind, ev.verb, ev.value) == ("device_volume", "volumeup", "45")
+
+    def test_the_all_speakers_id_is_kept(self):
+        ev = be.parse_event(self.msg(kind="device_volume", verb="dmcp.volume", value="60",
+                                     speaker={"id": 0, "name": None}), 1.0)
+        assert ev.speaker_id == "0" and ev.speaker_name is None and ev.member_id is None
+
+    def test_the_member_id_must_be_a_string(self):
+        ev = be.parse_event(self.msg(speaker={"id": "1", "member_id": 7}), 1.0)
+        assert ev.member_id is None
+
+    @pytest.mark.parametrize("msg", [
+        {"kind": "receiver_command", "verb": "paus"},
+        {"kind": "receiver_command", "verb": "paus", "speaker": {"name": "x"}},
+        {"kind": "receiver_command", "speaker": {"id": "1"}},
+        {"kind": "something_new", "verb": "paus", "speaker": {"id": "1"}},
+        {"verb": "paus", "speaker": {"id": "1"}},
+    ])
+    def test_a_message_without_a_kind_speaker_or_verb_gives_none(self, msg):
+        assert be.parse_event(msg, 1.0) is None
