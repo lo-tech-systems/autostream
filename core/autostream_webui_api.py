@@ -90,12 +90,6 @@ from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, session_source_input_index, store
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_state.live import get_live_output_eq_status
-from autostream_core import (
-    reset_input_belt,
-    reset_input_bearing,
-    reset_input_stylus,
-    update_playback_input_config,
-)
 from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
 from autostream_appliance_models import (
     _dial_update_banner_text,
@@ -453,6 +447,14 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
     send_json(handler, 200, {"ok": True, "connected": connected, "inputs": inputs})
 
 
+def _submit_playback_config(input_index: int, **settings) -> None:
+    """Hand one input's playback settings to the tracker."""
+    reply = submit(Intent("input.playback_config.set", {"input": input_index, **settings},
+                          Origin.USER, "webui"))
+    if not reply.ok:
+        logging.debug("playback settings for input %s not applied: %s", input_index, reply.error)
+
+
 def send_service_config_json(handler, state: WebUIState, body: str) -> None:
     """POST /api/service/config -- auto-save one maintenance tracking field.
 
@@ -505,7 +507,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         # changed key. This avoids a second parse_config call on the same object.
         if section == "audio1":
             a = p.audio1
-            update_playback_input_config(
+            _submit_playback_config(
                 1,
                 enabled=p.audio1_enabled,
                 is_turntable=a.is_turntable,
@@ -519,7 +521,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
             )
         else:
             a = p.audio2
-            update_playback_input_config(
+            _submit_playback_config(
                 2,
                 enabled=p.audio2_enabled,
                 is_turntable=a.is_turntable,
@@ -601,10 +603,11 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     except Exception:
         logging.exception("send_service_reset_json: config load for display failed")
 
-    reset_fn = {"stylus": reset_input_stylus, "belt": reset_input_belt, "bearing": reset_input_bearing}[item]
-    result = reset_fn(input_index)
+    reply = submit(Intent("input.counters.reset", {"input": input_index, "item": item},
+                          Origin.USER, "webui"))
+    result = reply.result.get("reset")
 
-    if not result.applied:
+    if result is None or not result.applied:
         send_json(handler, 200, {"ok": False, "error": "Reset could not be applied"})
         return
 

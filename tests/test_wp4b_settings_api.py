@@ -107,11 +107,11 @@ def _make_live_monitor(input_index: int, **overrides) -> AudioMonitor:
 
 @contextmanager
 def _playback_hook():
-    """Stand in for the coordinator's playback tracker hook; yields the mock
-    that receives the input configuration."""
-    with patch("autostream_live_config._hooks") as hooks:
-        hooks.return_value.update_playback_input_config.return_value = True
-        yield hooks.return_value.update_playback_input_config
+    """Stand in for the playback tracker; yields the mock that receives the
+    input configuration."""
+    with patch("autostream_playback_tracking.update_playback_input_config",
+               return_value=True) as update:
+        yield update
 
 
 def _fake_connected(client):

@@ -23,6 +23,7 @@ import autostream_session as session
 import autostream_state as state
 from fake_store import FakeStore
 from track_id.models import TrackIdentificationSnapshot, state_status_text
+import autostream_playback_tracking as playback_tracking
 
 
 def _block(*, armed=False, replay_active=False, position=0.0):
@@ -235,7 +236,7 @@ def test_a_cycle_that_raises_still_closes_its_batch_and_delivers_one_change(tmp_
             raised.append(True)
             raise RuntimeError("cycle failed")
 
-    with patch.object(core, "_publish_playback", side_effect=failing_publish_playback):
+    with patch.object(playback_tracking, "publish_playback", side_effect=failing_publish_playback):
         with pytest.raises(RuntimeError, match="cycle failed"):
             _run_autostream_with_get_status_sequence(
                 tmp_path,

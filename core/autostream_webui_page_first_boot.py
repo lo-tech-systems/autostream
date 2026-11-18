@@ -34,7 +34,6 @@ from autostream_commissioning import (
     is_technically_complete,
     mark_commissioning_complete,
 )
-from autostream_core import update_playback_input_config
 from autostream_intents import Intent, Origin, submit
 from autostream_player_service import output_supported_config_modes
 from autostream_state import store
@@ -406,17 +405,23 @@ def handle_first_boot_finish_post(handler, state: WebUIState, auth, body: str) -
     # not block commissioning since the config is already persisted and will
     # be picked up on the coordinator's next start regardless.
     try:
-        update_playback_input_config(
-            1,
-            enabled=snap.audio1_enabled,
-            is_turntable=snap.audio1.is_turntable,
-            input_type=snap.audio1.input_type,
-            stylus_life_hours=snap.audio1.stylus_life_hours,
-            belt_life_hours=snap.audio1.belt_life_hours,
-            belt_life_years=snap.audio1.belt_life_years,
-            bearing_life_hours=snap.audio1.bearing_life_hours,
-            bearing_life_years=snap.audio1.bearing_life_years,
-        )
+        playback_reply = submit(Intent(
+            "input.playback_config.set",
+            {
+                "input": 1,
+                "enabled": snap.audio1_enabled,
+                "is_turntable": snap.audio1.is_turntable,
+                "input_type": snap.audio1.input_type,
+                "stylus_life_hours": snap.audio1.stylus_life_hours,
+                "belt_life_hours": snap.audio1.belt_life_hours,
+                "belt_life_years": snap.audio1.belt_life_years,
+                "bearing_life_hours": snap.audio1.bearing_life_hours,
+                "bearing_life_years": snap.audio1.bearing_life_years,
+            },
+            Origin.USER, "webui",
+        ))
+        if not playback_reply.ok:
+            logging.debug("playback settings for input 1 not applied: %s", playback_reply.error)
         submit(Intent("settings.reload", {"reason": "first boot"}, Origin.USER, "webui"))
     except Exception:
         logging.warning(

@@ -251,6 +251,34 @@ def _build_rows() -> dict:
             {Origin.USER, Origin.SYSTEM},
         ),
         _row(
+            "input.counters.reset",
+            {
+                "input": v.choice(1, 2, error="Input must be 1 or 2"),
+                "item": v.choice("stylus", "belt", "bearing", error="invalid_item"),
+            },
+            {"input", "item"},
+            {Origin.USER},
+        ),
+        _row(
+            "input.playback_config.set",
+            {
+                "input": v.choice(1, 2, error="Input must be 1 or 2"),
+                "enabled": v.boolean(error=_BAD_BODY),
+                "is_turntable": v.boolean(error=_BAD_BODY),
+                "input_type": v.text(error=_BAD_BODY, max_len=64),
+                "is_bluetooth": v.optional(v.boolean(error=_BAD_BODY)),
+                # The life values come from the parsed configuration, and the
+                # tracker normalises them.
+                "stylus_life_hours": v.anything(),
+                "belt_life_hours": v.optional(v.anything()),
+                "belt_life_years": v.optional(v.anything()),
+                "bearing_life_hours": v.optional(v.anything()),
+                "bearing_life_years": v.optional(v.anything()),
+            },
+            {"input", "enabled", "is_turntable", "input_type", "stylus_life_hours"},
+            {Origin.USER},
+        ),
+        _row(
             "log.level.set",
             {
                 # The log policy names what it does not support.

@@ -29,6 +29,7 @@ import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_logging as log_setup
 import autostream_announce as announce
+import autostream_playback_tracking as playback_tracking
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +338,7 @@ class TestOutputUsageStartup:
              patch.object(log_setup, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level"), \
              patch.object(_core_mod, "audit_static_system_facts"), \
-             patch.object(_core_mod, "_ensure_playback_tracker"), \
+             patch.object(playback_tracking, "ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
              patch.object(announce, "remove_avahi_playing_service",
                           side_effect=lambda: calls.append("remove-playing")), \
@@ -379,7 +380,7 @@ class TestStartupWifiWatcherForwarding:
              patch("autostream_watcher_client.forward_log_level_to_watcher",
                    return_value=True) as m_forward, \
              patch.object(_core_mod, "audit_static_system_facts"), \
-             patch.object(_core_mod, "_ensure_playback_tracker"), \
+             patch.object(playback_tracking, "ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
              patch.object(announce, "remove_avahi_playing_service"), \
              patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
@@ -412,7 +413,7 @@ class TestStartupWifiWatcherForwarding:
              patch("autostream_log_policy.apply_startup_log_level",
                    side_effect=RuntimeError("policy down")), \
              patch.object(_core_mod, "audit_static_system_facts"), \
-             patch.object(_core_mod, "_ensure_playback_tracker"), \
+             patch.object(playback_tracking, "ensure_playback_tracker"), \
              patch.object(_core_mod, "get_install_state", return_value={}), \
              patch.object(announce, "remove_avahi_playing_service"), \
              patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \

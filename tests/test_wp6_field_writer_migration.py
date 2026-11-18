@@ -212,7 +212,7 @@ class TestServiceConfigJsonViaStore:
         handler, sent = _make_handler()
         body = json.dumps({"field": "service_stylus_life_hours_input1", "value": "500"})
         with patch("autostream_webui_api.save_config") as m_save, \
-             patch("autostream_webui_api.update_playback_input_config"), \
+             patch("autostream_playback_tracking.update_playback_input_config"), \
              fake_playback_mock() as m_snap:
             m_snap.return_value = MagicMock(inputs={})
             send_service_config_json(handler, state, body)
@@ -230,7 +230,7 @@ class TestServiceConfigJsonViaStore:
         with patch("autostream_webui_api.save_config") as m_save, \
              patch("autostream_webui_api.load_config") as m_load, \
              patch("autostream_webui_api.parse_config") as m_parse, \
-             patch("autostream_webui_api.update_playback_input_config"), \
+             patch("autostream_playback_tracking.update_playback_input_config"), \
              fake_playback_mock() as m_snap:
             m_snap.return_value = MagicMock(inputs={})
             m_load.return_value = {

@@ -432,7 +432,7 @@ class TestFirstBootFinishPost:
              patch("autostream_webui_page_first_boot.is_technically_complete", return_value=True), \
              patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
              patch("autostream_webui_page_first_boot.mark_configured"), \
-             patch("autostream_webui_page_first_boot.update_playback_input_config") as m_update, \
+             patch("autostream_playback_tracking.update_playback_input_config") as m_update, \
              patch("autostream_runtime.request_config_reload") as m_reload:
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
@@ -576,7 +576,7 @@ class TestFirstBootFinishPost:
         with patch("autostream_webui_page_first_boot.get_system_hostname", return_value="autostream"), \
              patch("autostream_webui_page_first_boot.mark_commissioning_complete"), \
              patch("autostream_webui_page_first_boot.mark_configured"), \
-             patch("autostream_webui_page_first_boot.update_playback_input_config") as m_update, \
+             patch("autostream_playback_tracking.update_playback_input_config") as m_update, \
              patch("autostream_runtime.request_config_reload") as m_reload:
             store.save_now = MagicMock()
             handle_first_boot_finish_post(handler, state, auth, body)
@@ -609,7 +609,7 @@ class TestFirstBootFinishPost:
              patch("autostream_webui_page_first_boot.mark_commissioning_complete") as m_mark, \
              patch("autostream_webui_page_first_boot.mark_configured"), \
              patch(
-                 "autostream_webui_page_first_boot.update_playback_input_config",
+                 "autostream_playback_tracking.update_playback_input_config",
                  side_effect=RuntimeError("boom"),
              ):
             store.save_now = MagicMock()

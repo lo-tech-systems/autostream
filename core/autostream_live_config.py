@@ -28,6 +28,7 @@ from typing import Callable, Mapping, Optional
 
 import autostream_monitor_client as monitor_client
 import autostream_monitor_control as monitor_control
+import autostream_playback_tracking as playback_tracking
 import autostream_runtime as runtime
 from autostream_bluetooth_client import (
     bluetooth_installed,
@@ -107,7 +108,6 @@ class CoordinatorHooks:
     publish_inputs: Callable[[], None]
     apply_track_id_config_live: Callable[[str], None]
     apply_track_id_config_live_from_parsed: Callable[[object], None]
-    update_playback_input_config: Callable[..., object]
 
 
 _coordinator: Optional[CoordinatorHooks] = None
@@ -825,7 +825,7 @@ def _live_audio1_enabled(state: object, value: object) -> bool:
     settings = getattr(state, "settings", None)
     if isinstance(settings, _SettingsStore):
         snap = settings.snapshot()
-        _hooks().update_playback_input_config(
+        playback_tracking.update_playback_input_config(
             1,
             enabled=bool(value),
             is_turntable=snap.audio1.is_turntable,
@@ -846,7 +846,7 @@ def _live_audio2_enabled(state: object, value: object) -> bool:
     settings = getattr(state, "settings", None)
     if isinstance(settings, _SettingsStore):
         snap = settings.snapshot()
-        _hooks().update_playback_input_config(
+        playback_tracking.update_playback_input_config(
             2,
             enabled=bool(value),
             is_turntable=snap.audio2.is_turntable,
@@ -883,7 +883,7 @@ def _validate_silence_threshold_dbfs(value: object) -> float:
 def _sync_playback_input_config(snap, input_index: int) -> None:
     """Hand one input's current settings to the playback tracker."""
     a = snap.audio1 if input_index == 1 else snap.audio2
-    _hooks().update_playback_input_config(
+    playback_tracking.update_playback_input_config(
         input_index,
         enabled=snap.audio1_enabled if input_index == 1 else snap.audio2_enabled,
         is_turntable=a.is_turntable,
@@ -1063,7 +1063,7 @@ def _form_apply(intent: Intent, wait: float) -> Outcome:
             index = int(params["input"])
             audio = cfg.audio1 if index == 1 else cfg.audio2
             turntable = bool(params["is_turntable"])
-            results.append(bool(_hooks().update_playback_input_config(
+            results.append(bool(playback_tracking.update_playback_input_config(
                 index,
                 enabled=bool(params["enabled"]),
                 is_turntable=turntable,

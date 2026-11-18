@@ -41,6 +41,7 @@ import autostream_state as state
 from output_fakes import FakeBackend, FakeSource, group_row, row
 from autostream_state import SessionPart, SettingsPart
 from autostream_state.store import StateStore
+import autostream_playback_tracking as playback_tracking
 
 
 @pytest.fixture
@@ -176,11 +177,11 @@ def test_the_inputs_publish_lock_is_released_before_subscribers_run(tracked_sing
 def test_the_playback_publish_lock_is_released_before_subscribers_run(tracked_singleton, monkeypatch):
     import autostream_core as core
 
-    monkeypatch.setattr(core, "_playback_publish_lock", lockcheck.TrackedLock("playback"))
+    monkeypatch.setattr(playback_tracking, "_playback_publish_lock", lockcheck.TrackedLock("playback"))
     seen = []
     tracked_singleton.subscribe(lambda change: seen.append(lockcheck.held()))
-    monkeypatch.setattr(core, "_read_playback_snapshot", lambda: _playback_with_flag())
-    core._publish_playback()
+    monkeypatch.setattr(playback_tracking, "_read_playback_snapshot", lambda: _playback_with_flag())
+    playback_tracking.publish_playback()
     assert seen == [frozenset()]
     assert lockcheck.ACQUIRED_UNDER_STORE == []
     assert tracked_singleton.lock_violations == []

@@ -344,7 +344,7 @@ class TestPokeSites:
 
         handler = MagicMock()
         with (
-            patch("autostream_webui_api.reset_input_stylus",
+            patch("autostream_playback_tracking.reset_input_stylus",
                   return_value=SimpleNamespace(applied=True, persisted=True,
                                                last_service_at="stamp")),
             patch("autostream_webui_api._config_snapshot", side_effect=OSError("no config")),
@@ -360,7 +360,7 @@ class TestPokeSites:
         import autostream_webui_api as api
 
         with (
-            patch("autostream_webui_api.reset_input_stylus",
+            patch("autostream_playback_tracking.reset_input_stylus",
                   return_value=SimpleNamespace(applied=False, persisted=False,
                                                last_service_at=None)),
             patch("autostream_webui_api._config_snapshot", side_effect=OSError("no config")),
@@ -387,7 +387,7 @@ class TestPokeSites:
             patch("autostream_webui_api.load_config", return_value={}),
             patch("autostream_webui_api.parse_config", return_value=parsed),
             patch("autostream_webui_api.save_config"),
-            patch("autostream_webui_api.update_playback_input_config"),
+            patch("autostream_playback_tracking.update_playback_input_config"),
             patch("autostream_webui_api.classify_loopback_hw", return_value="x"),
             fake_playback(SimpleNamespace(inputs={})),
             patch("autostream_webui_api.send_json"),

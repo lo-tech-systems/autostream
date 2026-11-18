@@ -152,6 +152,7 @@ class TestRows:
             "settings.advertisement", "settings.auto_update",
             "backend.setting.set", "log.level.set",
             "receiver.pause", "receiver.play", "outputs.pause_off",
+            "input.counters.reset", "input.playback_config.set",
         }
 
     def test_every_row_has_a_handler_once_the_coordinator_is_imported(self):

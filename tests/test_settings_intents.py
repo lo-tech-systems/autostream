@@ -262,11 +262,10 @@ def test_the_steps_run_in_order_with_the_forms_values():
     order = []
     with patch("autostream_live_config.update_live_owntone_runtime",
                side_effect=lambda **kw: order.append(("owntone", kw["output_name"], kw["volume_percent"])) or True), \
-            patch("autostream_live_config._hooks") as hooks, \
+            patch("autostream_playback_tracking.update_playback_input_config",
+                  side_effect=lambda i, **kw: order.append(("input", i, kw["enabled"], kw["input_type"])) or True), \
             patch("autostream_live_config.update_live_silence_seconds",
                   side_effect=lambda s: order.append(("silence", s)) or True):
-        hooks.return_value.update_playback_input_config.side_effect = (
-            lambda i, **kw: order.append(("input", i, kw["enabled"], kw["input_type"])) or True)
         reply = _form(
             cfg,
             ("owntone_runtime", {"output_name": "Speaker A", "volume_percent": "35"}),

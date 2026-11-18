@@ -33,6 +33,7 @@ import autostream_runtime as runtime
 import autostream_monitor_client as monitor_client
 import autostream_logging as log_setup
 import autostream_announce as announce
+import autostream_playback_tracking as playback_tracking
 
 
 def _minimal_cfg(tmp_path: Path) -> Path:
@@ -90,7 +91,7 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
         stack.enter_context(patch.object(monitor_client, "MonitorClient", return_value=mock_client))
         stack.enter_context(patch.object(core, "_install_signal_handlers"))
         stack.enter_context(patch.object(core, "get_install_state", return_value={}))
-        stack.enter_context(patch.object(core, "_ensure_playback_tracker"))
+        stack.enter_context(patch.object(playback_tracking, "ensure_playback_tracker"))
         stack.enter_context(patch.object(core, "_start_output_usage_poller"))
         stack.enter_context(patch("autostream_log_policy.apply_startup_log_level"))
         stack.enter_context(patch.object(log_setup, "setup_logging"))

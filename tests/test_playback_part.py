@@ -19,6 +19,7 @@ import autostream_core as core
 import autostream_runtime as runtime
 import autostream_state as state
 from autostream_playback_stats import PlaybackInputConfig, PlaybackTracker
+import autostream_playback_tracking as playback_tracking
 
 
 class Clock:
@@ -58,20 +59,20 @@ def test_the_part_starts_as_the_empty_snapshot():
 
 def test_without_a_tracker_the_published_snapshot_is_empty():
     runtime._playback_tracker = None
-    core._publish_playback()
+    playback_tracking.publish_playback()
     assert playback() == state.empty_playback_snapshot()
 
 
 def test_a_tracker_that_fails_publishes_the_empty_snapshot(tmp_path):
     tracker = make_tracker(tmp_path)
     with patch.object(tracker, "snapshot", side_effect=RuntimeError("boom")):
-        core._publish_playback()
+        playback_tracking.publish_playback()
     assert playback() == state.empty_playback_snapshot()
 
 
 def test_publishing_reflects_the_tracker(tmp_path):
     make_tracker(tmp_path)
-    core._publish_playback()
+    playback_tracking.publish_playback()
     assert set(playback().inputs) == {1}
     assert playback().inputs[1].enabled is True
 
@@ -88,9 +89,9 @@ def test_ensuring_the_tracker_publishes_its_configuration(tmp_path):
             belt_life_hours=0, belt_life_years=0, bearing_life_hours=0,
             bearing_life_years=0, input_type="line"),
     )
-    with patch("autostream_core.PlaybackTracker",
+    with patch("autostream_playback_tracking.PlaybackTracker",
                lambda: PlaybackTracker(stats_path=tmp_path / "ps.json")):
-        core._ensure_playback_tracker(cfg)
+        playback_tracking.ensure_playback_tracker(cfg)
     assert playback().inputs[1].enabled is True
     assert playback().inputs[2].enabled is False
 
@@ -103,18 +104,18 @@ def test_a_counter_reset_publishes_before_it_returns(tmp_path):
     clock.now += 7200
     tracker.on_wear_stopped(1)
     tracker.on_playback_stopped(1)
-    core._publish_playback()
+    playback_tracking.publish_playback()
     assert playback().inputs[1].stylus_overdue is True
-    result = core.reset_input_stylus(1)
+    result = playback_tracking.reset_input_stylus(1)
     assert result.applied is True
     assert playback().inputs[1].stylus_overdue is False
 
 
 def test_a_config_update_publishes_before_it_returns(tmp_path):
     make_tracker(tmp_path)
-    core._publish_playback()
+    playback_tracking.publish_playback()
     assert playback().inputs[1].enabled is True
-    assert core.update_playback_input_config(
+    assert playback_tracking.update_playback_input_config(
         1, enabled=False, is_turntable=True, input_type="turntable",
         stylus_life_hours=500) is True
     assert playback().inputs[1].enabled is False
@@ -124,21 +125,21 @@ def test_the_digest_moves_on_a_flag_or_a_whole_minute_only(tmp_path):
     clock = Clock()
     tracker = make_tracker(tmp_path, clock)
     tracker.on_playback_started(1)
-    core._publish_playback()
+    playback_tracking.publish_playback()
     seen = collect()
     clock.now += 20
-    core._publish_playback()
+    playback_tracking.publish_playback()
     assert seen == []
     assert playback().inputs[1].total_playback_seconds >= 19
     clock.now += 60
-    core._publish_playback()
+    playback_tracking.publish_playback()
     assert [c.parts for c in seen] == [frozenset({"playback"})]
 
 
 def test_a_failed_config_update_without_a_tracker_publishes_nothing():
     runtime._playback_tracker = None
     seen = collect()
-    assert core.update_playback_input_config(
+    assert playback_tracking.update_playback_input_config(
         1, enabled=True, is_turntable=False, input_type="line",
         stylus_life_hours=0) is False
     assert seen == []

@@ -32,6 +32,7 @@ import autostream_announce as announce
 import autostream_logging as log_setup
 import autostream_monitor_client as monitor_client
 import autostream_monitor_control as monitor_control
+import autostream_playback_tracking as playback_tracking
 import autostream_repeat
 import autostream_runtime as runtime
 import autostream_session
@@ -78,14 +79,7 @@ from autostream_player_service import (
     sync_monitor_args_for_audio_path,
 )
 from autostream_rpi import is_high_performance_pi
-from autostream_playback_stats import (
-    DEFAULT_FLUSH_INTERVAL_SECONDS,
-    DEFAULT_STYLUS_LIFE_HOURS,
-    MaintenanceResetResult,
-    PlaybackInputConfig,
-    PlaybackSnapshot,
-    PlaybackTracker,
-)
+from autostream_playback_stats import DEFAULT_FLUSH_INTERVAL_SECONDS
 from autostream_sysutils import (
     audit_static_system_facts,
     get_install_state,
@@ -240,6 +234,7 @@ _HANDLER_MODULES = (
     "autostream_monitor_control",
     "autostream_output_intents",
     "autostream_output_policy",
+    "autostream_playback_tracking",
 )
 
 
@@ -255,7 +250,6 @@ def _bind_intent_handlers() -> None:
         publish_inputs=lambda: _publish_inputs(),
         apply_track_id_config_live=lambda config_path: apply_track_id_config_live(config_path),
         apply_track_id_config_live_from_parsed=lambda cfg: apply_track_id_config_live_from_parsed(cfg),
-        update_playback_input_config=lambda *args, **kwargs: update_playback_input_config(*args, **kwargs),
     ))
 
 
@@ -283,137 +277,6 @@ def _publish_settings_generation(generation: int) -> None:
     _settings_writer.update(
         lambda cur: autostream_state.SettingsPart(max(cur.generation, generation))
     ).notify()
-
-
-def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
-    return {
-        1: PlaybackInputConfig.normalized(
-            enabled=cfg.audio1_enabled,
-            is_turntable=cfg.audio1.is_turntable,
-            is_bluetooth=classify_loopback_hw(cfg.audio1.capture_device) == "capture",
-            stylus_life_hours=cfg.audio1.stylus_life_hours,
-            belt_life_hours=cfg.audio1.belt_life_hours,
-            belt_life_years=cfg.audio1.belt_life_years,
-            bearing_life_hours=cfg.audio1.bearing_life_hours,
-            bearing_life_years=cfg.audio1.bearing_life_years,
-            input_type=cfg.audio1.input_type,
-        ),
-        2: PlaybackInputConfig.normalized(
-            enabled=cfg.audio2_enabled,
-            is_turntable=cfg.audio2.is_turntable,
-            is_bluetooth=classify_loopback_hw(cfg.audio2.capture_device) == "capture",
-            stylus_life_hours=cfg.audio2.stylus_life_hours,
-            belt_life_hours=cfg.audio2.belt_life_hours,
-            belt_life_years=cfg.audio2.belt_life_years,
-            bearing_life_hours=cfg.audio2.bearing_life_hours,
-            bearing_life_years=cfg.audio2.bearing_life_years,
-            input_type=cfg.audio2.input_type,
-        ),
-    }
-
-
-def _ensure_playback_tracker(cfg) -> Optional[PlaybackTracker]:
-    try:
-        if runtime._playback_tracker is None:
-            runtime._playback_tracker = PlaybackTracker()
-        runtime._playback_tracker.replace_input_configs(_playback_input_configs_from_config(cfg))
-    except Exception as e:
-        logging.warning("Playback tracker unavailable: %s", e)
-        runtime._playback_tracker = None
-
-    _publish_playback()
-    return runtime._playback_tracker
-
-
-_playback_writer = autostream_state.store().claim("playback", "autostream_core")
-# Held across read-and-publish, so of two concurrent publishers the one that
-# publishes last also read last.
-_playback_publish_lock = threading.Lock()
-
-
-def _read_playback_snapshot() -> PlaybackSnapshot:
-    tracker = runtime._playback_tracker
-    if tracker is None:
-        return autostream_state.empty_playback_snapshot()
-    try:
-        return tracker.snapshot()
-    except Exception as e:
-        logging.warning("Could not read playback snapshot: %s", e)
-        return autostream_state.empty_playback_snapshot()
-
-
-def _publish_playback() -> None:
-    """Publish the tracker's current hours and maintenance flags as the
-    playback part. Readers see the value as of the last publish: the tracker
-    accumulates seconds between poll cycles, so it is at most one cycle old."""
-    with _playback_publish_lock:
-        pending = _playback_writer.publish(_read_playback_snapshot())
-    pending.notify()
-
-
-def _reset_input(input_index: int, method_name: str, item_name: str) -> MaintenanceResetResult:
-    tracker = runtime._playback_tracker
-    if tracker is None:
-        return MaintenanceResetResult(applied=False, persisted=False)
-    try:
-        result = getattr(tracker, method_name)(int(input_index))
-    except Exception as e:
-        logging.warning("Could not reset %s for input %s: %s", item_name, input_index, e)
-        return MaintenanceResetResult(applied=False, persisted=False)
-    _publish_playback()
-    return result
-
-
-def reset_input_stylus(input_index: int) -> MaintenanceResetResult:
-    return _reset_input(input_index, "reset_stylus", "stylus")
-
-
-def reset_input_belt(input_index: int) -> MaintenanceResetResult:
-    return _reset_input(input_index, "reset_belt", "belt")
-
-
-def reset_input_bearing(input_index: int) -> MaintenanceResetResult:
-    return _reset_input(input_index, "reset_bearing", "bearing")
-
-
-def update_playback_input_config(
-    input_index: int,
-    *,
-    enabled: bool,
-    is_turntable: bool,
-    input_type: str,
-    is_bluetooth: bool = False,
-    stylus_life_hours: int,
-    belt_life_hours: int = 0,
-    belt_life_years: int = 0,
-    bearing_life_hours: int = 0,
-    bearing_life_years: int = 0,
-) -> bool:
-    tracker = runtime._playback_tracker
-    if tracker is None:
-        return False
-    try:
-        tracker.update_input_config(
-            int(input_index),
-            enabled=enabled,
-            is_turntable=is_turntable,
-            is_bluetooth=is_bluetooth,
-            stylus_life_hours=stylus_life_hours,
-            belt_life_hours=belt_life_hours,
-            belt_life_years=belt_life_years,
-            bearing_life_hours=bearing_life_hours,
-            bearing_life_years=bearing_life_years,
-            input_type=input_type,
-        )
-        _publish_playback()
-        return True
-    except Exception as e:
-        logging.warning(
-            "Could not update playback config for input %s: %s",
-            input_index,
-            e,
-        )
-        return False
 
 
 def any_monitor_capturing() -> bool:
@@ -3258,7 +3121,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     except Exception:
         logging.warning("apply_startup_log_level: import or apply failed; continuing")
     audit_static_system_facts()
-    _ensure_playback_tracker(cfg)
+    playback_tracking.ensure_playback_tracker(cfg)
     _install_state = get_install_state(Path("/var/lib/autostream/install-state.env"))
     version = _install_state.get("AUTOSTREAM_RELEASE_TAG", "")
     # Always logged, whatever the level (see log_lifecycle()): a log bundle
@@ -3367,7 +3230,7 @@ def _await_startup(
 
         cfg = settings.snapshot()
         fifo_path = cfg.general.fifo_path
-        _ensure_playback_tracker(cfg)
+        playback_tracking.ensure_playback_tracker(cfg)
 
         if not client.connect():
             logging.warning(
@@ -3701,7 +3564,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # includes the silence timeout used to detect playback end.
                 for m in monitors:
                     m._sync_playback_tracker_state(tick_snapshot.repeat_status)
-                _publish_playback()
+                playback_tracking.publish_playback()
 
                 # Per-input duties only (track-ID scheduling + logging); see
                 # _on_capture_started/_on_capture_stopped docstrings. Fire
@@ -3874,7 +3737,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 m.stop()
             if tracker is not None:
                 tracker.save()
-            _publish_playback()
+            playback_tracking.publish_playback()
             with runtime._monitors_lock:
                 runtime.all_monitors.clear()
             _publish_inputs()
