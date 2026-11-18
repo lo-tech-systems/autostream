@@ -21,7 +21,6 @@ import unicodedata
 from dataclasses import dataclass, replace
 from typing import Callable, Iterable
 
-from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN
 from dial_capabilities import appliance_capabilities, txt_capabilities
 from dial_mdns import PlayingTarget, appliance_display_name
 from dial_network import NetworkView
@@ -29,6 +28,11 @@ from dial_repeat_store import RepeatRecord
 from dial_sdhealth import SdHealthView
 from dial_update_watch import UpdateView
 from dial_volume import select_volume_target
+
+# What this dial believes about its authorisation on one appliance.
+AUTH_UNKNOWN = "unknown"
+AUTH_AUTHORIZED = "authorized"
+AUTH_UNAUTHORIZED = "unauthorized"
 
 # How often the outputs list is refetched while someone is watching it.
 OUTPUTS_REFRESH_S = 2.0
@@ -168,7 +172,7 @@ class ApplianceState:
     port: int
     playing: bool             # in this tick's playing set (incl. the accepted-replay bridge)
     playing_since: float      # 0.0 when idle
-    auth: str                 # dial_auth AUTH_*
+    auth: str                 # AUTH_* above
     dial_status: bool
     dial_outputs: bool
     dial_eq: bool

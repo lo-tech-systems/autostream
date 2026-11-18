@@ -21,9 +21,8 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Mapping
 
-from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
-    DERIVED_EQ_IDS, awaiting_pin, outputs_tap, pin_capable_outputs, pin_window_end, six_band,
+    AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, DERIVED_EQ_IDS, awaiting_pin, outputs_tap, pin_capable_outputs, pin_window_end, six_band,
     title_fallback,
 )
 from dial_warning_text import appliance_warning_key

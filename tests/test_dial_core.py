@@ -244,7 +244,7 @@ class TestThreadSafety:
 # Appliance model: focus, now-playing, accepted replay, roster and rows
 # ---------------------------------------------------------------------------
 
-from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN  # noqa: E402
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN  # noqa: E402
 from dial_mdns import PlayingTarget, RosterEntry  # noqa: E402
 from dial_repeat_store import RepeatRecord  # noqa: E402
 

@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 import pytest
 
 import dial_repeat_store as drs
-from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core import FOCUS_PENDING_GRACE_S, DialCore
 from dial_core_state import ActionResult
 from dial_mdns import RosterEntry

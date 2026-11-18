@@ -347,3 +347,9 @@ class TestRecordRefusal:
 
     def test_empty_id_never_reports(self, auth_map):
         assert auth_map.record_refusal("") is False
+
+
+def test_auth_constants_agree_with_core_state():
+    import dial_core_state as cs
+    assert (AUTH_UNKNOWN, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED) == (
+        cs.AUTH_UNKNOWN, cs.AUTH_AUTHORIZED, cs.AUTH_UNAUTHORIZED)

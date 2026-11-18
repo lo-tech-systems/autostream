@@ -20,7 +20,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
+from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
     ApplianceState, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqBand, EqState,
     FocusState, NowPlaying, OutputRow, OutputsState, PowerState, StartFailureNotice,

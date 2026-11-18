@@ -27,9 +27,6 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from dial_auth import (
-    AUTH_AUTHORIZED,
-    AUTH_UNAUTHORIZED,
-    AUTH_UNKNOWN,
     OUTCOME_AUTHORIZED,
     OUTCOME_TRANSIENT,
     OUTCOME_UNAUTHORIZED,
@@ -45,7 +42,7 @@ except ImportError:
 import dial_capabilities
 from dial_capabilities import Capabilities, appliance_capabilities  # noqa: F401
 from dial_core_state import (
-    DERIVED_EQ_IDS, EQ_LIMIT_DB, Artwork, EqBand, OutputRow, Selection, artwork_key, six_band,
+    AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, AUTH_UNKNOWN, DERIVED_EQ_IDS, EQ_LIMIT_DB, Artwork, EqBand, OutputRow, Selection, artwork_key, six_band,
     walk_fallback, walk_step,
 )
 from dial_mdns import appliance_display_name

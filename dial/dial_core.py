@@ -55,11 +55,11 @@ import dial_capabilities
 import dial_core_poll
 from dial_appliance_fetch import _FetchTarget
 from dial_appliance_fetch import enqueue as _enqueue_appliance_fetch
-from dial_auth import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTCOME_UNAUTHORIZED, auth_map
+from dial_auth import OUTCOME_UNAUTHORIZED, auth_map
 from dial_capabilities import CAPABILITIES_ENDPOINT_PROTO, appliance_capabilities
 from dial_config import SCOPE_ALL
 from dial_core_state import (
-    ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
+    ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
     DERIVED_EQ_IDS, EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
     ActionResult, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqState, FocusState,
     FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN, START_FAILURE_HOLD_S,

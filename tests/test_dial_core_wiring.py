@@ -12,7 +12,7 @@ import pytest
 
 import dial_core
 import dial_repeat_store as drs
-from dial_auth import AUTH_AUTHORIZED
+from dial_core_state import AUTH_AUTHORIZED
 from dial_core import ADDRESS_REFRESH_S, EFFECTS_BACKLOG_MAX, DialCore, RepeatEffect, SourceEffects
 from dial_core_state import NowPlaying
 from dial_mdns import RosterEntry

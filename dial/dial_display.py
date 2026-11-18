@@ -38,7 +38,6 @@ from dataclasses import dataclass
 
 from PIL import Image, ImageChops
 
-from dial_auth import AUTH_UNAUTHORIZED
 from dial_display_compositor import (
     DEFAULT_MARK,
     PLAY_GLYPH,
@@ -73,7 +72,7 @@ from dial_display_profiles import (
 )
 from dial_display_windows import bounding_box, frame_words, plan_windows
 from dial_core_state import (
-    DERIVED_EQ_IDS, PIN_ERRORS, PLAYING_TEXT, EqState, OutputRow, PickerRow, SelectorRow,
+    AUTH_UNAUTHORIZED, DERIVED_EQ_IDS, PIN_ERRORS, PLAYING_TEXT, EqState, OutputRow, PickerRow, SelectorRow,
     awaiting_title, dots_active, title_fallback,
     eq_gain, selector_rows,
 )
