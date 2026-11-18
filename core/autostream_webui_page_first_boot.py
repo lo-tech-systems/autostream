@@ -37,7 +37,7 @@ from autostream_settings import SettingsView
 from autostream_state import store
 from autostream_sysutils import get_system_hostname, set_system_hostname
 from autostream_webui_api import send_json
-from autostream_webui_assets import AUTOSAVE_JS, BANNER_HTML
+from autostream_webui_assets import logo_banner_html
 from autostream_webui_common import (
     _config_snapshot,
     build_page_html,
@@ -114,7 +114,7 @@ def send_first_boot_owntone_page(
     error_html = f"<p class='error'>{html.escape(error)}</p>" if error else ""
 
     body_html = f"""
-{BANNER_HTML}
+{logo_banner_html()}
 <h1>Initial Setup (1 of 2)</h1>
 <h2 style="font-size:1rem;color:#666;font-weight:normal;margin-top:-0.5rem;">OwnTone Output Selection</h2>
 {error_html}
@@ -197,7 +197,7 @@ def send_first_boot_appliance_page(
     error_html = f"<p class='error'>{html.escape(error)}</p>" if error else ""
 
     body_html = f"""
-{BANNER_HTML}
+{logo_banner_html()}
 <h1>Initial Setup (2 of 2)</h1>
 <h2 style="font-size:1rem;color:#666;font-weight:normal;margin-top:-0.5rem;">Appliance Configuration</h2>
 {error_html}

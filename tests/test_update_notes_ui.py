@@ -82,16 +82,16 @@ def _updates_iife(src: str) -> str:
 class TestInfoModalEmbedded:
     """The shared info modal must be embedded exactly once in the setup page.
 
-    INFO_MODAL_HTML / INFO_MODAL_SCRIPT are imported constants from
-    autostream_webui_assets, not literal text in the page-setup module, so
-    these are asserted against the fully rendered page rather than raw
-    source. The import itself is covered separately below.
+    The modal markup is an imported constant from autostream_webui_assets and
+    its script is read from a static file, not literal text in the page-setup
+    module, so these are asserted against the fully rendered page rather than
+    raw source. The import itself is covered separately below.
     """
 
     def test_page_setup_imports_info_modal_constants(self):
         src = _setup_page_src()
         assert "INFO_MODAL_HTML" in src
-        assert "INFO_MODAL_SCRIPT" in src
+        assert "page/info_modal.js" in src
 
     def test_rendered_page_has_info_modal_exactly_once(self):
         html_out = _render_setup_page()

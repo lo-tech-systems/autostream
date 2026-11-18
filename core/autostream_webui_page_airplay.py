@@ -26,22 +26,15 @@ from autostream_webui_components import output_card_html, slider_html
 import autostream_webui_static as static
 from autostream_webui_assets import (
     A2HS_PROMPT_HTML,
-    A2HS_SCRIPT,
-    APPLIANCE_SELECTOR_CSS,
-    BANNER_DISMISS_SCRIPT,
     BANNER_LOGO_HTML,
-    COMMON_MODAL_CSS,
     HOME_CARDS_SCRIPT,
     ICON_BLUETOOTH,
     ICON_CD,
     ICON_LINE_LEVEL,
     ICON_TURNTABLE,
     INFO_MODAL_HTML,
-    INFO_MODAL_SCRIPT,
-    PIN_MODAL_CSS,
 )
 from autostream_webui_common import (
-    CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
     build_appliance_selector_html,
     build_page_html,
@@ -81,7 +74,8 @@ _PIN_MODAL_NOTE_CSS = (
     "  #pinModal .modal-note{margin:.6rem 0 0 0;font-size:.95rem;color:var(--color-text-muted);}\n"
     "  #pinModal .modal-note[hidden]{display:none;}"
 )
-_HOME_PAGE_EXTRA_CSS = f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{_PIN_MODAL_NOTE_CSS}\n{APPLIANCE_SELECTOR_CSS}\n{_VU_STEREO_CSS}\n{_NP_ART_CSS}"
+_HOME_PAGE_STYLE_FILES = ("page/modal.css", "page/appliance_selector.css")
+_HOME_PAGE_EXTRA_CSS = f"{_PIN_MODAL_NOTE_CSS}\n{_VU_STEREO_CSS}\n{_NP_ART_CSS}"
 
 
 _REMOTE_HOME_SCRIPT = """<script>
@@ -484,7 +478,7 @@ def send_airplay_page(
         f"window.__PIN_PROMPT_FALLBACK='Enter PIN shown on your device';"
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>"
-    ) + CSRF_RECOVERY_SCRIPT
+    ) + static.script_tag("page/csrf_recovery.js")
 
     _extra_css = _HOME_PAGE_EXTRA_CSS
     _poll_js_src = static.script_tag("poll.js")
@@ -492,7 +486,7 @@ def send_airplay_page(
     _head_extra = f"""{csrf_meta}
 {_poll_js_src}
 {_render_fragments_js_src}
-""" + HOME_CARDS_SCRIPT + INFO_MODAL_SCRIPT + f"""
+""" + HOME_CARDS_SCRIPT + static.script_tag("page/appliance_selector.js") + static.script_tag("page/info_modal.js") + f"""
       <script>
         function getOutputIdKey(outputs) {{
           return JSON.stringify(outputs.map(function(o) {{
@@ -777,10 +771,11 @@ def send_airplay_page(
     html_body = build_page_html(
         "autostream",
         _body_html,
+        style_files=_HOME_PAGE_STYLE_FILES,
         extra_css=_extra_css,
         head_extra=_head_extra,
         body_prefix=_body_prefix,
-        body_suffix=A2HS_SCRIPT + BANNER_DISMISS_SCRIPT,
+        body_suffix=static.script_tag("page/a2hs.js") + static.script_tag("page/banner_dismiss.js"),
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="home",
@@ -869,10 +864,11 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
         f"window.__OUTPUTS_EMPTY_TOLERANCE_MS={int(OUTPUTS_EMPTY_TOLERANCE_SECONDS * 1000)};"
         f"window.__CONTROL_OTHER_APPLIANCES={json.dumps(effective_control)};"
         f"</script>\n"
-        + CSRF_RECOVERY_SCRIPT
+        + static.script_tag("page/csrf_recovery.js")
         + static.script_tag("render_fragments.js") + "\n"
         + HOME_CARDS_SCRIPT
-        + INFO_MODAL_SCRIPT
+        + static.script_tag("page/appliance_selector.js")
+        + static.script_tag("page/info_modal.js")
         + _REMOTE_HOME_SCRIPT
         + _NAVIGATE_SCRIPT
     )
@@ -965,10 +961,11 @@ def send_remote_home_page(handler, state: WebUIState, appliance_id: str) -> None
     html_body = build_page_html(
         f"autostream — {html.escape(_remote_hostname)}",
         _body_html,
+        style_files=_HOME_PAGE_STYLE_FILES,
         extra_css=_extra_css,
         head_extra=_head_extra,
         body_prefix=_body_prefix,
-        body_suffix=A2HS_SCRIPT + BANNER_DISMISS_SCRIPT,
+        body_suffix=static.script_tag("page/a2hs.js") + static.script_tag("page/banner_dismiss.js"),
         active_tab="home",
         dark_mode=dark_mode,
         remote_id=appliance_id,

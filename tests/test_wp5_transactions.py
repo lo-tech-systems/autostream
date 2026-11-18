@@ -11,7 +11,7 @@ Tests cover:
     admin command does not commit; bool validation
   - POST /api/settings/save: flushes store; missing store returns error
   - handle_factory_reset_post: discards dirty store before resetting
-  - settingsTransact exported from AUTOSAVE_JS
+  - settingsTransact exported from the autosave script
   - Setup page wires hostname modal/advertise/auto-update controls to transaction endpoints
 """
 from __future__ import annotations
@@ -24,6 +24,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 
 import pytest
+from _source_text import static_text
 from fake_store import fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -507,32 +508,32 @@ class TestFactoryResetDiscardsDirty:
 
 
 # ---------------------------------------------------------------------------
-# AUTOSAVE_JS exports settingsTransact
+# The autosave script exports settingsTransact
 # ---------------------------------------------------------------------------
 
 class TestAutosaveJsTransact:
     def test_settings_transact_exported(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "settingsTransact" in AUTOSAVE_JS
 
     def test_settings_transact_uses_window(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "window.settingsTransact" in AUTOSAVE_JS
 
     def test_settings_transact_handles_redirect_url(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "redirect_url" in AUTOSAVE_JS
 
     def test_settings_transact_sets_applying_status(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "Applying" in AUTOSAVE_JS
 
     def test_settings_transact_has_on_success_callback(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "onSuccess" in AUTOSAVE_JS
 
     def test_settings_transact_has_on_error_callback(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "onError" in AUTOSAVE_JS
 
 

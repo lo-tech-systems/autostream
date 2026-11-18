@@ -20,6 +20,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import static_text
 from fake_store import fake_outputs_result
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -627,46 +628,47 @@ class TestNormalisation:
 
 class TestAutosaveJs:
     def test_autosave_js_non_empty(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert AUTOSAVE_JS.strip()
 
-    def test_autosave_js_has_script_tags(self):
-        from autostream_webui_assets import AUTOSAVE_JS
-        assert "<script>" in AUTOSAVE_JS
-        assert "</script>" in AUTOSAVE_JS
+    def test_autosave_js_is_bare_script_text(self):
+        """The file holds the script body only; the pages link it with a tag."""
+        AUTOSAVE_JS = static_text("page/autosave.js")
+        assert "<script>" not in AUTOSAVE_JS
+        assert "</script>" not in AUTOSAVE_JS
 
     def test_autosave_js_exports_save_field(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "settingsSaveField" in AUTOSAVE_JS
 
     def test_autosave_js_exports_debounced(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "settingsSaveFieldDebounced" in AUTOSAVE_JS
 
     def test_autosave_js_exports_flush(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "flushPendingToServer" in AUTOSAVE_JS
 
     def test_autosave_js_has_beforeunload(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "beforeunload" in AUTOSAVE_JS
 
     def test_autosave_js_uses_iife(self):
         """Controller must be wrapped in an IIFE to avoid polluting global scope."""
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "(function()" in AUTOSAVE_JS or "(function (" in AUTOSAVE_JS
 
     def test_autosave_js_targets_settings_endpoint(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "/api/settings" in AUTOSAVE_JS
 
     def test_autosave_js_balanced_braces(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert AUTOSAVE_JS.count("{") == AUTOSAVE_JS.count("}")
 
     def test_autosave_js_shows_live_failure_message_on_live_false(self):
         """When the server returns ok:true but live:false, JS must show a live-failure message."""
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "d.live === false" in AUTOSAVE_JS, (
             "Autosave JS must check d.live to distinguish save-only from live success"
         )
@@ -675,16 +677,16 @@ class TestAutosaveJs:
         )
 
     def test_autosave_js_balanced_parens(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert AUTOSAVE_JS.count("(") == AUTOSAVE_JS.count(")")
 
     def test_autosave_js_sends_csrf_header(self):
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "X-CSRF-Token" in AUTOSAVE_JS
 
     def test_autosave_js_uses_window_csrf(self):
         """Must read CSRF token from window.__CSRF set by the csrf_meta head tag."""
-        from autostream_webui_assets import AUTOSAVE_JS
+        AUTOSAVE_JS = static_text("page/autosave.js")
         assert "window.__CSRF" in AUTOSAVE_JS
 
 

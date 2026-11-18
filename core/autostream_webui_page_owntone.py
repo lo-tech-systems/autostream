@@ -45,8 +45,9 @@ from autostream_player_service import output_supported_config_modes
 from autostream_state import store
 from autostream_state.live import get_capabilities, get_setting, list_outputs
 from autostream_sysutils import run_admin_cmd
-from autostream_webui_common import CSRF_RECOVERY_SCRIPT, _config_snapshot, build_page_html, build_top_banner_html, locked_load_config, send_html
-from autostream_webui_assets import AUTOSAVE_JS, COMMON_MODAL_CSS, RESTART_MODAL_HTML
+import autostream_webui_static as static
+from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html, locked_load_config, send_html
+from autostream_webui_assets import RESTART_MODAL_HTML
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
 
@@ -529,7 +530,7 @@ def send_owntone_setup_page(
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
-    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + CSRF_RECOVERY_SCRIPT
+    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + static.script_tag("page/csrf_recovery.js")
 
     page_heading_html = "<h1>Owntone Setup</h1>"
 
@@ -677,7 +678,7 @@ def send_owntone_setup_page(
         + f"</div>"
     )
     _body_suffix = f"""\
-{AUTOSAVE_JS}
+{static.script_tag("page/autosave.js")}
 <script>
   const liveEnabled = true;
   function onShowToggle(i, checked) {{
@@ -706,7 +707,7 @@ def send_owntone_setup_page(
     html_body = build_page_html(
         "Owntone Setup",
         _body_html,
-        extra_css=COMMON_MODAL_CSS,
+        style_files=("page/modal.css",),
         body_prefix=RESTART_MODAL_HTML,
         lic_html=lic_html,
         lic_spacer=lic_spacer,

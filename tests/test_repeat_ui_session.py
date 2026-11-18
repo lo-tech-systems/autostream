@@ -32,6 +32,7 @@ from contextlib import ExitStack
 from unittest.mock import patch
 
 import pytest
+from _source_text import linked_static, page_scripts, static_text
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -705,15 +706,13 @@ class TestRemoteHomeDelegatesToSharedNowPlayingRenderer:
         # Regression guard for the info-modal extraction: both pages must
         # embed exactly one copy of the modal markup and the function that
         # drives it, sourced from the same shared constants.
-        from autostream_webui_assets import COMMON_MODAL_CSS, INFO_MODAL_SCRIPT
-
         assert home_html.count('id="infoModal"') == 1
         assert remote_home_html.count('id="infoModal"') == 1
-        assert "function showInfoModal" in home_html
-        assert "function showInfoModal" in remote_home_html
-        assert INFO_MODAL_SCRIPT in home_html
-        assert INFO_MODAL_SCRIPT in remote_home_html
-        assert ".modal-bd-scroll" in COMMON_MODAL_CSS
+        assert "function showInfoModal" in page_scripts(home_html)
+        assert "function showInfoModal" in page_scripts(remote_home_html)
+        assert "page/info_modal.js" in linked_static(home_html)
+        assert "page/info_modal.js" in linked_static(remote_home_html)
+        assert ".modal-bd-scroll" in static_text("page/modal.css")
 
 
 # ---------------------------------------------------------------------------

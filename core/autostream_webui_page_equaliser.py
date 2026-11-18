@@ -26,9 +26,8 @@ from autostream_state.live import get_live_monitor_output_rate
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
-from autostream_webui_assets import APPLIANCE_SELECTOR_CSS, REFRESH_APPLIANCE_SELECTOR_SCRIPT
+import autostream_webui_static as static
 from autostream_webui_common import (
-    CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
     build_appliance_selector_html,
     build_page_html,
@@ -599,7 +598,7 @@ function updateSelectorFromAppliances(appliances,currentId,currentPage){
   if(nameEl&&cur) nameEl.textContent=String(cur.hostname||'autostream');
 }
 
-""" + REFRESH_APPLIANCE_SELECTOR_SCRIPT
+"""
 
 
 # -----------------------------------------------------------------------------
@@ -661,12 +660,13 @@ def send_equaliser_page(
         f"{_equaliser_curve_js(_curve_fs())}"
         f"{_EQUALISER_JS}"
         f"</script>"
+        + static.script_tag("page/appliance_selector.js")
     )
 
     page = build_page_html(
         "Equaliser",
         body_html,
-        extra_css=APPLIANCE_SELECTOR_CSS,
+        style_files=("page/appliance_selector.css",),
         head_extra=_head_extra,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
@@ -680,6 +680,10 @@ def send_equaliser_page(
 # Remote Equaliser JS — plain string (no f-string), references window.__* vars
 # set in head_extra of send_remote_equaliser_page.
 # -----------------------------------------------------------------------------
+
+# Stands where the shared appliance-selector script is linked: the page replaces it
+# with that script's tag when it renders.
+_SELECTOR_SCRIPT_MARK = "<!--appliance-selector-script-->"
 
 _REMOTE_EQUALISER_SCRIPT = """<script>
 var _EQ_BAND_KEYS=['peq1_db','peq2_db','peq3_db','peq4_db','peq5_db','peq6_db'];
@@ -984,7 +988,7 @@ function updateSelectorFromAppliances(appliances,currentId,currentPage){
   var cur=appliances.find(function(a){return a.id===currentId;});
   if(nameEl&&cur)nameEl.textContent=String(cur.hostname||'autostream');
 }
-""" + REFRESH_APPLIANCE_SELECTOR_SCRIPT + """
+</script>""" + _SELECTOR_SCRIPT_MARK + """<script>
 window.addEventListener('DOMContentLoaded',function(){
   initApplianceSelector();refreshApplianceSelector();
   setInterval(function(){if(!document.hidden)refreshApplianceSelector();},15000);
@@ -1054,8 +1058,8 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
         f"window.__LOCAL_ID='{html.escape(_local_id)}';"
         f"window.__SELECTOR_CURRENT_PAGE='equaliser';"
         f"</script>\n"
-        + CSRF_RECOVERY_SCRIPT
-        + _REMOTE_EQUALISER_SCRIPT
+        + static.script_tag("page/csrf_recovery.js")
+        + _REMOTE_EQUALISER_SCRIPT.replace(_SELECTOR_SCRIPT_MARK, static.script_tag("page/appliance_selector.js"))
     )
 
     page_header = (
@@ -1088,7 +1092,7 @@ def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) ->
     page = build_page_html(
         f"Equaliser — {html.escape(_remote_hostname)}",
         body_html,
-        extra_css=APPLIANCE_SELECTOR_CSS,
+        style_files=("page/appliance_selector.css",),
         head_extra=_head_extra,
         active_tab="equaliser",
         dark_mode=dark_mode,

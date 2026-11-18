@@ -48,7 +48,7 @@ from autostream_sysutils import (
 
 from autostream_webui_assets import (
     LICENSE_BANNER_CSS,
-    BANNER_HTML,
+    logo_banner_html,
 )
 
 from autostream_auth import AuthManager, parse_cookie_header, FLASH_COOKIE_NAME
@@ -1478,7 +1478,7 @@ def start_webui_background(
         config_path=config_path,
         state_path=STATE_PATH,
         style_link=style_link,
-        banner_html=BANNER_HTML,
+        banner_html=logo_banner_html(),
         nav_html=build_nav_bar_html("setup"),
         title="autostream",
     )

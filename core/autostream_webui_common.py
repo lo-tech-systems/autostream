@@ -32,7 +32,7 @@ from autostream_config import (
 from autostream_playback_stats import InputPlaybackSnapshot, make_fallback_input_snapshot
 from autostream_rpi import get_psu_warning_text, cpu_is_licensed, LICENSE_CHECK
 from autostream_webui_assets import (
-    BANNER_HTML,
+    logo_banner_html,
     NAV_ICON_ABOUT,
     NAV_ICON_EQUALISER,
     NAV_ICON_HOME,
@@ -159,7 +159,7 @@ def send_hostname_changed_page(
     safe_url = html.escape(redirect_url)
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     body_html = f"""
-{BANNER_HTML}
+{logo_banner_html()}
 <h1>Hostname changed</h1>
 <div class="card">
   <p>The hostname change is being applied.</p>
@@ -534,6 +534,7 @@ def build_page_html(
     body_html: str,
     *,
     extra_css: str = "",
+    style_files: tuple = (),
     head_extra: str = "",
     body_prefix: str = "",
     body_suffix: str = "",
@@ -551,8 +552,10 @@ def build_page_html(
     ----------
     title       : page <title> (plain text, will be HTML-escaped)
     body_html   : content placed inside <div class="container"> after the
-                  opening tag; callers are responsible for including BANNER_HTML
+                  opening tag; callers are responsible for including the logo banner
                   where needed
+    style_files : paths under nginx/static (for example "page/modal.css") linked
+                  after theme.css and before extra_css, in the order given
     extra_css   : CSS appended after the shared theme.css <link> inside a small
                   inline <style> block, for genuinely page-specific rules
     head_extra  : raw HTML injected after </style> and before </head>
@@ -560,7 +563,7 @@ def build_page_html(
     body_prefix : raw HTML injected after <body> and before <div class="container">
                   (e.g. modal dialogs, overlay divs)
     body_suffix : raw HTML injected after the closing </div> of .container and
-                  before the nav bar (e.g. scripts, A2HS_SCRIPT)
+                  before the nav bar (e.g. scripts)
     lic_html    : from build_top_banner_html() -- the fixed flash/PSU banner
     lic_spacer  : from build_top_banner_html() -- the spacer div
     active_tab   : one of 'home', 'equaliser', 'setup', 'service', 'about'
@@ -574,7 +577,7 @@ def build_page_html(
     # static file rather than inlined here — see that file and the
     # `location /static/` block in system/nginx/autostream-nginx.conf. The version
     # query string cache-busts on every release without needing a shorter max-age.
-    style_link = static.style_tag("theme.css")
+    style_link = static.style_tag("theme.css") + "".join(static.style_tag(f) for f in style_files)
     extra_style = f'<style>{extra_css.strip()}</style>' if extra_css.strip() else ""
     nav = build_nav_bar_html(active_tab, service_warn=service_warn, remote_id=remote_id) if show_nav else ""
     body_cls = ' class="has-bottom-nav"' if show_nav else ""
@@ -760,36 +763,3 @@ def render_license_md(text: str) -> str:
     close_ul()
     flush_para()
     return "\n".join(out)
-
-
-# ── Stale-CSRF transparent recovery ──────────────────────────────────────────
-#
-# Browser sessions live in memory, so an appliance restart invalidates every
-# open tab's session cookie and embedded CSRF token. The first state-changing
-# API request from such a tab gets HTTP 403 {"error": "csrf_stale"} carrying a
-# freshly minted token (see the CSRF branch in autostream_webui.py's POST
-# dispatch); this script wraps window.fetch once per page so that exact case
-# is retried transparently with the new token instead of the user's click
-# silently doing nothing. Any other 403 (or a second consecutive failure)
-# passes through untouched. Emit directly after the window.__CSRF assignment
-# on every page that makes API calls.
-CSRF_RECOVERY_SCRIPT = (
-    "<script>(function(){"
-    "if(window.__csrfRecoveryInstalled)return;window.__csrfRecoveryInstalled=true;"
-    "var _f=window.fetch.bind(window);"
-    "function hget(h,k){if(!h)return undefined;return(typeof h.get==='function')?h.get(k):h[k];}"
-    "function hcopy(h,k,v){if(typeof h.get==='function'){var n=new Headers(h);n.set(k,v);return n;}"
-    "var n={};for(var key in h){n[key]=h[key];}n[k]=v;return n;}"
-    "window.fetch=function(input,init){"
-    "return _f(input,init).then(function(resp){"
-    "if(resp.status!==403||!init||!hget(init.headers,'X-CSRF-Token'))return resp;"
-    "return resp.clone().json().then(function(data){"
-    "if(!data||data.error!=='csrf_stale'||!data.csrf_token)return resp;"
-    "window.__CSRF=data.csrf_token;"
-    "var retry=Object.assign({},init);"
-    "retry.headers=hcopy(init.headers,'X-CSRF-Token',data.csrf_token);"
-    "return _f(input,retry);"
-    "},function(){return resp;});"
-    "});};"
-    "})();</script>"
-)

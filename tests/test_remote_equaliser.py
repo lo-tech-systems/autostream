@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import linked_static, static_text
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -300,10 +301,7 @@ class TestRemoteEqualiserPageContent:
 
     def test_remote_eq_band_slider_handler_survives_python_string_escaping(self):
         """The browser-facing script must contain escaped quotes in generated slider handlers."""
-        # _REMOTE_EQUALISER_SCRIPT is now a concatenation of a
-        # literal string and the shared REFRESH_APPLIANCE_SELECTOR_SCRIPT
-        # constant, so it's no longer a single AST string literal -- read the
-        # actual runtime value instead of static ast.literal_eval.
+        # Read the runtime value of the script constant, not its source text.
         import autostream_webui_page_equaliser as _eq_mod
         script = _eq_mod._REMOTE_EQUALISER_SCRIPT
 
@@ -468,4 +466,5 @@ class TestEqualiserCurveSampleRate:
 
         html = b"".join(written_chunks).decode("utf-8", errors="replace")
         assert f"var _EQ_FS        = {_CURVE_FS_FALLBACK};" in html
-        assert "nav-tab-disabled" in html
+        assert "page/appliance_selector.css" in linked_static(html)
+        assert "nav-tab-disabled" in static_text("page/appliance_selector.css")

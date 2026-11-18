@@ -5,6 +5,8 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 Web assets (e.g. CSS) to support the autostream web front-end.
 """
 
+import autostream_webui_static as static
+
 BANNER_LOGO_HTML = """
   <div class="banner-logo-wrap">
     <a href="/" title="autostream Home" aria-label="autostream Home" class="banner-logo-link">
@@ -14,68 +16,21 @@ BANNER_LOGO_HTML = """
   </div>
 """
 
-BANNER_DISMISS_SCRIPT = """
-<script>
-document.addEventListener("DOMContentLoaded", () => {
-  const banner = document.getElementById("green-banner");
-  if (!banner) return;
 
-  const spacer = document.getElementById("green-banner-spacer");
-
-  window.setTimeout(() => {
-    // Measure actual rendered height (includes iOS safe-area padding).
-    const h = Math.ceil(banner.getBoundingClientRect().height);
-
-    // Tell CSS how far to translate.
-    banner.style.setProperty("--flash-rollup-y", h + "px");
-
-    // Trigger animations
-    banner.classList.add("flash-rollup");
-    if (spacer) spacer.classList.add("flash-spacer-hidden");
-
-    // After animation completes, remove from layout completely.
-    window.setTimeout(() => {
-      banner.style.display = "none";
-      if (spacer) spacer.style.display = "none";
-    }, 400);
-  }, 5000);
-});
-</script>
-"""
-
-# Backward-compatible alias used by all pages except the home page.
-BANNER_HTML = BANNER_LOGO_HTML + BANNER_DISMISS_SCRIPT
+def logo_banner_html() -> str:
+    """The logo banner markup followed by the tag of the script that rolls the
+    flash banner up. A function because the tag carries the file's content hash,
+    read on first use."""
+    return BANNER_LOGO_HTML + static.script_tag("page/banner_dismiss.js")
 
 
 LICENSE_BANNER_CSS = ""
 
 VIEWPORT_META = '<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">'
 
-COMMON_MODAL_CSS = """
-  .modal-overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.45);z-index:9999;padding:1.25rem;--modal-primary-bg:var(--color-btn-bg);--modal-primary-text:#fff;--modal-secondary-bg:var(--color-surface-muted);--modal-secondary-text:var(--color-text);}
-  .modal-overlay.show{display:flex;}
-  [data-theme="dark"] .modal-overlay{--modal-primary-bg:var(--color-btn-bg);--modal-primary-text:#fff;--modal-secondary-bg:var(--color-surface-muted);--modal-secondary-text:var(--color-text-strong);}
-  .modal-panel{width:min(var(--modal-width,22rem),100%);background:var(--modal-bg,var(--color-surface));border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.25);overflow:hidden;}
-  .modal-hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;color:var(--modal-title-color,var(--color-text-strong));}
-  .modal-bd{padding:1rem;}
-  .modal-bd p{margin:0 0 .75rem 0;}
-  .modal-bd input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid var(--color-border-code);border-radius:12px;outline:none;}
-  .modal-ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}
-  .modal-btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
-  .modal-btn:disabled{opacity:0.65;cursor:not-allowed;box-shadow:none;}
-  .modal-btn-primary{background:var(--modal-primary-bg);color:var(--modal-primary-text);}
-  .modal-btn-secondary{background:var(--modal-secondary-bg);color:var(--modal-secondary-text);}
-  .modal-btn-danger{background:var(--color-status-danger);color:#fff;}
-  .modal-bd-scroll{max-height:min(60vh,30rem);overflow-y:auto;}
-"""
-
-PIN_MODAL_CSS = """
-  #pinModal .modal-panel{--modal-width:22rem;}
-"""
-
 # Single-OK-button info modal, shared by every page that needs to surface a
-# dismissable notice. Pair with INFO_MODAL_SCRIPT, which defines the
-# showInfoModal(title, message, isHtml) function driving this markup.
+# dismissable notice. Pair with nginx/static/page/info_modal.js, which
+# defines the showInfoModal(title, message, isHtml) function driving this markup.
 INFO_MODAL_HTML = """
 <div id="infoModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="infoModalTitle">
   <div class="panel modal-panel">
@@ -89,44 +44,8 @@ INFO_MODAL_HTML = """
   </div>
 </div>"""
 
-INFO_MODAL_SCRIPT = """
-<script>
-  function showInfoModal(title, message, isHtml){
-    return new Promise((resolve) => {
-      const m = document.getElementById('infoModal');
-      const titleEl = document.getElementById('infoModalTitle');
-      const msgEl = document.getElementById('infoModalMessage');
-      const btnOk = document.getElementById('infoModalOk');
-      if (!m || !titleEl || !msgEl || !btnOk) {
-        // Fallback to native alert if our modal is missing for any reason.
-        // HTML messages are not safe/meaningful in a plain alert, so only
-        // the title is shown in that case.
-        window.alert(isHtml ? title : (title + ': ' + message));
-        resolve();
-        return;
-      }
-      titleEl.textContent = title;
-      if (isHtml) { msgEl.innerHTML = message; } else { msgEl.textContent = message; }
-      m.classList.add('show');
-
-      const cleanup = () => {
-        m.classList.remove('show');
-        btnOk.onclick = null;
-        document.removeEventListener('keydown', onKey);
-        resolve();
-      };
-      const onKey = (ev) => {
-        if (ev.key === 'Escape') { ev.preventDefault(); cleanup(); }
-      };
-      btnOk.onclick = () => cleanup();
-      document.addEventListener('keydown', onKey);
-    });
-  }
-</script>
-"""
-
-# Buttonless modal shown by settingsTransact (see AUTOSAVE_JS below) while a
-# restart-required setting's daemon restart is in flight. No footer/buttons —
+# Buttonless modal shown by settingsTransact (see nginx/static/page/autosave.js)
+# while a restart-required setting's daemon restart is in flight. No footer/buttons —
 # it dismisses itself once /api/owntone/ready reports the restart finished.
 RESTART_MODAL_HTML = """
 <div id="restartModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="restartModalTitle">
@@ -137,20 +56,6 @@ RESTART_MODAL_HTML = """
     </div>
   </div>
 </div>"""
-
-APPLIANCE_SELECTOR_CSS = """
-  .appliance-selector{position:relative;display:inline-flex;align-items:center;}
-  .appliance-selector-btn{display:inline-flex;align-items:center;gap:4px;padding:0.22rem 0.6rem;border-radius:999px;background:var(--color-surface-raised);border:1px solid var(--color-border);color:var(--color-text-secondary);font-size:0.82rem;font-weight:500;cursor:pointer;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis;}
-  .appliance-selector-btn:hover,.appliance-selector-btn:focus{background:var(--color-surface-pressed);outline:2px solid var(--color-accent);outline-offset:1px;}
-  .appliance-selector-chevron{font-size:0.7rem;opacity:0.6;flex-shrink:0;pointer-events:none;}
-  .appliance-selector-dropdown{position:absolute;right:0;top:calc(100% + 4px);min-width:190px;background:var(--color-surface);border:1px solid var(--color-border);border-radius:10px;box-shadow:0 4px 16px rgba(0,0,0,0.12);z-index:100;overflow:hidden;padding:4px 0;}
-  .appliance-selector-option{display:block;padding:0.5rem 0.9rem;font-size:0.9rem;color:var(--color-text);text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .appliance-selector-option:hover,.appliance-selector-option:focus{background:var(--color-surface-pressed);outline:none;}
-  .appliance-selector-option-active{color:var(--color-accent);}
-  .appliance-selector-divider{height:1px;background:var(--color-border);margin:4px 0;}
-  .nav-tab-disabled{opacity:0.38;pointer-events:none;cursor:default;color:var(--color-nav-inactive);}
-"""
-
 
 # Card/now-playing rendering shared by the local Home page
 # (send_airplay_page) and the remote-control Home shell
@@ -180,33 +85,6 @@ APPLIANCE_SELECTOR_CSS = """
 # (local: onStatusPollData(); remote: renderHomeState()) with the polled
 # status/home dict so the repeat pill (#repeat-btn, rendered by the page
 # itself -- hidden by default on the remote shell) stays in sync.
-
-# Shared appliance-selector refresh. Previously defined identically three
-# times (here, and twice more in autostream_webui_page_equaliser.py for the
-# local/remote Equaliser pages) -- now the one definition, spliced into each
-# page's existing <script> block.
-# Each page sets a different "current appliance" fallback global today
-# (Home: window.__SELECTOR_CURRENT_ID; local Equaliser: window.__LOCAL_ID;
-# remote Equaliser: window.__REMOTE_AID) -- all three are consulted here so
-# this single definition preserves every page's prior fallback behaviour.
-# window.__SELECTOR_CURRENT_PAGE (defaulting to 'home') likewise covers
-# Equaliser's prior 'equaliser' default. updateSelectorFromAppliances(),
-# which this calls, is still defined per-page (identically) alongside it.
-REFRESH_APPLIANCE_SELECTOR_SCRIPT = """  function refreshApplianceSelector(){
-    fetch('/api/appliances',{cache:'no-store'})
-      .then(function(r){return r.json();})
-      .then(function(data){
-        if(!data||!data.ok||!Array.isArray(data.appliances)) return;
-        var el=document.getElementById('appliance-selector');
-        var fallbackId=window.__SELECTOR_CURRENT_ID||window.__LOCAL_ID||window.__REMOTE_AID||'';
-        var fallbackPage=window.__SELECTOR_CURRENT_PAGE||'home';
-        var currentId=el?(el.getAttribute('data-current-id')||fallbackId):fallbackId;
-        var currentPage=el?(el.getAttribute('data-current-page')||fallbackPage):fallbackPage;
-        updateSelectorFromAppliances(data.appliances,currentId,currentPage);
-      })
-      .catch(function(){});
-  }
-"""
 
 HOME_CARDS_SCRIPT = """
 <script>
@@ -1174,7 +1052,7 @@ HOME_CARDS_SCRIPT = """
     var cur=appliances.find(function(a){return a.id===currentId;});
     if(nameEl&&cur) nameEl.textContent=String(cur.hostname||'autostream');
   }
-""" + REFRESH_APPLIANCE_SELECTOR_SCRIPT + """</script>
+</script>
 """
 
 
@@ -1189,74 +1067,6 @@ A2HS_PROMPT_HTML = """
       <button type="button" id="a2hs-close">Got it</button>
     </div>
   </div>
-"""
-
-A2HS_SCRIPT = """
-<script>
-(function () {
-  function setupA2HS() {
-    // Detect iOS
-    var ua = window.navigator.userAgent || "";
-    var isIOS = /iphone|ipad|ipod/i.test(ua);
-
-    // Detect if already running as a Home Screen app / standalone
-    var isInStandalone =
-      (window.navigator.standalone === true) ||
-      (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
-
-    // Debug log
-    try {
-      console.log("A2HS check:", {
-        ua: ua,
-        isIOS: isIOS,
-        isInStandalone: isInStandalone
-      });
-    } catch (e) {}
-
-    // If not iOS, or already installed as an "app", don't show
-    if (!isIOS || isInStandalone) {
-      return;
-    }
-
-    // --- Once-per-day logic ---
-    var now = Date.now();
-    var lastShown = 0;
-    try {
-      lastShown = parseInt(localStorage.getItem("a2hs-last-shown") || "0", 10);
-    } catch (e) {}
-
-    var ONE_DAY = 24 * 60 * 60 * 1000;
-
-    if (lastShown && (now - lastShown) < ONE_DAY) {
-      return; // Already shown within 24 hours
-    }
-
-    var prompt = document.getElementById("a2hs-prompt");
-    var closeBtn = document.getElementById("a2hs-close");
-
-    if (!prompt || !closeBtn) {
-      return;
-    }
-
-    prompt.style.display = "block";
-
-    try {
-      localStorage.setItem("a2hs-last-shown", String(now));
-    } catch (e) {}
-
-    closeBtn.addEventListener("click", function () {
-      prompt.style.display = "none";
-    });
-  }
-
-  // Run after DOM is ready so #a2hs-prompt exists even if script is in <head>
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", setupA2HS);
-  } else {
-    setupA2HS();
-  }
-})();
-</script>
 """
 
 # ── Bottom nav icons (Feather-style inline SVG) ──────────────────────────────
@@ -1546,7 +1356,6 @@ SERVICE_CSS = (
     " line-height: 1.25;"
     " }\n"
     ".service-divider { border: none; border-top: 1px solid var(--color-border-nav); margin: 0.4rem 0; }\n"
-    + COMMON_MODAL_CSS
 )
 
 # Plain string — no Python substitutions. CSRF token is read from the DOM.
@@ -1766,206 +1575,4 @@ function doServiceReset(item, idx) {
     }).catch(function() { if (btn) btn.disabled = false; });
   });
 }
-"""
-
-# ---------------------------------------------------------------------------
-# Shared autosave controller for POST /api/settings
-# ---------------------------------------------------------------------------
-# Requires window.__CSRF to be set before this script runs (done by csrf_meta
-# injected in head_extra on every page that uses it).
-# Exports:
-#   settingsSaveField(field, value)                  — send immediately (checkbox/select)
-#   settingsSaveFieldDebounced(field, value, ms)      — debounced send (text/number/range)
-#   flushPendingToServer() → Promise                  — drain before navigation
-#   settingsTransact(url, payload, opts)              — privileged/external transaction
-# ---------------------------------------------------------------------------
-AUTOSAVE_JS = """
-<script>
-(function() {
-  var _csrf = window.__CSRF || '';
-  var _statusEl = null;
-  var _pendingTimers = {};    // field -> {timer, value}
-  var _pendingRequests = {};  // field -> {ctrl, promise}
-
-  function _getStatus() {
-    if (!_statusEl) _statusEl = document.getElementById('autosave-status');
-    return _statusEl;
-  }
-
-  function _setStatus(text) {
-    var el = _getStatus();
-    if (el) el.textContent = text;
-  }
-
-  function _hasPending() {
-    return Object.keys(_pendingTimers).length > 0 || Object.keys(_pendingRequests).length > 0;
-  }
-
-  function _send(field, value) {
-    var prev = _pendingRequests[field];
-    if (prev) { try { prev.ctrl.abort(); } catch(_) {} }
-    var ctrl = new AbortController();
-    _setStatus('Saving\\u2026');
-    var p = fetch('/api/settings', {
-      method: 'POST',
-      credentials: 'same-origin',
-      signal: ctrl.signal,
-      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrf},
-      body: JSON.stringify({field: field, value: value})
-    }).then(function(r) { return r.json(); }).then(function(d) {
-      if (_pendingRequests[field] && _pendingRequests[field].ctrl === ctrl) {
-        delete _pendingRequests[field];
-      }
-      if (d.ok) {
-        var statusMsg = (d.live === false) ? 'Saved (could not apply live)' : 'Saved';
-        if (!_hasPending()) _setStatus(statusMsg);
-        setTimeout(function() {
-          var el = _getStatus();
-          if (el && (el.textContent === 'Saved' || el.textContent === 'Saved (could not apply live)')) el.textContent = '';
-        }, 2000);
-      } else {
-        _setStatus('Could not save \\u2014 ' + (d.error || 'error'));
-      }
-    }).catch(function(e) {
-      if (_pendingRequests[field] && _pendingRequests[field].ctrl === ctrl) {
-        delete _pendingRequests[field];
-      }
-      if (e.name !== 'AbortError') _setStatus('Could not save');
-    });
-    _pendingRequests[field] = {ctrl: ctrl, promise: p};
-    return p;
-  }
-
-  window.settingsSaveField = function(field, value) {
-    _send(field, value);
-  };
-
-  window.settingsSaveFieldDebounced = function(field, value, ms) {
-    var entry = _pendingTimers[field];
-    if (entry) clearTimeout(entry.timer);
-    _pendingTimers[field] = {
-      timer: setTimeout(function() {
-        delete _pendingTimers[field];
-        _send(field, value);
-      }, ms || 500),
-      value: value
-    };
-  };
-
-  window.flushPendingToServer = function() {
-    var promises = [];
-    Object.keys(_pendingTimers).forEach(function(field) {
-      var entry = _pendingTimers[field];
-      if (entry) {
-        clearTimeout(entry.timer);
-        var val = entry.value;
-        delete _pendingTimers[field];
-        promises.push(_send(field, val));
-      }
-    });
-    Object.keys(_pendingRequests).forEach(function(field) {
-      var entry = _pendingRequests[field];
-      if (entry && entry.promise) promises.push(entry.promise);
-    });
-    return Promise.all(promises);
-  };
-
-  // Buttonless "Applying setting..." modal for restart-required autosaves. The
-  // restart itself is coalesced 0.75s after the save response, so an
-  // immediate ready-poll can see the daemon still up with no restart in
-  // progress -- dismissal therefore waits for either an observed in_progress
-  // state or a minimum elapsed window before trusting "not in progress" as
-  // "finished". A hard timeout gives up and reports failure via the status
-  // line instead of polling forever.
-  var _restartPollTimer = null;
-  var _restartHardTimer = null;
-  var _restartSawInProgress = false;
-  var _restartStartedAt = 0;
-  var _restartLastMessage = '';
-
-  function _restartModalEl() {
-    return document.getElementById('restartModal');
-  }
-
-  function _restartDismiss(statusMessage) {
-    var m = _restartModalEl();
-    if (m) m.classList.remove('show');
-    if (_restartPollTimer) { clearTimeout(_restartPollTimer); _restartPollTimer = null; }
-    if (_restartHardTimer) { clearTimeout(_restartHardTimer); _restartHardTimer = null; }
-    if (statusMessage) _setStatus(statusMessage);
-  }
-
-  function _restartPoll() {
-    fetch('/api/owntone/ready', {cache: 'no-store'}).then(function(r) { return r.json(); }).then(function(j) {
-      var restart = j.restart || {};
-      if (restart.message) _restartLastMessage = restart.message;
-      if (restart.in_progress) _restartSawInProgress = true;
-      var elapsed = Date.now() - _restartStartedAt;
-      if (j.ok && !restart.in_progress && (_restartSawInProgress || elapsed >= 3000)) {
-        // A restart that ran and failed leaves the daemon up but the change
-        // unapplied -- surface its message rather than dismissing silently.
-        if (_restartSawInProgress && restart.ok === false) {
-          _restartDismiss(_restartLastMessage || 'OwnTone restart failed');
-        } else {
-          _restartDismiss();
-        }
-        return;
-      }
-      _restartPollTimer = setTimeout(_restartPoll, 1000);
-    }).catch(function() {
-      _restartPollTimer = setTimeout(_restartPoll, 1000);
-    });
-  }
-
-  function _restartBegin() {
-    var m = _restartModalEl();
-    if (!m) return;  // page has no restart modal -- degrade to no-op
-    m.classList.add('show');
-    _restartSawInProgress = false;
-    _restartStartedAt = Date.now();
-    _restartLastMessage = '';
-    if (_restartPollTimer) clearTimeout(_restartPollTimer);
-    if (_restartHardTimer) clearTimeout(_restartHardTimer);
-    _restartPollTimer = setTimeout(_restartPoll, 1000);
-    _restartHardTimer = setTimeout(function() {
-      _restartDismiss(_restartLastMessage || 'OwnTone restart timed out');
-    }, 30000);
-  }
-
-  window.settingsTransact = function(url, payload, opts) {
-    opts = opts || {};
-    _setStatus('Applying\\u2026');
-    fetch(url, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': _csrf},
-      body: JSON.stringify(payload)
-    }).then(function(r) { return r.json(); }).then(function(d) {
-      if (!d.ok) {
-        _setStatus('Could not apply \\u2014 ' + (d.error || 'error'));
-        if (opts.onError) opts.onError(d);
-        return;
-      }
-      _setStatus('Saved');
-      if (d.restart_required) { _restartBegin(); }
-      setTimeout(function() {
-        var el = _getStatus();
-        if (el && el.textContent === 'Saved') el.textContent = '';
-      }, 2000);
-      if (d.redirect_url) { window.location.href = d.redirect_url; return; }
-      if (opts.onSuccess) opts.onSuccess(d);
-    }).catch(function(e) {
-      _setStatus('Could not apply');
-      if (opts.onError) opts.onError({error: String(e)});
-    });
-  };
-
-  window.addEventListener('beforeunload', function(e) {
-    if (_hasPending()) {
-      e.preventDefault();
-      e.returnValue = '';
-    }
-  });
-})();
-</script>
 """

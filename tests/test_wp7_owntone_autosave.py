@@ -27,6 +27,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 from autostream_settings import SettingsStore
+from _source_text import page_scripts, static_text
 from fake_store import fake_outputs_result
 
 
@@ -1496,11 +1497,11 @@ class TestRestartModal:
         assert "<button" not in RESTART_MODAL_HTML
 
     def test_settings_transact_gates_on_restart_required(self):
-        from autostream_webui_assets import AUTOSAVE_JS
-        assert "d.restart_required" in AUTOSAVE_JS
-        assert "/api/owntone/ready" in AUTOSAVE_JS
+        script = static_text("page/autosave.js")
+        assert "d.restart_required" in script
+        assert "/api/owntone/ready" in script
 
     def test_rendered_page_contains_modal_and_hook(self, tmp_path):
         html = TestOwntoneSetupPage()._render_page(str(tmp_path))
         assert 'id="restartModal"' in html
-        assert "d.restart_required" in html
+        assert "d.restart_required" in page_scripts(html)

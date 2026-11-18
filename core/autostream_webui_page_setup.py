@@ -54,19 +54,13 @@ from autostream_sysutils import (
     sdcard_health_state,
 )
 from autostream_webui_assets import (
-    A2HS_SCRIPT,
-    AUTOSAVE_JS,
-    COMMON_MODAL_CSS,
     DIAL_LOCKED_SECTION_CSS,
     ICON_PADLOCK_LOCKED,
     ICON_PADLOCK_UNLOCKED,
     INFO_MODAL_HTML,
-    INFO_MODAL_SCRIPT,
-    PIN_MODAL_CSS,
 )
 import autostream_webui_static as static
 from autostream_webui_common import (
-    CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
     _set_flash_cookie,
     build_page_html,
@@ -78,6 +72,17 @@ from autostream_webui_common import (
 from autostream_webui_api import send_json
 from autostream_webui_components import toggle_html
 from autostream_webui_state import WebUIState
+
+
+def _inline_script(rel: str) -> str:
+    """A shared page script, read from its static file, as the inline block this
+    page carries."""
+    return "\n<script>\n" + static.static_text(rel) + "</script>\n"
+
+
+def _inline_csrf_recovery() -> str:
+    """The stale-token recovery script, inline, directly after the token."""
+    return "<script>" + static.static_text("page/csrf_recovery.js") + "</script>"
 
 
 # -----------------------------------------------------------------------------
@@ -2119,7 +2124,7 @@ def send_setup_page(
 
     lic_html, lic_spacer = build_top_banner_html(flash_msg=flash_msg, flash_type=flash_type)
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
-    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + CSRF_RECOVERY_SCRIPT
+    csrf_meta = f"<meta name='csrf-token' content='{html.escape(csrf_token)}'><script>window.__CSRF='{html.escape(csrf_token)}';</script>" + _inline_csrf_recovery()
     pin_modal_setup_css = """
       #pinModal .pin-entry {
         -webkit-text-security: disc;
@@ -2221,7 +2226,7 @@ def send_setup_page(
     # page's license panel (.about-license-text's padding-bottom:4.5rem).
     _playback_panel_bottom_pad_css = "#panel-playback { padding-bottom: 4.5rem; }\n"
     _extra_css = (
-        f"{COMMON_MODAL_CSS}\n{PIN_MODAL_CSS}\n{pin_modal_setup_css}"
+        f"{static.static_text('page/modal.css')}\n{pin_modal_setup_css}"
         f"\n{factory_reset_modal_css}\n{_dial_badge_css}\n{DIAL_LOCKED_SECTION_CSS}"
         f"\n{_bt_pairing_modal_css}\n{_playback_panel_bottom_pad_css}"
     )
@@ -2993,9 +2998,9 @@ def send_setup_page(
       </script>
     """
 
-    _body_suffix = f"""{A2HS_SCRIPT}
-      {AUTOSAVE_JS}
-      {INFO_MODAL_SCRIPT}
+    _body_suffix = f"""{_inline_script("page/a2hs.js")}
+      {_inline_script("page/autosave.js")}
+      {_inline_script("page/info_modal.js")}
       <script>
         const pinChangeState = {{
           busy: false,

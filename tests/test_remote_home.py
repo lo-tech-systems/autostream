@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import page_scripts, static_text
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -308,9 +309,7 @@ class TestRemoteHomePageContent:
     def test_page_contains_info_modal(self):
         html = self._render()
         assert html.count('id="infoModal"') == 1
-        assert "function showInfoModal" in html
+        assert "function showInfoModal" in page_scripts(html)
 
     def test_common_modal_css_has_scroll_rule(self):
-        from autostream_webui_assets import COMMON_MODAL_CSS
-
-        assert ".modal-bd-scroll" in COMMON_MODAL_CSS
+        assert ".modal-bd-scroll" in static_text("page/modal.css")

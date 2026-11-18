@@ -619,6 +619,7 @@ def send_service_page(
     html_body = build_page_html(
         "Service",
         _body_html,
+        style_files=("page/modal.css",),
         extra_css=SERVICE_CSS,
         lic_html=lic_html,
         lic_spacer=lic_spacer,

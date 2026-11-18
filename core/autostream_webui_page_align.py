@@ -34,9 +34,9 @@ from autostream_intents import Intent, Origin, submit
 from autostream_state import store
 from autostream_state.live import get_align_review, get_align_status
 from autostream_webui_api import send_json
-from autostream_webui_assets import COMMON_MODAL_CSS, INFO_MODAL_HTML, INFO_MODAL_SCRIPT
+import autostream_webui_static as static
+from autostream_webui_assets import INFO_MODAL_HTML
 from autostream_webui_common import (
-    CSRF_RECOVERY_SCRIPT,
     _config_snapshot,
     build_page_html,
     build_top_banner_html,
@@ -135,15 +135,16 @@ def send_align_page(handler, state: WebUIState) -> None:
 
     head_extra = (
         f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>\n"
-        + CSRF_RECOVERY_SCRIPT
-        + INFO_MODAL_SCRIPT
+        + static.script_tag("page/csrf_recovery.js")
+        + static.script_tag("page/info_modal.js")
         + _ALIGN_SCRIPT
     )
 
     html_body = build_page_html(
         "Speaker Synchronisation",
         body_html,
-        extra_css=f"{COMMON_MODAL_CSS}\n{_ALIGN_EXTRA_CSS}",
+        style_files=("page/modal.css",),
+        extra_css=_ALIGN_EXTRA_CSS,
         head_extra=head_extra,
         body_prefix=INFO_MODAL_HTML,
         lic_html=lic_html,
