@@ -79,6 +79,11 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=Tru
         return True
 
     mock_led = MagicMock()
+    # Set once the idle loop's body has run (it ends by setting the LED), so a
+    # setter can wait for that rather than guess how long startup takes.
+    loop_body_ran = threading.Event()
+    mock_led.set_playing.side_effect = lambda: loop_body_ran.set()
+    mock_led.set_idle.side_effect = lambda: loop_body_ran.set()
     mock_http = MagicMock()
     mock_http._server = MagicMock()
     mock_control = MagicMock()
@@ -103,6 +108,7 @@ def _run_main_patched(shutdown_event_setter=None, raise_in_loop=None, fitted=Tru
                 return
             _captured_once.append(self)
             captured_event["ev"] = self
+            self.loop_body_ran = loop_body_ran
             if shutdown_event_setter is not None:
                 def _fire():
                     time.sleep(0.05)
@@ -170,9 +176,9 @@ class TestGeneralBrowserStartup:
 
     @staticmethod
     def _slow_stop(ev):
-        # Outlast a few loop iterations (the patched Event caps each wait at
-        # 0.1 s) so the loop body runs before shutdown.
-        time.sleep(0.4)
+        # Shut down only once the loop body has run. The long timeout is for a
+        # loaded machine; a loop that never runs fails the test's assertions.
+        ev.loop_body_ran.wait(30)
         ev.set()
 
     def test_general_browser_started_for_idless_playing_target(self):
