@@ -794,11 +794,20 @@ class TestOutcomes:
         assert snap().unit("1").selected is False
         assert snap().start_failure is None
 
-    def test_a_coordinator_select_reverts_on_a_player_without_group_fields(self, w):
+    def test_a_coordinator_select_that_fails_is_retried_on_a_player_without_group_fields(self, w):
         merge(w, [row(1)])
         w.a.note_session(True)
         w.fb.results = [error("http_error")]
         w.a.select("1", Origin.SESSION, volume=30)
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "failed"
+        assert w.a._units["1"].retry_at is not None
+
+    def test_a_user_select_that_fails_reverts_on_a_player_without_group_fields(self, w):
+        merge(w, [row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("http_error")]
+        w.a.select("1", Origin.USER, volume=30)
         assert snap().unit("1").selected is False
 
     def test_a_later_read_showing_failed_reverts_a_user_select_and_publishes_it(self, w):
@@ -1382,7 +1391,7 @@ class TestReconcile:
         at(w, 6)
         assert w.fb.updates() == [("1", dict(enabled=False, timeout=3.0))]
 
-    def test_a_failed_start_is_retried_after_ten_then_twenty_then_forty_then_sixty_seconds(self, w):
+    def test_a_failed_start_is_retried_after_ten_then_twenty_then_thirty_seconds_and_then_every_thirty(self, w):
         put(w, [group_row(1, "stopped")])
         w.a.note_session(True)
         w.fb.default = error("http_error")
@@ -1397,7 +1406,7 @@ class TestReconcile:
             assert len(selects(w)) == before
             at(w, seen[-1] + 0.01)
             assert len(selects(w)) == before + 1
-        assert [round(x) for x in seen] == [10, 30, 70, 130, 190]
+        assert [round(x) for x in seen] == [10, 30, 60, 90, 120]
         assert snap().start_failure.seq == 1                    # published once, not once per retry
 
     def test_a_session_end_clears_the_back_off(self, w):
@@ -1408,7 +1417,75 @@ class TestReconcile:
         assert w.a._units["1"].retry_at is not None
         w.a.note_session(False)
         u = w.a._units["1"]
-        assert u.retry_at is None and u.retry_backoff == 10.0
+        assert u.retry_at is None and u.retry_n == 0 and u.group_hold_backoff == 10.0
+
+    def test_a_player_without_session_state_retries_at_ten_thirty_and_sixty_seconds_with_reads_between(self, w):
+        put(w, [row(1)])
+        w.a.note_session(True)
+        w.fb.default = error("http_error")
+        w.a.select("1", Origin.SESSION, volume=30)
+        assert snap().unit("1").availability == "failed"
+        seen = []
+        for _ in range(3):
+            u = w.a._units["1"]
+            seen.append(u.retry_at - T0)
+            before = len(selects(w))
+            for step in (1, 3, 5):
+                at(w, seen[-1] - 10 + step)
+                put(w, [row(1)])                # a read between retries keeps the wait
+                assert u.retry_at - T0 == seen[-1]
+                assert snap().unit("1").availability == "failed"
+            at(w, seen[-1] + 0.01)
+            assert len(selects(w)) == before + 1
+            put(w, [row(1)])
+        assert [round(x) for x in seen] == [10, 30, 60]
+        assert snap().unit("1").selected is True
+        assert snap().start_failure.seq == 1
+
+    def test_a_retried_select_on_a_player_without_session_state_that_starts_ends_the_retries(self, w):
+        put(w, [row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("http_error")]
+        w.a.select("1", Origin.SESSION, volume=30)
+        at(w, 10.01)
+        assert len(selects(w)) == 2
+        put(w, [row(1, selected=True, volume_percent=30)])
+        u = w.a._units["1"]
+        assert u.attempt is False and u.retry_at is None and u.retry_n == 0
+        assert snap().unit("1").availability == "ok"
+
+    def test_retries_stop_when_the_session_ends(self, w):
+        put(w, [row(1)])
+        w.a.note_session(True)
+        w.fb.default = error("http_error")
+        w.a.select("1", Origin.SESSION, volume=30)
+        w.a.note_session(False)
+        before = len(selects(w))
+        at(w, 15)
+        assert len(selects(w)) == before
+
+    def test_a_timed_out_select_that_reads_off_on_a_player_without_session_state_is_retried(self, w):
+        put(w, [row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.SESSION, volume=30)
+        assert w.a._units["1"].start_pending_until > 0
+        put(w, [row(1, selected=False)])
+        u = w.a._units["1"]
+        assert u.start_pending_until == 0.0 and u.retry_at is not None
+        assert snap().unit("1").selected is True and snap().unit("1").availability == "failed"
+
+    def test_a_player_without_session_state_still_follows_a_device_pause_while_no_start_is_running(self, w):
+        put(w, [row(1)])
+        w.a.note_session(True)
+        w.fb.default = ActionResult(ok=True)
+        w.a.select("1", Origin.SESSION, volume=30)
+        put(w, [row(1, selected=True, volume_percent=30)])
+        assert w.a._units["1"].attempt is False
+        w.t[0] += 5
+        put(w, [row(1, selected=False, volume_percent=30)])
+        at(w, 5.1)
+        assert snap().unit("1").selected is False
 
     def test_a_user_select_that_timed_out_and_never_started_is_retried(self, w):
         put(w, [group_row(1, "stopped")])

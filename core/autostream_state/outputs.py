@@ -79,6 +79,10 @@ ABSENT_KEEP_S = 60.0
 PROBE_INTERVAL_S = 60.0
 RETRY_MIN_S = 10.0
 RETRY_MAX_S = 60.0
+# The gaps between a coordinator start's retries: 10 s, then 20 s, then 30 s,
+# then every 30 s while live input lasts.
+RETRY_GAPS_S = (10.0, 20.0, 30.0)
+RETRY_STEADY_S = 30.0
 _READ_BACKOFF_S = (0.5, 1.0, 2.0, 5.0)
 _FAILED_READS_BEFORE_DOWN = 3
 
@@ -250,7 +254,8 @@ class UnitState:
     seen_at: float
     availability: str = "ok"
     retry_at: Optional[float] = None
-    retry_backoff: float = RETRY_MIN_S
+    retry_n: int = 0                  # retries scheduled since the last start that showed a result
+    group_hold_backoff: float = RETRY_MIN_S   # the wait for an Apple TV's group, which doubles
     device_volume_at: float = 0.0
     own_write_at: float = 0.0
     was_streaming: bool = False
@@ -759,7 +764,8 @@ class OutputAuthority:
             u.failure_reported = False
             u.start_pending_until = 0.0
             u.retry_at = None
-            u.retry_backoff = RETRY_MIN_S
+            u.retry_n = 0
+            u.group_hold_backoff = RETRY_MIN_S
             u.held_until = 0.0
             u.reselect_retry = False
             u.diff_since.clear()
@@ -1115,7 +1121,8 @@ class OutputAuthority:
             if not active:
                 self._silence_chosen = False
                 for u in self._units.values():
-                    u.retry_backoff = RETRY_MIN_S
+                    u.group_hold_backoff = RETRY_MIN_S
+                    u.retry_n = 0
                     u.retry_at = None
             pending = self._publish_locked(Origin.SESSION, None)
         pending.notify()
@@ -1429,14 +1436,15 @@ class OutputAuthority:
 
     def _failed_treatment_locked(self, u: UnitState, now: float) -> None:
         """A start failed on a speaker the user did not just ask for (or one
-        that timed out): keep it wanted and retry on a back-off while a
-        session plays, on a player that can say why. Otherwise it is turned
-        back off at once."""
-        if u.retry_allowed and self._rows_carry_session and self._session_active:
+        that timed out): keep it wanted and retry it while a session plays, at
+        gaps of 10 s, 20 s and 30 s and then every 30 s. Otherwise it is
+        turned back off at once."""
+        if u.retry_allowed and self._session_active:
             u.availability = "failed"
             if u.retry_at is None:
-                u.retry_at = now + u.retry_backoff
-                u.retry_backoff = min(u.retry_backoff * 2, RETRY_MAX_S)
+                gap = RETRY_GAPS_S[u.retry_n] if u.retry_n < len(RETRY_GAPS_S) else RETRY_STEADY_S
+                u.retry_at = now + gap
+                u.retry_n += 1
         else:
             self._revert_locked(u, now)
 
@@ -1485,7 +1493,7 @@ class OutputAuthority:
                 if row.has_homepods and u.held_until > 0.0 and not (u.reported is not None and u.reported.has_homepods):
                     # The HomePods the select was waiting for have appeared.
                     u.held_until = 0.0
-                    u.retry_backoff = RETRY_MIN_S
+                    u.group_hold_backoff = RETRY_MIN_S
                     if u.desired.selected and not row.selected:
                         self._queue_reapply_select_locked(u)
                 u.reported = row
@@ -1525,8 +1533,18 @@ class OutputAuthority:
         if u.start_pending_until > 0.0:
             if result_shown:
                 u.start_pending_until = 0.0
+            elif not self._rows_carry_session and not row.selected:
+                # The player answers a read only after the start it was busy
+                # with has ended, so a speaker still off now did not start.
+                u.start_pending_until = 0.0
+                avail = "failed"
             elif now < u.start_pending_until:
                 avail = "starting"
+        elif (not self._rows_carry_session and sel and not row.selected and u.attempt
+              and u.retry_at is not None and avail != "password"):
+            # A player that cannot report a failed start: the speaker is
+            # wanted, its start has ended and it is off, so it is between retries.
+            avail = "failed"
         previous = u.availability
         u.availability = avail
         if row.selected == sel:
@@ -1541,7 +1559,8 @@ class OutputAuthority:
             u.attempt = False
             u.failure_reported = False
             u.retry_at = None
-            u.retry_backoff = RETRY_MIN_S
+            u.retry_n = 0
+            u.group_hold_backoff = RETRY_MIN_S
         if sel and previous == "starting" and avail == "ok":
             fx.republish = True
         if sel and u.attempt and avail == "failed":
@@ -1655,6 +1674,10 @@ class OutputAuthority:
                         u.diff_since.pop("select", None)
                         restored += 1
                         self._queue_reapply_select_locked(u)
+                elif u.attempt and u.retry_allowed and self._session_active                         and now - u.own_write_at < START_PENDING_S:
+                    # A start the authority made or will retry: not a pause on
+                    # the speaker.
+                    u.diff_since.pop("select", None)
                 else:
                     # A player without session reports deselected itself (a
                     # device pause, a failed start): follow it.
@@ -1829,8 +1852,8 @@ class OutputAuthority:
                 elif include is False:
                     # The Apple TV is never selected alone: wait for its group.
                     u.availability = "starting"
-                    u.held_until = self._clock() + u.retry_backoff
-                    u.retry_backoff = min(u.retry_backoff * 2, RETRY_MAX_S)
+                    u.held_until = self._clock() + u.group_hold_backoff
+                    u.group_hold_backoff = min(u.group_hold_backoff * 2, RETRY_MAX_S)
                     return _HOLD
             return lambda b: [b.update_output(uid, **kwargs)]
         if kind == "deselect":
@@ -1933,7 +1956,7 @@ class OutputAuthority:
             if not u.retry_allowed:
                 self._revert_locked(u, now)
                 self._start_failure_locked(u, "refused", w.requester)
-            elif self._rows_carry_session and self._session_active:
+            elif self._session_active:
                 if not u.failure_reported:
                     u.failure_reported = True
                     self._start_failure_locked(u, "failed")
