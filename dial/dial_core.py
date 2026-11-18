@@ -522,7 +522,13 @@ class DialCore:
     def clear_artwork(self, key: str | None = None) -> None:
         """Release the held artwork bytes: always, or only when they are the
         copy named by *key* (so a view dropping an undecodable image cannot
-        discard a newer track's)."""
+        discard a newer track's). A copy dropped by its key is fetched again
+        at the next fold, so a truncated transfer heals."""
+        if key is not None:
+            with self._lock:
+                if self._artwork_url is not None and artwork_key(self._artwork_url) == key:
+                    self._artwork_url = None
+
         def mutate(state: _CoreState) -> "bool | None":
             held = state.artwork
             if held is None or (key is not None and held.key != key):
