@@ -320,8 +320,17 @@ void OutputStage::thread_func()
         // FifoWriter documents that every public method must be called
         // under this mutex; holding it across the whole block -- exactly
         // as InputChannel::deliver_output() holds _fifo_mutex today -- is
-        // what keeps that true now that the write moved here.
-        std::lock_guard<std::mutex> lock(_processor_mutex);
+        // what keeps that true now that the write moved here. The try
+        // first keeps the uncontended path to one atomic and reads the
+        // clock only when a control thread actually holds the mutex, so
+        // the wait is measured without adding to every block.
+        std::unique_lock<std::mutex> lock(_processor_mutex, std::try_to_lock);
+        if (!lock.owns_lock())
+        {
+            auto wait_start = std::chrono::steady_clock::now();
+            lock.lock();
+            _stats.record_lock_wait(std::chrono::steady_clock::now() - wait_start);
+        }
 
         _processor.apply(mix_buf.data(), static_cast<int>(block_frames));
 
