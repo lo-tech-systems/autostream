@@ -217,12 +217,12 @@ class TestTheCard:
         assert (view.title, view.message, view.source) == (
             "Update this dial", "Lounge, Kitchen need a newer dial", "This Dial")
 
-    def test_no_wifi_has_restart_then_close(self):
+    def test_no_wifi_has_close_then_restart(self):
         display = _rig()
         _lose_wifi(display)
         open_warnings_page(display)
         view = _painted(display)
-        assert (view.title, view.buttons) == ("No WiFi", ("Restart", "Close"))
+        assert (view.title, view.buttons) == ("No WiFi", ("Close", "Restart"))
         assert display.touch_surface()[0] == "card2"
 
     def test_several_entries_page_with_next_and_wrap(self):
@@ -235,7 +235,7 @@ class TestTheCard:
         for _ in range(4):
             view = _painted(display)
             seen.append((view.title, view.source))
-            tap_card(display, 0)             # Next is the first cell
+            tap_card(display, view.buttons.index("Next"))   # Next is the last cell
             _fold(display)
         assert [t for t, _ in seen] == ["No WiFi", "microSD card", "Technics stylus", "No WiFi"]
         assert seen[0][1] == "This Dial · 1 of 3" and seen[2][1] == "Kitchen · 3 of 3"
@@ -245,11 +245,11 @@ class TestTheCard:
         _lose_wifi(display)
         on_sd_health_view(display, _sd(15))
         open_warnings_page(display)
-        assert _painted(display).buttons == ("Next", "Restart", "Close")
+        assert _painted(display).buttons == ("Close", "Restart", "Next")
         assert display.touch_surface()[0] == "card3"
-        tap_card(display, 0)
+        tap_card(display, 2)
         _fold(display)
-        assert _painted(display).buttons == ("Next", "Close")
+        assert _painted(display).buttons == ("Close", "Next")
         assert display.touch_surface()[0] == "card2"
 
     def test_the_text_follows_the_reading(self):
@@ -297,7 +297,7 @@ class TestClosing:
         _lose_wifi(display)
         open_warnings_page(display)
         with patch("dial_network.request_reboot") as reboot:
-            tap_card(display, 0)
+            tap_card(display, 1)
         reboot.assert_called_once_with()
         _fold(display)
         assert display._screen == "restarting" and display._warnings_page is None
@@ -390,7 +390,7 @@ class TestLateTaps:
         on_sd_health_view(display, _sd(15))
         open_warnings_page(display)
         # Next is folded in but the new entry is not painted yet.
-        tap_card(display, 0)
+        tap_card(display, 2)
         display._screen_request = None
         with patch("dial_network.request_reboot") as reboot:
             with display._lock:

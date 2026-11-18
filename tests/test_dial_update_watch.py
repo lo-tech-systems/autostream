@@ -195,8 +195,8 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
         assert fits(update_result.title_for(view), readout_font, result_w), view
         assert fits(update_result.message_for(view), body_font, result_w), view
     assert fits(CLOSE_TEXT, body_font, cell_w)
-    # Next | Restart | Close: the narrowest card the warnings page shows.
+    # Close | Restart | Next: the narrowest card the warnings page shows.
     three = warning_layout_for(width, height, buttons=3, metrics=metrics)
-    for label, cell in zip((NEXT_TEXT, RESTART_TEXT, CLOSE_TEXT), three.cells):
+    for label, cell in zip((CLOSE_TEXT, RESTART_TEXT, NEXT_TEXT), three.cells):
         avail = (cell[2] - cell[0]) - 2 * metrics.pad
         assert fits(label, dial_display_render._cell_label_font(draw, label, avail, metrics), avail), label

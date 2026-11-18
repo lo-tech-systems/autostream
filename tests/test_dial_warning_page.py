@@ -63,19 +63,19 @@ class TestCard:
     def test_several_entries_add_next_and_the_place(self):
         bell = _bell("a", "b", "c")
         card = _page(bell).card(bell)
-        assert card.buttons == (("Next", ACTION_NEXT), ("Close", ACTION_CLOSE))
+        assert card.buttons == (("Close", ACTION_CLOSE), ("Next", ACTION_NEXT))
         assert card.source == "Turntable · 1 of 3"
 
-    def test_an_extra_action_sits_between_next_and_close(self):
+    def test_an_extra_action_sits_between_close_and_next(self):
         bell = Bell((_entry("nowifi", source="This Dial", actions=(ACTION_RESTART,)), _entry("b")))
         card = _page(bell).card(bell)
-        assert [a for _, a in card.buttons] == [ACTION_NEXT, ACTION_RESTART, ACTION_CLOSE]
-        assert [label for label, _ in card.buttons] == ["Next", "Restart", "Close"]
+        assert [a for _, a in card.buttons] == [ACTION_CLOSE, ACTION_RESTART, ACTION_NEXT]
+        assert [label for label, _ in card.buttons] == ["Close", "Restart", "Next"]
 
     def test_an_extra_action_alone_has_no_next(self):
         bell = Bell((_entry("nowifi", source="This Dial", actions=(ACTION_RESTART,)),))
         card = _page(bell).card(bell)
-        assert [a for _, a in card.buttons] == [ACTION_RESTART, ACTION_CLOSE]
+        assert [a for _, a in card.buttons] == [ACTION_CLOSE, ACTION_RESTART]
         assert card.source == "This Dial"
 
     def test_the_text_is_read_from_the_live_bell(self):
@@ -153,7 +153,7 @@ class TestTap:
     def test_a_cell_resolves_to_the_action_painted_there(self):
         bell = Bell((_entry("nowifi", actions=(ACTION_RESTART,)), _entry("b")))
         page = _page(bell)
-        assert [page.action_at(i, bell) for i in range(3)] == [ACTION_NEXT, ACTION_RESTART, ACTION_CLOSE]
+        assert [page.action_at(i, bell) for i in range(3)] == [ACTION_CLOSE, ACTION_RESTART, ACTION_NEXT]
 
     def test_a_cell_beyond_the_buttons_is_dropped(self):
         bell = _bell("a")

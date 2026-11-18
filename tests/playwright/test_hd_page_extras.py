@@ -1512,7 +1512,7 @@ class TestDialBell:
         dial_bell(page).click()
         expect(page.locator("#card-title")).to_have_text("No WiFi")
         expect(page.locator("#card-source")).to_have_text("This Dial")
-        assert card_buttons(page) == ["Restart", "Close"]
+        assert card_buttons(page) == ["Close", "Restart"]
         expect(page.locator("#card-progress")).to_be_hidden()
         page.locator("#card-buttons button", has_text="Restart").click()
         page.wait_for_timeout(150)
@@ -1552,11 +1552,11 @@ class TestDialBell:
         dial_bell(page).click()
         expect(page.locator("#card-title")).to_have_text("No WiFi")
         expect(page.locator("#card-source")).to_have_text("This Dial · 1 of 2")
-        assert card_buttons(page) == ["Next", "Restart", "Close"]
+        assert card_buttons(page) == ["Close", "Restart", "Next"]
         page.locator("#card-buttons button", has_text="Next").click()
         expect(page.locator("#card-title")).to_have_text("microSD card")
         expect(page.locator("#card-source")).to_have_text("This Dial · 2 of 2")
-        assert card_buttons(page) == ["Next", "Close"]
+        assert card_buttons(page) == ["Close", "Next"]
         page.locator("#card-buttons button", has_text="Next").click()
         expect(page.locator("#card-title")).to_have_text("No WiFi")
 
@@ -1780,7 +1780,7 @@ class TestApplianceWarnings:
         row_bell(page).click()
         expect(page.locator("#card-title")).to_have_text("Technics stylus")
         expect(page.locator("#card-source")).to_have_text("Lounge · 1 of 2")
-        assert card_buttons(page) == ["Next", "Close"]
+        assert card_buttons(page) == ["Close", "Next"]
         page.locator("#card-buttons button", has_text="Next").click()
         expect(page.locator("#card-title")).to_have_text("Second stylus")
         expect(page.locator("#card-source")).to_have_text("Lounge · 2 of 2")

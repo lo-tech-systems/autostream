@@ -58,8 +58,8 @@ export function bellCard(dial, bell) {
     }
     const at = Math.min(bell.index, entries.length - 1);
     const e = entries[at];
-    const acts = [].concat(entries.length > 1 ? [["next", "Next"]] : [],
-        e.actions.map((act) => [act, ACTION_LABELS[act] || act]), [["close", "Close"]]);
+    const acts = [["close", "Close"]].concat(e.actions.map((act) => [act, ACTION_LABELS[act] || act]),
+        entries.length > 1 ? [["next", "Next"]] : []);
     return Object.assign(card, {
         title: e.title, message: e.message, severity: e.severity,
         source: e.source + (entries.length > 1 ? " · " + (at + 1) + " of " + entries.length : ""),

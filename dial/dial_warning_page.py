@@ -90,14 +90,14 @@ class WarningsPageState:
 
     def card(self, bell: Bell) -> "Card | None":
         """The card for the entry on show: None when its entry is not in the
-        bell (the caller syncs first). Buttons, left to right: Next when
-        more than one entry remains, the entry's extra actions, Close."""
+        bell (the caller syncs first). Buttons, left to right: Close,
+        the entry's extra actions, Next when more than one entry remains."""
         remaining = self._remaining(bell)
         entry = next((e for e in bell.entries if e.key == self.key), None)
         if entry is None:
             return None
         many = len(remaining) > 1
-        actions = (ACTION_NEXT,) * many + tuple(entry.actions) + (ACTION_CLOSE,)
+        actions = (ACTION_CLOSE, *entry.actions) + (ACTION_NEXT,) * many
         return Card(
             title=entry.title, message=entry.message,
             source=f"{entry.source} · {remaining.index(self.key) + 1} of {len(remaining)}" if many else entry.source,

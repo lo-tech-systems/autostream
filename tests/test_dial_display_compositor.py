@@ -817,7 +817,7 @@ def _render_cache_corpus(width, height, metrics=None):
         "warning_three_paged",
         lambda c: c.compose_warning(
             width, height,
-            WarningView(title="Stylus wear", message="Over 450 hours", buttons=("Next", "Restart", "Close"),
+            WarningView(title="Stylus wear", message="Over 450 hours", buttons=("Close", "Restart", "Next"),
                         source="Turntable \u00b7 1 of 2", pressed=2),
             rotate=False, bgr=False, metrics=metrics,
         ),

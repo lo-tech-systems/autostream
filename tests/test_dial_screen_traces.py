@@ -1754,9 +1754,9 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("sd_health_view", STATUS_VALID, 10),
         ("repaint",),
         ("bell_tap",),
-        ("repaint",),               # No WiFi: Next | Restart | Close
+        ("repaint",),               # No WiFi: Close | Restart | Next
         ("card_next",),
-        ("repaint",),               # microSD card: Next | Close
+        ("repaint",),               # microSD card: Close | Next
         ("card_next",),
         ("repaint",),               # wraps to No WiFi
         ("card_close",),

@@ -1052,7 +1052,7 @@ class TestTapsCallTheCoreActions:
             on_network_view(display, _view(LINK_DOWN))
         open_warnings_page(display)
         with patch.object(display._core, "request_dial_reboot", return_value=True) as action:
-            tap_card(display, 0)
+            tap_card(display, 1)
         action.assert_called_once_with()
 
 

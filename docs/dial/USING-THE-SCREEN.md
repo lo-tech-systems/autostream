@@ -407,18 +407,18 @@ The knob still sets the volume whatever the screen is showing.
 
 Tap the bell to open a card:
 
-![A warnings card reading Stylus wear and Over 450 hours played, with Next and Close](images/showcase/spi-dial/appliance-warning-paged.png)
+![A warnings card reading Stylus wear and Over 450 hours played, with Close and Next](images/showcase/spi-dial/appliance-warning-paged.png)
 
 *One warning at a time. Small text at the top says where it comes from and
 which of the bell's warnings this is ("Turntable · 1 of 2").*
 
-- **Next** shows the following warning and wraps round to the first after the
-  last. It is only there when the bell holds more than one.
 - **Close** puts the card away. It does nothing else: nothing is hidden or
   postponed, and the bell keeps counting for as long as the cause is there. The
   card also closes by itself after a short while without a touch, and it does
   not keep the screen awake.
-- A warning with an action of its own has it beside these (**Restart** for No
+- **Next** shows the following warning and wraps round to the first after the
+  last. It is only there when the bell holds more than one.
+- A warning with an action of its own has it between these (**Restart** for No
   WiFi, below).
 
 A warning leaves the bell when its cause goes. If the card is showing it at
@@ -435,7 +435,7 @@ flashes (see [above](#wi-fi-status-icon)). Open the bell to read it. If the
 dial has not connected at all since it started, for example straight after a
 reboot, there is no warning: it may simply not have joined yet.
 
-![No WiFi card with Restart and Close](images/showcase/spi-dial/no-wifi.png)
+![No WiFi card with Close and Restart](images/showcase/spi-dial/no-wifi.png)
 
 *Rich: the card fills the panel on a plain dark background.*
 
