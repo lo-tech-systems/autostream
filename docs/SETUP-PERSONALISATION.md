@@ -49,7 +49,11 @@ Open **Setup** and expand the **Personalisation** card.
   with its HomePods, counts as one speaker. A paused speaker, and any speakers its Pause
   muted, are turned off if the Pause lasts longer than a set time (five minutes unless
   changed in the configuration file); the page states the current time under the setting. A
-  speaker that cannot be held this way is muted instead, and Play unmutes it. Some speakers
+  speaker that streams in real time, or an AirPlay 1 speaker, is held by silencing it: it
+  keeps receiving audio, so it stays in time, and Play brings its sound back at once, at its
+  own level. Turning a paused speaker's own volume knob starts it again too, and Play on a
+  paused speaker that was also muted unmutes it. A speaker that cannot be held this way is
+  muted instead, and Play unmutes it. Some speakers
   do not tell the appliance about their own Pause at all (the Edifier MS50A, for example),
   so the setting does nothing for them. This needs owntone-mini 1.6 or above, which this
   release installs, and its event channel, which is on unless the player could not open it.
@@ -58,7 +62,10 @@ Open **Setup** and expand the **Personalisation** card.
   default. When on, turning the volume up or down on a speaker itself (its
   buttons, knob or app, or an Apple TV remote) moves the other playing speakers
   too, each in proportion to its own level, so they all reach silent together.
-  Muted speakers stay muted. A stereo pair, or an Apple TV with its HomePods,
+  Muted and paused speakers stay so, and their levels move with the others, so
+  they come back in proportion. A paused or muted speaker is never the one that
+  moves the others: turning its knob starts or unmutes that speaker alone. A
+  stereo pair, or an Apple TV with its HomePods,
   counts as one speaker. Needs owntone-mini 1.6 or above and its event channel;
   the switch is greyed out without them, and a volume change at a speaker then
   applies to that speaker only.

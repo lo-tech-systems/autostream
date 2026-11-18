@@ -89,6 +89,18 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   and an Apple TV remote. The others move in proportion so they all reach silent
   together, and muted speakers stay muted. It needs owntone-mini 1.6 and the
   player's event channel. It is off by default.
+- changed: Mute is now carried out by the player, which keeps each speaker's
+  level, so a muted speaker always comes back at the level it had. Resuming a
+  paused speaker also unmutes it. It needs owntone-mini 1.6.
+- new: a speaker that streams in real time, or an AirPlay 1 speaker, that
+  pauses itself now shows Paused and keeps its level. It keeps receiving audio
+  while it is silent, so it stays in time, and it plays on at once at that
+  level on its own Play or a turn of its volume knob.
+- changed: turning the volume knob of a paused or muted speaker starts or
+  unmutes that speaker alone, and no longer moves the other speakers. With
+  "Volume changes made at any speaker apply to all playing speakers" on, a
+  paused or muted speaker's level still moves with the others, so it comes
+  back in proportion.
 
 ### Dials
 

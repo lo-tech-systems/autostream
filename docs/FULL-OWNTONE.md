@@ -47,3 +47,8 @@ omitted from the page entirely or rendered inactive with a note saying the
 backend does not expose it - but none of them can change full OwnTone's
 settings. Speaker selection, volume, and playback control work normally;
 they use the standard OwnTone API.
+
+Full OwnTone has no mute of its own, so AutoStream mutes a speaker by
+setting its volume to 0 and keeps the level it returns to in memory. If
+AutoStream restarts while a speaker is muted, that speaker then reads as
+unmuted at volume 0; set its level again from the Home page or a dial.
