@@ -17,29 +17,83 @@ health and update progress, and publishes all of that as immutable snapshots.
 The **view** (`dial/dial_display.py`) owns the panel. It subscribes to the
 core, folds each snapshot into the screen that is up, composes frames and
 pushes them to the SPI display. The view holds no appliance state of its own,
-and the core imports nothing that draws. An HD dial adds a second view, a web
+and the core imports nothing that draws. Both large classes are sectioned: each
+module's docstring lists its sections, and each section names the fields it
+owns and the threads that run it. An HD dial adds a second view, a web
 page served by the dial, described in [The HD page is a second
 view](#the-hd-page-is-a-second-view).
 
 ## Modules
 
+Every module in `dial/` is listed, in groups.
+
+**Core and model**
+
 | Module | Responsibility |
 |---|---|
-| `dial_core.py` | `DialCore`: the model, the core thread that folds the peer clients' snapshots, the public action API, snapshots, subscriptions and the effects queue. |
-| `dial_core_focus.py` | The focus rule: which appliance the dial follows, from the folded snapshots. Pure. |
-| `dial_core_requests.py` | The request lane: one thread that sends the screens' speaker, EQ and repeat requests through the peer clients, and the rule that settles a request once the appliance's state has caught up with its reply. |
-| `dial_peer_view.py` | The pure mapping from an appliance's peer snapshot to the dial's own state types. |
-| `dial_core_state.py` | The snapshot dataclasses and the pure decisions made over them (focus resolution, walk order, volume target choice, picker rows, warning attribution). No I/O, no threads, no locks, no clock reads. |
-| `dial_artwork.py` | The artwork download the core's artwork thread runs, with its size and time limits and a rate-limited failure log. |
+| `dial_core.py` | `DialCore`: the model, the core thread that folds the peer clients' snapshots, the public action API, snapshots, subscriptions and the effects queue. Seven sections, listed in its docstring. |
+| `dial_core_model.py` | The core's mutable record: `PublishedState` (exactly the snapshot's fields) and `CoreState` (what stays inside the core), and `snapshot_of`. |
+| `dial_core_state.py` | The snapshot dataclasses and the pure decisions made over them (picker and selector rows, display order, start failure, PIN windows). No I/O, no threads, no locks, no clock reads. |
+| `dial_core_focus.py` | The focus rule and the walk: which appliance the dial follows and reports volume from, decided from state. Pure. |
+| `dial_core_requests.py` | What the dial asks of an appliance: the intent builders, the reply fold and settle rule, the request lane thread, and the request checks shared by the controls and the HD page's intents. |
+| `dial_core_effects.py` | The effect and outcome types the core queues for the one view. |
+| `dial_core_artwork.py` | `ArtworkFollower`: fetches the artwork the fold names on a short-lived thread. |
+| `dial_artwork.py` | The artwork download that thread runs, with its size and time limits and a rate-limited failure log. |
+| `dial_peer_view.py` | The pure mapping from an appliance's peer snapshot to the dial's own state types; its first group mirrors the browser's shared derivations. |
+| `dial_repeat_store.py` | `RepeatRecord`, an appliance's repeat state at a moment. Pure. |
+| `dial_eq_model.py` | The equaliser as the dial addresses it: the six bands, the bass and treble controls and their limits. |
+
+**Warnings**
+
+| Module | Responsibility |
+|---|---|
 | `dial_warning_text.py` | The warning table and its fixed strings (No-WiFi, SD health, update cards) and the builder for appliance-supplied warnings. Pure data, no drawing. |
 | `dial_warnings.py` | The warning manager: registration, which status is due, and which warnings are active. A warning is told from a status (an update running or finished), which is a screen of its own. Nothing is stored: a warning counts for as long as its cause is there. |
+| `dial_appliance_warnings.py` | What an appliance may say about itself (validated into closed sets) and the protocol-mismatch warnings the dial raises on its own. |
 | `dial_warning_bell.py` | What a warning bell holds: the dial's own warnings, one appliance's, or the whole set, worst first. Pure. |
 | `dial_warning_page.py` | The small screen's warnings card: which entry of a bell is on show, what Next does, and the card that the buttons resolve against. It also builds the card a status screen shows. Pure. |
-| `dial_display.py` | `DialDisplay`: the SPI view. Screen policy, the repaint thread, composing and pushing frames, panel sleep and wake, the artwork reveal slide, the pressed channel and the touch surface. |
-| `dial_display_compositor.py`, `dial_display_image.py`, `dial_display_profiles.py`, `dial_display_adafruit.py` | Drawing, image policy, panel profiles and the hardware backend. |
-| `dial_touch*.py` | Touch drivers, filtering and the zone layout. The touch source calls core actions through the view's taps. |
 
-| `dial_hd_server.py` | `HdServer`: the HD page's loopback web server, the page's static files, the state body, the held artwork, the event stream route and the settings, info, action and panel routes. Also the optional development listener. |
+**The SPI view**
+
+| Module | Responsibility |
+|---|---|
+| `dial_display.py` | `DialDisplay`: screen policy, the repaint thread and its timers, the snapshot fold, painters, the panel's backend and transmit, sleep and wake, the pressed channel and the touch surface. Nine sections, listed in its docstring. |
+| `dial_display_state.py` | The display's own screen records (one per secondary screen) and the pure maps from core rows to list rows and hints. |
+| `dial_display_controls.py` | `ControlsReveal`: the controls windows and the reveal slide. |
+| `dial_display_repeat_line.py` | `RepeatLine`: the replaying counter and the replay timer line. |
+| `dial_display_compositor.py` | The compositor: the frame pipeline and frame builders, and `compose()`. |
+| `dial_display_views.py` | What the display hands the compositor: one view state per screen and the frame descriptor. PIL-free. |
+| `dial_display_render.py` | The screen renderers: bands, header, footers, card, bodies, pages. |
+| `dial_display_draw.py` | Drawing primitives: fonts, text fitting, halos, labels and glyph tiles. |
+| `dial_display_reveal.py` | The artwork-tap reveal frames. |
+| `dial_display_windows.py` | Change-region planning: which rectangles to write for a new frame. |
+| `dial_display_image.py` | Image policy: logo, artwork decode and fit, resampling, default panel size. |
+| `dial_display_palette.py` | Every colour the panel paints with. Pure data. |
+| `dial_display_profiles.py` | The panel profile table. Pure data. |
+| `dial_display_backend.py` | The output-only backend protocol, the no-op backend and the backend factory. |
+| `dial_display_adafruit.py` | The Adafruit SPI backend. |
+| `dial_spi_bus.py` | The process-lifetime owner of the SPI buses the display and the resistive touch share. |
+
+**Touch**
+
+| Module | Responsibility |
+|---|---|
+| `dial_touch.py` | `TouchStateMachine`: the touch session policy. Pure, no thread. |
+| `dial_touch_source.py` | `TouchEventSource`: the thread that reads the controller and drives the filter and the state machine. |
+| `dial_touch_filter.py` | Sample filtering and the press lifecycle. Pure. |
+| `dial_touch_layout.py` | Touch-zone geometry and the layout builders. Pure. |
+| `dial_layout_metrics.py` | Physical scaling: the scale rule and `LayoutMetrics`. |
+| `dial_touch_surfaces.py` | The surface names and the five-field surface state the display reports. |
+| `dial_touch_wiring.py` | `TouchWiring`: what a touch does at the dial (reveal, wake, zone taps, volume and mute). The touch source calls core actions through the view's taps. |
+| `dial_touch_drivers.py`, `dial_touch_controllers.py` | The controller drivers (hardware imported only on open) and the controller table. |
+
+**HD page**
+
+| Module | Responsibility |
+|---|---|
+| `dial_hd_server.py` | `HdServer`: the HD page's loopback web server, the request checks, the state body, the event stream route and the settings, info, action, intent and panel routes. |
+| `dial_hd_static.py` | The page's files and pictures from one fixed table, with conditional responses. |
+| `dial_hd_session.py` | The development listener and its PIN-login sessions. |
 | `dial_hd_backdrop.py` | `BackdropStore`: the page's blurred backdrops, rendered on first request on the handler thread and kept in memory, one per artwork key and one for the logo. |
 | `dial_hd_events.py` | `ChangeHub`: turns the core's change signals into a sequence number, builds each state body once per change and feeds the event stream. |
 | `dial_hd_state.py` | `build_parts()`: the pure function that turns a core snapshot into the page's two state parts, `dial` and `focused`. |
@@ -47,7 +101,33 @@ view](#the-hd-page-is-a-second-view).
 | `dial/hd/hd-bell.js` | The HD page's warning bells: the dial's own in the APPLIANCES header, the card that pages through a bell's warnings, and the "Dial is healthy" card. It sits beside the page's other modules (`hd-paint.js`, `hd-actions.js` and the rest). |
 | `dial_hd_panel.py` | `HdPanel`: the HD dial's sleep, wake and brightness, and the sysfs backlight writes. |
 | `dial_hd_ddc.py` | The HDMI panel's backlight over DDC/CI through i2c-dev: the packet codec, panel detection, and `DdcBacklight`, which has the same interface as the sysfs backlight and applies levels on its own worker thread. |
-| `dial_main.py` | Entry point. Builds the core first, then the display, workers, inputs and HTTP server. Also holds the headless stand-in for the display. |
+
+**Servers and process**
+
+| Module | Responsibility |
+|---|---|
+| `dial_main.py` | Entry point: builds the core first, then the display, workers, inputs and servers in named startup steps. Holds the headless stand-in and the volume and mute target resolvers. |
+| `dial_http_server.py` | The management API the appliance uses (port 7842). |
+| `dial_screen_settings.py` | `ScreenSettingsService`: the screen settings path both servers share. |
+| `dial_http_common.py` | The request mechanics both servers share (body cap, read, JSON send). |
+| `dial_pin_guard.py` | The PIN rule for both servers: one rate limiter and one constant-time compare. |
+| `dial_recovery.py` | PIN recovery: the request file, the running marker, the arming rule and `RecoveryWindow`. |
+| `dial_admin.py` | The one way the dial runs the privileged admin helper. |
+| `dial_control.py`, `dial_control_protocol.py`, `autostream_dial_control.py` | The local control socket, its shared constants and the operator CLI. |
+| `dial_config.py` | Configuration loading, validation and saving from one field table. |
+
+**Workers and platform**
+
+| Module | Responsibility |
+|---|---|
+| `dial_volume.py` | The volume and mute fan-out worker and the volume and mute observation stores. |
+| `dial_mdns.py` | The sighted appliances as targets for the volume control and the control socket. |
+| `dial_network.py` | The dial's own Wi-Fi link view and the power requests, on the network worker. |
+| `dial_sdhealth.py` | The dial's own SD card health view. |
+| `dial_update_watch.py` | The software update in progress, read from the update result file. |
+| `dial_info.py` | The info page's rows, gathered on a short thread. |
+| `dial_led.py` | The activity LED. |
+| `dial_values.py` | Small pure helpers: integer checks, clamps, small-file, env-file and JSON reads. |
 
 ## Threads
 
@@ -59,9 +139,14 @@ view](#the-hd-page-is-a-second-view).
 | one per appliance | peer clients | Each holds one appliance's state from its change stream and signals the core when it moves. |
 | `requests`, `volume-worker`, `network-worker` | workers | Send the screens' requests and the knob's volume and mute through the peer clients, and read the Wi-Fi link. Replies are folded by the core, which queues what they mean for the screen. |
 | `dial-artwork` | core | Short-lived: downloads the focused appliance's artwork when its URL changes. |
+| `dial-info` | view | Short-lived: gathers the info page's rows when the page opens. |
 | mDNS browser | peer registry | Keeps the list of sighted appliances that the peer pool holds a client for. |
 | HTTP server threads | control API | Serve the dial's own API. They call core actions, not the view's internals. |
+| `dial-control` | control socket | Serves the local control socket. |
+| `dial-reboot`, `dial-shutdown` | network worker | Short-lived: carry out a power request. |
+| `dial-sdmon-probe` | management server | Short-lived: the management server's SD health probe. |
 | `dial-hd`, plus one thread per connection | HD server | Accepts connections on the loopback address and serves each on a thread of its own. Every socket has a short timeout, so a stalled client holds only its own thread. |
+| `dial-hd-intent` | HD server | Short-lived: each page intent runs on a thread of its own, which the handler waits on for a bounded time (the answer timeout). |
 | `dial-hd-dev`, plus one thread per connection | HD server | The development listener, present only while it is switched on. |
 | `hd-events` | change hub | Turns core change signals into sequence numbers. Each event stream client also has its handler thread. |
 | `hd-panel` | HD panel | Runs the idle clock and the sleep and wake decisions, and writes the backlight. |
@@ -158,8 +243,8 @@ in the action table. Two actions mean a person at the dial's own screen,
 confirming presence and shutting the dial down, and are refused with a 403 on
 the development listener. A change to an appliance goes to the intents route
 instead: the body names the appliance and the arguments, the core sends it on
-through the peer library from the handler's own thread, and the answer is the
-appliance's own reply. Screen settings go through the management server's own
+through the peer library from a short thread of its own, which the handler waits
+on for a bounded time, and the answer is the appliance's own reply. Screen settings go through the management server's own
 config path, and sleep, wake and activity go to the panel.
 
 **Panel.** `HdPanel` keeps the screen awake or asleep. Asleep, the page draws a
@@ -244,7 +329,9 @@ thread starts after the boot splash is on the panel and is stopped in the
 ## Where to add things
 
 New appliance-derived state goes in the core and its snapshot, with the
-decision logic in `dial_core_state.py` as a pure function. New screen
+decision logic as a pure function beside its kind: focus in
+`dial_core_focus.py`, request checks in `dial_core_requests.py`, everything else
+in `dial_core_state.py`. New screen
 behaviour goes in the view and reads the snapshot. If a view needs to react to
 a one-off event rather than a state change, add an effect rather than a second
 snapshot field the view has to diff.
