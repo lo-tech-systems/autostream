@@ -260,6 +260,12 @@ class TestRows:
         assert self._submit_real("outputs.resume", {"id": "1" * 65})[0].error == "missing_output_id"
         assert self._submit_real("outputs.resume", {"id": "7", "selected": True})[0].error == "invalid_args"
 
+    def test_the_repeat_stop_row_takes_a_user_or_the_policy(self):
+        assert table.ROWS["repeat.transport"].origins == frozenset({Origin.USER, Origin.POLICY})
+        for origin in (Origin.SYSTEM, Origin.SESSION, Origin.DEVICE):
+            assert self._submit_real("repeat.transport", {"action": "stop"}, origin)[0].error == "origin_not_allowed"
+        assert self._submit_real("repeat.transport", {"action": "stop"}, Origin.POLICY)[0].ok
+
     def test_wait_defaults_come_from_the_row(self):
         _, seen = self._submit_real("outputs.set", {"id": "7", "selected": False})
         assert seen[0][1] == 3.0

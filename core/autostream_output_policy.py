@@ -37,6 +37,7 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+import autostream_repeat_idle as repeat_idle
 from autostream_backend_events import DeviceEvent
 from autostream_config import (
     DEVICE_PAUSE_ALL,
@@ -228,6 +229,9 @@ class OutputPolicy:
         for uid in off:
             submit(Intent("outputs.pause_off", {"id": uid}, Origin.POLICY, _REQUESTER))
         LOG.info("pause from %s lasted too long: %s turned off", entry.name, _names(outputs, off))
+        # If that left no speaker on, repeat is stopped at the next check
+        # rather than after the usual wait
+        repeat_idle.nudge()
 
     # -- the intent handlers -------------------------------------------------
 

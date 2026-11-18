@@ -31,7 +31,7 @@ owntone owntone_mini peer_client peer_http peer_registry pin_pairing playback_st
 runtime runtime_state session_flag settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align appliance_state appliances audio_monitor identification input_status live_config log_policy monitor_control output_intents output_policy playback_tracking repeat selfheal services session startup warnings".split()
+_L2 = "align appliance_state appliances audio_monitor identification input_status live_config log_policy monitor_control output_intents output_policy playback_tracking repeat repeat_idle selfheal services session startup warnings".split()
 
 LAYERS: dict[str, str] = {
     **{f"autostream_{n}": "L0" for n in _L0},
@@ -73,6 +73,7 @@ L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_services", "autostream_appliances"),
     ("autostream_services", "autostream_appliance_state"),
     ("autostream_appliance_state", "autostream_warnings"),
+    ("autostream_output_policy", "autostream_repeat_idle"),
 })
 
 # What an L3 module may import, besides the standard library, other L3 modules

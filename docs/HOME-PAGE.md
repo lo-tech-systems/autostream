@@ -116,7 +116,8 @@ that's using it.
 autostream can repeat the last disc or record it played. When repeat is enabled in
 [Setup - Playback](SETUP-PLAYBACK.md#repeat-playback), a **Repeat Play** button appears at the
 top of the Home page. Tap it to enable replay mode (which also starts a replay if a recording
-is available), and tap it again to stop repeat playback.
+is available), and tap it again to stop repeat playback. Repeat also stops by itself once no
+speaker has been on for 5 minutes; the recording is kept, so you can tap it again.
 
 ## Appliance selector
 

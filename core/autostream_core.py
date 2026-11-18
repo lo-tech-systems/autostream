@@ -38,6 +38,7 @@ import autostream_logging as log_setup
 import autostream_monitor_client as monitor_client
 import autostream_playback_tracking as playback_tracking
 import autostream_repeat
+import autostream_repeat_idle as repeat_idle
 import autostream_runtime as runtime
 import autostream_selfheal as selfheal
 import autostream_appliances as appliances
@@ -473,6 +474,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
 
         interval_table = _IntervalTable()
         interval_table.register("stats_flush", DEFAULT_FLUSH_INTERVAL_SECONDS, _flush_stats)
+        interval_table.register("repeat_no_speaker_stop", repeat_idle.CHECK_PERIOD_SECONDS,
+                                repeat_idle.run_check)
 
         # One change per poll cycle: opened after the daemon answers, closed
         # once the cycle's state is published, and closed first thing in the

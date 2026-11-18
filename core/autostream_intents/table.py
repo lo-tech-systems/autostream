@@ -242,7 +242,8 @@ def _build_rows() -> dict:
             "repeat.transport",
             {"action": v.choice("stop", error="invalid_action")},
             {"action"},
-            {Origin.USER},
+            # The policy stops repeat once nothing has been heard for a while
+            {Origin.USER, Origin.POLICY},
             **_PLAY,
         ),
         _row(

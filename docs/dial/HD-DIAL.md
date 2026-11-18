@@ -170,6 +170,8 @@ row stay where they are however long the screen is left alone.
 If the followed appliance can repeat and replay, a row above the track holds
 its replay controls. While something is playing live, the row holds the
 **Repeat Play** switch, which arms or disarms repeat, as on the small screen.
+The appliance stops repeat by itself once no speaker has been on for 5
+minutes, keeping the recording.
 The rest of the time it holds two transport buttons and a timer, in that
 order, like the front of a tape deck:
 

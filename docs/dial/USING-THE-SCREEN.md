@@ -244,7 +244,8 @@ switched on:
 ![Repeat enable screen: "Repeat Play" label with a solid dot showing it's armed](images/repeat-enable-rich.png)
 
 *Rich: the toggle row. A solid dot means armed; a hollow ring means
-disarmed. Tap the row to flip it.*
+disarmed. Tap the row to flip it. The appliance disarms repeat by itself
+once no speaker has been on for 5 minutes, keeping the recording.*
 
 ![The same enable screen on a compact panel](images/repeat-enable-compact.png)
 

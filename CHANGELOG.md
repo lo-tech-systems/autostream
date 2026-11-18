@@ -90,7 +90,13 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   default) only that speaker pauses. "Stop paused speakers after" (1, 3, 5 or 10
   minutes, 5 by default) turns off a paused speaker, and any its Pause muted,
   once the Pause has lasted that long. A stereo pair, or an Apple TV with its
-  HomePods, counts as one speaker. A speaker that cannot be held is muted instead. Some speakers do not
+  HomePods, counts as one speaker. If that leaves no speaker on, repeat is
+  stopped at once.
+- new: repeat stops by itself once no speaker has been on for 5 minutes during
+  a replay, or during a live session with repeat armed, so it no longer plays
+  to nobody for ever. A replay fades out, repeat is disarmed and the recording
+  is kept, so it can be armed again. Arming repeat while nothing is playing is
+  left alone. A speaker that cannot be held is muted instead. Some speakers do not
   report their own Pause at all (the Edifier MS50A, for example), so the setting
   does nothing for them. The settings need owntone-mini 1.6 and are greyed out
   with the reason when the player cannot report these events.

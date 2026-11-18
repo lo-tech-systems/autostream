@@ -966,6 +966,7 @@ turn off another output, or choose a lighter audio mode, and try again.
 * **"Repeat unavailable"**: free RAM was below the 112 MiB minimum (a 96 MiB free-RAM floor plus the smallest 16 MiB chunk) when the last capture session started. Close other apps/services on the Pi, or wait for RAM to free up, then start a new source to retry.
 * **Replay plays a "tail only" marker**: memory pressure trimmed the oldest audio from the sliding-window buffer; only the retained tail is played back. This is expected under sustained low-RAM conditions, not a bug.
 * **Replay won't start**: check, in order - repeat is enabled globally (Setup → Repeat), the repeat button on the Home screen is armed, and a repeat buffer actually exists (a capture session has run to completion since the last enable/reboot).
+* **Repeat turned itself off**: once no speaker has been on for 5 minutes during a replay, or during a live session with repeat armed, autostream stops repeat so it doesn't play to nobody for ever. It does so at once when the Pause timeout turns the last speaker off. The recording is kept: arm repeat again and turn a speaker on. The log says "No speaker on for 5 minutes: repeat stopped" or "Pause timeout left no speaker on: repeat stopped".
 * **EQ changes during replay**: output EQ and per-input gain/EQ apply live during replay, the same as during normal playback, since replay shares the live signal chain.
 
 ---

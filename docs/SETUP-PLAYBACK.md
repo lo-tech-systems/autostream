@@ -64,8 +64,11 @@ Home page. It does not start recording by itself. Once you arm it there, autostr
 continuously while the source is playing. If the source then goes silent (per the silence
 detection setting above), the last recording is held in memory; if repeat is armed, playback of
 that recording starts immediately and loops for as long as you leave it running, until you stop
-it or a new live session begins on that input. See [Home Page](HOME-PAGE.md) for using the
-button itself.
+it or a new live session begins on that input. If no speaker is on for 5 minutes while it
+replays, or while a record or CD plays with repeat armed, autostream stops repeat by itself: a
+replay fades out, repeat is disarmed, and the recording is kept so you can arm it again. It
+does this at once when the [Pause timeout](SETUP-PERSONALISATION.md#speaker-controls) turns the
+last speaker off. See [Home Page](HOME-PAGE.md) for using the button itself.
 
 ## Audio processing
 

@@ -63,6 +63,20 @@ def test_the_pause_timeout_leaves_the_default_speaker_off_when_it_was_the_last(t
     assert got.silence_chosen is True
 
 
+def test_the_pause_timeout_nudges_the_repeat_check_when_it_turns_speakers_off(tmp_path, monkeypatch):
+    nudges = []
+    monkeypatch.setattr(policy_module.repeat_idle, "nudge", lambda: nudges.append(1))
+    _scenario("pause_timeout_only_speaker", tmp_path, monkeypatch)
+    assert nudges == [1]
+
+
+def test_a_cancelled_pause_timeout_does_not_nudge_the_repeat_check(tmp_path, monkeypatch):
+    nudges = []
+    monkeypatch.setattr(policy_module.repeat_idle, "nudge", lambda: nudges.append(1))
+    _scenario("pause_timeout_cancelled_by_play", tmp_path, monkeypatch)
+    assert nudges == []
+
+
 def test_the_pause_timeout_leaves_a_speaker_the_user_changed_alone(tmp_path, monkeypatch):
     got = _scenario("pause_timeout_all", tmp_path, monkeypatch)
     assert got.units["1002"] == {"selected": True, "muted": False, "volume": 50, "held": False}

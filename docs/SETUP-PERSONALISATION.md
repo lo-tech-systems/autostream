@@ -63,7 +63,8 @@ stereo pair, or an Apple TV with its HomePods, counts as one speaker.
   Edifier MS50A, for example), so the setting does nothing for them.
 - **Stop paused speakers after** - 1, 3, 5 or 10 minutes, 5 by default. A paused speaker,
   and any speakers its Pause muted, are turned off once the Pause has lasted this long. This
-  applies whether or not **Pause all speakers** is on. A time set by hand in the
+  applies whether or not **Pause all speakers** is on. If that leaves no speaker on, repeat is
+  stopped too (see [Repeat playback](SETUP-PLAYBACK.md#repeat-playback)). A time set by hand in the
   configuration file that is not one of these shows as the nearest choice, and stays as it
   is until you pick one.
 - **Apply volume changes made at any speaker to all playing speakers** - off by default.
