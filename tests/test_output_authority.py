@@ -30,7 +30,7 @@ import autostream_runtime as runtime
 import autostream_state as state
 import autostream_state.outputs as outputs
 from autostream_backend_events import DEGRADED, ConnectInfo, DeviceEvent
-from autostream_players import ActionResult, ListOutputsResult
+from autostream_players import ActionResult, EventChannelInfo, ListOutputsResult
 from autostream_state import Origin
 from output_fakes import FakeBackend, FakeSource, error, group_row, homepods_row, row, snap
 from autostream_state.outputs import (
@@ -1342,6 +1342,78 @@ class TestEventSource:
         w.fb.event_channel_info = lambda: (_ for _ in ()).throw(RuntimeError("down"))
         w.a.step(now=T0)
         assert seen[0].kind == "poll"
+
+    def by_info(self, w):
+        """A factory that builds what the probe describes."""
+        made = []
+
+        def factory(info, base_url, *, poll_interval):
+            src = FakeSource(info.kind, info.kind == "unix_socket", info.socket_path)
+            made.append(src)
+            return src
+
+        w.a._source_factory = factory
+        w.a._events_enabled = True
+        return made
+
+    def test_a_failed_probe_keeps_the_unix_source_and_waits_for_the_next_regular_probe(self, w):
+        made = self.by_info(w)
+        w.fb.channel = EventChannelInfo(kind="unix_socket", protocol=1, socket_path="/run/x.sock", reachable=True)
+        w.a.step(now=T0)
+        made[0]._connected = False
+        w.a.mark_unreachable_for_tests()
+        w.fb.event_channel_info = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+        w.a.step(now=T0 + 61)
+        assert len(made) == 1 and made[0].stopped == 0 and snap().event_source == "unix_socket"
+        calls = w.fb.channel_calls
+        w.fb.event_channel_info = lambda: EventChannelInfo(kind="poll", reachable=False)
+        for t in (62, 63, 64):
+            w.a.step(now=T0 + t)
+        assert w.fb.channel_calls == calls
+        w.a.step(now=T0 + 122)
+        assert len(made) == 1 and made[0].stopped == 0
+
+    def test_a_good_read_after_unreachable_swaps_polling_back_to_the_socket_in_one_step(self, w):
+        made = self.by_info(w)
+        w.fb.channel = EventChannelInfo(kind="poll", reachable=True)
+        w.fb.rows = [row(1)]
+        w.a.step(now=T0)
+        assert snap().event_source == "poll"
+        w.a.mark_unreachable_for_tests()
+        w.fb.channel = EventChannelInfo(kind="unix_socket", protocol=1, socket_path="/run/x.sock", reachable=True)
+        w.a.step(now=T0 + 5)
+        assert snap().event_source == "poll"
+        w.a.step(now=T0 + 6)
+        assert snap().event_source == "unix_socket" and made[0].stopped == 1
+
+    def test_a_degraded_websocket_is_not_built_again_for_an_hour(self, w, monkeypatch):
+        made = self.by_info(w)
+        monkeypatch.setattr(outputs, "PollEventSource", lambda interval: FakeSource("poll"))
+        w.fb.channel = EventChannelInfo(kind="websocket", websocket_port=8, reachable=True)
+        w.a.step(now=T0)
+        w.a.on_disconnected(DEGRADED)
+        w.a.step(now=T0 + 1)
+        assert snap().event_source == "poll"
+        started = sum(m.started for m in made)
+        for t in (61, 121, 3000, 3599):
+            w.a.step(now=T0 + t)
+        assert snap().event_source == "poll" and sum(m.started for m in made) == started
+        w.a.step(now=T0 + 3660)
+        assert snap().event_source == "websocket"
+
+    def test_a_counted_restart_clears_the_degraded_websocket_memory(self, w, monkeypatch):
+        made = self.by_info(w)
+        monkeypatch.setattr(outputs, "PollEventSource", lambda interval: FakeSource("poll"))
+        w.fb.channel = EventChannelInfo(kind="websocket", websocket_port=8, reachable=True)
+        w.fb.rows = [row(1)]
+        w.a.step(now=T0)
+        w.a.on_disconnected(DEGRADED)
+        w.a.step(now=T0 + 1)
+        w.a._handle_connected(ConnectInfo("b0", 1, frozenset(), "unix_socket"))
+        w.a._handle_connected(ConnectInfo("b1", 1, frozenset(), "unix_socket"))
+        w.a.step(now=T0 + 2)
+        w.a.step(now=T0 + 62)
+        assert snap().event_source == "websocket"
 
     def test_set_backend_asks_for_a_fresh_probe(self, w, monkeypatch):
         made = self.make(w, monkeypatch, ("unix_socket", True, "/run/a.sock"), ("unix_socket", True, "/run/b.sock"))

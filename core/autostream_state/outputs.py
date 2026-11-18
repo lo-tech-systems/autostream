@@ -77,6 +77,8 @@ DEBOUNCE_S = 2.0
 DEVICE_VOLUME_MARK_S = 2.0
 ABSENT_KEEP_S = 60.0
 PROBE_INTERVAL_S = 60.0
+# How long a websocket that degraded is not tried again.
+WS_DEGRADED_HOLD_S = 3600.0
 RETRY_MIN_S = 10.0
 RETRY_MAX_S = 60.0
 # The gaps between a coordinator start's retries: 10 s, then 20 s, then 30 s,
@@ -435,6 +437,8 @@ class OutputAuthority:
         # A socket closed and the player may have restarted before it came
         # back; the next good read counts it like an unreachable spell.
         self._maybe_restarted = False
+        # Until when a websocket that gave up is not built again.
+        self._ws_degraded_until = 0.0
         # Whether the player starts a speaker at the level it is enabled with,
         # as its hello last said. Kept through the polling between two sockets
         # of one boot; forgotten when a restart is seen without a hello.
@@ -1304,6 +1308,7 @@ class OutputAuthority:
     def _handle_disconnected(self, reason: str, now: float) -> None:
         if reason == DEGRADED:
             LOG.info("Event channel degraded; polling the player instead")
+            self._ws_degraded_until = now + WS_DEGRADED_HOLD_S
             self._swap_source(PollEventSource(self._poll_interval), now)
             return
         self._maybe_restarted = True
@@ -1343,7 +1348,16 @@ class OutputAuthority:
             info = backend.event_channel_info()
         except Exception:
             LOG.debug("Event channel probe failed", exc_info=True)
+            info = None
+        if info is None or not info.reachable:
+            # No answer says nothing about the channel: a source already
+            # running (a socket reconnects by itself) is kept, and the next
+            # probe is the regular one.
+            if src is not None:
+                return
             info = EventChannelInfo(kind="poll")
+        elif info.kind == "websocket" and now < self._ws_degraded_until:
+            info = EventChannelInfo(kind="poll", reachable=True)
         new = self._source_factory(info, backend.base_url, poll_interval=self._poll_interval)
         if src is not None and self._same_source(src, new):
             return
@@ -1403,6 +1417,9 @@ class OutputAuthority:
     def _on_read_ok(self, rows: list, now: float) -> None:
         fx = _Effects()
         with self._lock:
+            if not self._connected and self._ever_connected:
+                # Back after an unreachable spell: look at the channel again.
+                self._force_probe = True
             self._fail_count = 0
             self._retry_n = 0
             self._dirty = False
@@ -1485,6 +1502,7 @@ class OutputAuthority:
         self._backend_boot = self._boot_id if self._boot_id is not None else f"epoch:{self._epoch}"
         if boot_changed:
             self._backend_restarts += 1
+            self._ws_degraded_until = 0.0
             for u in self._units.values():
                 u.after_boot = True
 

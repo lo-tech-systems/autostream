@@ -53,7 +53,7 @@ class FakeBackend:
         self.entered = threading.Event()
         self.on_update = None         # called inside update_output
         self.on_list = None
-        self.channel = EventChannelInfo(kind="poll")
+        self.channel = EventChannelInfo(kind="poll", reachable=True)
         self.channel_calls = 0
         self._lock = threading.Lock()
 
