@@ -89,7 +89,8 @@ from autostream_dial_warnings import current_warnings, warnings_payload
 from autostream_state.live import get_live_output_eq_status
 from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
 from autostream_appliance_models import (
-    _dial_update_banner_text,
+    home_outputs_reply,
+    home_status_fields,
     submit_output_change,
     bass_treble_from_eq,
     build_equaliser_state,
@@ -333,11 +334,14 @@ def send_owntone_outputs_json(handler, state: WebUIState) -> None:
 
 def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
     """Return Owntone outputs (id/name/selected/volume) for live refresh on '/'."""
-    home = build_home_state(state.config_path)
-    if not home.get("ok"):
-        send_json(handler, 500, {"ok": False, "error": home.get("error", ""), "outputs": []})
+    snap = store().snapshot()
+    try:
+        parsed = _config_snapshot(state)
+    except Exception as e:
+        logging.warning("send_owntone_outputs_state_json: settings unavailable: %s", e)
+        send_json(handler, 500, {"ok": False, "error": str(e), "outputs": []})
         return
-    send_json(handler, 200, {"ok": True, "outputs": home["outputs"], "muted": home["muted"]})
+    send_json(handler, 200, home_outputs_reply(snap, parsed))
 
 
 # -----------------------------------------------------------------------------
@@ -346,24 +350,11 @@ def send_owntone_outputs_state_json(handler, state: WebUIState) -> None:
 
 def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
     snap = store().snapshot()
-    if state is not None:
-        home = build_home_state(state.config_path)
-        input_levels = home.get("input_levels", [])
-        playback_dict = home.get("playback", {})
-        warnings = home.get("warnings", {})
-        ti_dict = home.get("track_identification", {})
-    else:
-        input_levels = snap.inputs.levels()
-        playback = snap.playback
-        playback_dict = playback.to_public_dict()
-        warnings = {
-            "stylus": playback.stylus_banner_text or "",
-            "belt": playback.belt_banner_text or "",
-            "bearing": playback.bearing_banner_text or "",
-            "dial_update": _dial_update_banner_text(),
-            "sample_rate": snap.inputs.sample_rate_warning_text,
-        }
-        ti_dict = active_track(snap).to_public_dict()
+    fields = home_status_fields(snap)
+    input_levels = fields["input_levels"]
+    playback_dict = fields["playback"]
+    warnings = fields["warnings"]
+    ti_dict = fields["track_identification"]
     # Unified playback-session state: the authoritative
     # "playing" signal is session.active, not a raw is_capturing check,
     # so replay (daemon-side, no input is "capturing") correctly reports as

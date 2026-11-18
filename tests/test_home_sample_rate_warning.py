@@ -90,16 +90,12 @@ class TestStatusPayload:
         with _monitors(1, 2):
             assert _status_body()["sample_rate_banner_text"] == _BANNER
 
-    def test_status_takes_the_text_from_the_home_state_warnings(self):
-        home = {"input_levels": [], "playback": {}, "track_identification": {},
-                "warnings": {"sample_rate": _BANNER}}
-        with patch("autostream_webui_api.build_home_state", return_value=home):
+    def test_status_with_a_state_takes_the_text_from_the_snapshot(self):
+        with _monitors(1):
             assert _status_body(MagicMock())["sample_rate_banner_text"] == _BANNER
 
-    def test_status_text_is_empty_when_the_home_state_has_no_entry(self):
-        home = {"input_levels": [], "playback": {}, "track_identification": {},
-                "warnings": {}}
-        with patch("autostream_webui_api.build_home_state", return_value=home):
+    def test_status_with_a_state_has_no_text_without_a_mismatch(self):
+        with _monitors():
             assert _status_body(MagicMock())["sample_rate_banner_text"] == ""
 
     def test_status_keeps_the_other_banner_keys(self):

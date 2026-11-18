@@ -517,7 +517,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
             home = models.build_home_state("dummy.json")
         assert home["muted"] is True
 
-    def test_owntone_outputs_state_route_carries_muted(self):
+    def test_owntone_outputs_state_route_carries_muted(self, writes):
         import autostream_webui_api as api
         captured = {}
 
@@ -525,11 +525,16 @@ class TestBuildOutputListAndHomeStateMuteAware:
             captured["code"] = code
             captured["body"] = body
 
-        with patch("autostream_webui_api.build_home_state",
-                   return_value={"ok": True, "outputs": [], "muted": True}), \
-             patch("autostream_webui_api.send_json", side_effect=fake_send_json):
+        _muted(writes, _output("o1", 40))
+        parsed = SimpleNamespace(
+            owntone=SimpleNamespace(output_name=""),
+            webui=SimpleNamespace(hidden_outputs=()),
+        )
+        with patch("autostream_webui_api._config_snapshot", return_value=parsed),              patch("autostream_webui_api.send_json", side_effect=fake_send_json):
             api.send_owntone_outputs_state_json(_handler(), MagicMock())
+        assert captured["code"] == 200
         assert captured["body"]["muted"] is True
+        assert [o["id"] for o in captured["body"]["outputs"]] == ["o1"]
 
 
 # ---------------------------------------------------------------------------

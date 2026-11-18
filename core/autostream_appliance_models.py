@@ -187,6 +187,39 @@ def build_home_state(
     }
 
 
+def home_status_fields(snap) -> dict:
+    """The input levels, playback, warnings and track identification of the
+    Home status reply, all from one snapshot."""
+    playback = snap.playback
+    return {
+        "input_levels": snap.inputs.levels(),
+        "playback": playback.to_public_dict(),
+        "warnings": {
+            "stylus": playback.stylus_banner_text or "",
+            "belt": playback.belt_banner_text or "",
+            "bearing": playback.bearing_banner_text or "",
+            "dial_update": _dial_update_banner_text(),
+            "sample_rate": snap.inputs.sample_rate_warning_text,
+        },
+        "track_identification": active_track(snap).to_public_dict(),
+    }
+
+
+def home_outputs_reply(snap, parsed) -> dict:
+    """The Home speaker list reply: the outputs of one snapshot (empty while
+    the player is unreachable), shaped by the parsed settings, and the
+    all-speakers mute."""
+    outputs: list[dict] = []
+    if snap.outputs.connected:
+        outputs = build_output_list(parsed, snap.outputs.units)
+    try:
+        from autostream_state.live import annotate_outputs
+        outputs = annotate_outputs(outputs)
+    except Exception:
+        pass
+    return {"ok": True, "outputs": outputs, "muted": snap.outputs.muted_all}
+
+
 def _dial_update_banner_text() -> str:
     """Dial-update banner text, or "" when none is due or the dial scanner
     is unavailable (never raises)."""

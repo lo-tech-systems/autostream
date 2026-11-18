@@ -475,7 +475,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
         get_app_version=lambda: FIXED_APP_VERSION,
         _dial_update_banner_text=lambda: "",
     )
-    setattrs(api, **shared,
+    setattrs(api, **{k: v for k, v in shared.items() if k != "_dial_update_banner_text"},
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
              dial_speaks_v2=lambda dial_id: True,
              _config_snapshot=lambda state: cfg,
