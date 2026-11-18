@@ -232,6 +232,30 @@ def _build_rows() -> dict:
             {"value"},
             {Origin.USER},
         ),
+        _row(
+            "backend.setting.set",
+            {
+                "setting": v.choice(
+                    "uncompressed_audio", "buffered_audio", "start_buffer_ms", "user_agent",
+                    "mdns_grace_period", "output_mode", "output_visibility", "output_offset",
+                    error="invalid_setting"),
+                # Each setting's route has already checked its own value.
+                "value": v.anything(),
+                "output_id": v.optional(v.text(error="output_id required", max_len=256, allow_empty=True)),
+            },
+            {"setting", "value"},
+            {Origin.USER, Origin.SYSTEM},
+        ),
+        _row(
+            "log.level.set",
+            {
+                # The log policy names what it does not support.
+                "level": v.anything(),
+                "changed_by": v.choice("user", "system", error="Invalid changed_by value"),
+            },
+            {"level", "changed_by"},
+            {Origin.USER, Origin.SYSTEM},
+        ),
     ]
     return {row.name: row for row in rows}
 
@@ -288,9 +312,15 @@ class _Table:
         checked = self._check_args(row, intent.args)
         if isinstance(checked, str):
             return self._refuse(intent, checked)
+        try:
+            frozen_args = deep_freeze(checked)
+        except TypeError:
+            # A value that passes through a row unchecked ("anything") may be
+            # of a type that cannot be frozen.
+            return self._refuse(intent, "invalid_args")
         frozen = Intent(
             name=intent.name,
-            args=deep_freeze(checked),
+            args=frozen_args,
             origin=intent.origin,
             requester=intent.requester,
             context=intent.context,

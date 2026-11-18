@@ -278,6 +278,41 @@ class TestSendLogLevelPutJson:
 
         assert captured_changed_by == ["user"]
 
+    def test_the_intent_origin_follows_who_changed_it(self, tmp_path):
+        from autostream_intents import Origin, Reply
+
+        state = _make_state(str(tmp_path / "cfg.json"))
+        h = _make_handler()
+        seen = []
+
+        def _spy(intent, **kwargs):
+            seen.append((intent.name, intent.origin, intent.requester, dict(intent.args)))
+            return Reply(ok=True, error=None, version=0, boot="b",
+                         result={"response": {"ok": True, "level": "info"}})
+
+        with patch("autostream_webui_api.submit", _spy), \
+             patch("autostream_webui_api.send_json", lambda h, c, p: None):
+            api_mod.send_log_level_put_json(h, state, {"level": "info"}, "user")
+            api_mod.send_log_level_put_json(h, state, {"level": "info"}, "system")
+
+        assert seen == [
+            ("log.level.set", Origin.USER, "webui", {"level": "info", "changed_by": "user"}),
+            ("log.level.set", Origin.SYSTEM, "webui", {"level": "info", "changed_by": "system"}),
+        ]
+
+    def test_the_reply_is_what_the_log_policy_returned(self, tmp_path):
+        result = {"ok": True, "level": "info", "changed_by": "user", "changed_at": "t",
+                  "changed": True, "applied": {"autostream": True}}
+        sent = self._call({"level": "info"}, "user", tmp_path, set_result=result)
+        assert sent == [(200, result)]
+
+    def test_a_change_by_anyone_else_is_refused_by_the_row(self, tmp_path):
+        from autostream_intents import Intent, Origin, submit
+
+        reply = submit(Intent("log.level.set", {"level": "info", "changed_by": "admin"},
+                              Origin.USER, "webui", context=_make_state(str(tmp_path / "c.json"))))
+        assert (reply.ok, reply.error) == (False, "Invalid changed_by value")
+
 
 # ---------------------------------------------------------------------------
 # send_log_level_put_json — forwarding to the wifi watcher

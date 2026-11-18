@@ -22,6 +22,7 @@ from autostream_players import (
     SETTING_START_BUFFER_MS_MAX,
     SETTING_START_BUFFER_MS_MIN,
 )
+import autostream_live_config as live_config
 
 BASE = "http://localhost:3689"
 
@@ -192,8 +193,8 @@ def test_webui_save_updates_cache_and_failed_save_does_not():
     handler = MagicMock()
     handler.wfile = __import__("io").BytesIO()
     ok = MagicMock(ok=True, unsupported=False, restart_required=False, message="")
-    with patch.object(api, "save_setting", return_value=ok), \
-            patch.object(api, "_config_snapshot",
+    with patch.object(live_config, "save_setting", return_value=ok), \
+            patch.object(live_config, "_config_snapshot",
                          return_value=MagicMock(owntone=MagicMock(base_url=BASE))):
         api.send_owntone_start_buffer_json(handler, MagicMock(), json.dumps({"value": 1000}))
     assert json.loads(handler.wfile.getvalue())["ok"] is True
@@ -202,8 +203,8 @@ def test_webui_save_updates_cache_and_failed_save_does_not():
     handler2 = MagicMock()
     handler2.wfile = __import__("io").BytesIO()
     bad = MagicMock(ok=False, unsupported=False, restart_required=False, message="nope")
-    with patch.object(api, "save_setting", return_value=bad), \
-            patch.object(api, "_config_snapshot",
+    with patch.object(live_config, "save_setting", return_value=bad), \
+            patch.object(live_config, "_config_snapshot",
                          return_value=MagicMock(owntone=MagicMock(base_url=BASE))):
         api.send_owntone_start_buffer_json(handler2, MagicMock(), json.dumps({"value": 3000}))
     assert json.loads(handler2.wfile.getvalue())["ok"] is False

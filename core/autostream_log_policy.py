@@ -28,6 +28,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from autostream_intents.table import Intent, Outcome, bind
 from autostream_config import (
     CONFIG_IO_LOCK,
     VALID_LOG_LEVELS,
@@ -325,3 +326,22 @@ def apply_startup_log_level(config_path: str, settings=None) -> None:
             logger.warning("apply_startup_log_level: could not apply: %s", result.get("error"))
     except Exception as e:
         logger.warning("apply_startup_log_level: exception: %s", e)
+
+
+def _log_level_set(intent: Intent, wait: float) -> Outcome:
+    """Set the log level for a request. *context* is the request's state, whose
+    configuration path and settings store the change is persisted through. The
+    result's response is what set_log_level returned."""
+    state = intent.context
+    result = set_log_level(
+        state.config_path,
+        intent.args["level"],
+        changed_by=intent.args["changed_by"],
+        settings=getattr(state, "settings", None),
+    )
+    if result.get("ok"):
+        return Outcome(ok=True, result={"response": result})
+    return Outcome(ok=False, error=result.get("error", "Unknown error"), result={"response": result})
+
+
+bind("log.level.set", _log_level_set, owner="autostream_log_policy")

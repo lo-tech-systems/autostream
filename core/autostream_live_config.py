@@ -34,24 +34,42 @@ from autostream_bluetooth_client import (
 )
 from autostream_config import (
     AUDIO_PATH_CHOICES,
+    BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
+    DEFAULT_AIRPLAY_MODE,
     REPEAT_CODEC_CHOICES,
     SILENCE_THRESHOLD_MAX_DBFS,
     SILENCE_THRESHOLD_MIN_DBFS,
+    VALID_AIRPLAY_MODES,
     input_type_silence_threshold_dbfs,
     load_config,
+    load_state,
     normalize_airplay_mode,
     normalize_input_type,
     normalize_repeat_codec,
     normalize_track_id_analysis_lead_in_seconds,
     normalize_track_id_refresh_seconds,
     normalize_track_id_track_change_silence_seconds,
+    parse_config,
     save_config,
+    save_state,
     set_input_type,
 )
+import autostream_start_buffer_cache as start_buffer_cache
 from autostream_debounce import default_debouncer
 from autostream_intents.table import Intent, Outcome, bind, submit
-from autostream_player_service import push_resample_quality, sync_monitor_args_for_audio_path
+from autostream_player_service import (
+    push_resample_quality,
+    save_setting,
+    sync_monitor_args_for_audio_path,
+)
+from autostream_players import (
+    SETTING_BUFFERED_AUDIO_ENABLED,
+    SETTING_DEVICE_REMOVAL_GRACE_PERIOD,
+    SETTING_START_BUFFER_MS,
+    SETTING_UNCOMPRESSED_ALAC,
+    SETTING_USER_AGENT,
+)
 from autostream_rpi import is_high_performance_pi
 from autostream_settings import SettingsStore
 from autostream_settings_schema import (
@@ -1123,3 +1141,474 @@ bind("settings.reload", _settings_reload, owner=_OWNER)
 bind("settings.form_apply", _form_apply, owner=_OWNER)
 bind("settings.advertisement", _advertisement, owner=_OWNER)
 bind("settings.auto_update", _auto_update, owner=_OWNER)
+
+
+# ---------------------------------------------------------------------------
+# Backend settings
+#
+# The OwnTone-compatible backend's native settings, the per-output visibility,
+# mode and offset, and the mDNS grace period. The routes parse and check the
+# request, then submit one "backend.setting.set" intent; the handler below
+# does the work and reports in its result whether the backend asks for a
+# restart (the route starts it) and whether an offset reached the speaker.
+# ---------------------------------------------------------------------------
+
+def _config_snapshot(state):
+    """A parsed configuration, preferring the in-memory settings store."""
+    settings = _store_of(state)
+    if settings is not None:
+        return settings.snapshot()
+    with CONFIG_IO_LOCK:
+        return parse_config(load_config(state.config_path))
+
+
+def _owntone_update_live_runtime(state: object) -> None:
+    """Re-apply owntone runtime from the current store or config snapshot."""
+    try:
+        snap = _config_snapshot(state)
+        submit(Intent(
+            "settings.form_apply",
+            {"steps": (("owntone_runtime", {
+                "output_name": snap.owntone.output_name,
+                "volume_percent": snap.owntone.volume_percent,
+            }),)},
+            Origin.USER, "webui", context=snap))
+    except Exception:
+        logging.exception("_owntone_update_live_runtime failed")
+
+
+def _owntone_state_update_known_outputs(state: object, updates: dict[str, str]) -> None:
+    """Race-safe merge of output name updates into the state file.
+
+    Re-reads the state file inside CONFIG_IO_LOCK so that concurrent PIN
+    or other state changes made while network calls were in flight are
+    preserved.
+    """
+    if not updates:
+        return
+    with CONFIG_IO_LOCK:
+        live = load_state(state.state_path)
+        ko = live.setdefault("owntone", {}).setdefault("known_outputs", {})
+        ko.update(updates)
+        save_state(state.state_path, live)
+
+
+# -----------------------------------------------------------------------------
+# Per-output settings are keyed by a runtime-discovered output name/id, so
+# they don't fit a flat dotted-path schema row -- SETTINGS_SCHEMA.get_field_spec()
+# matches a concrete path such as "owntone.offsets.abc123" against a
+# registered template row ("owntone.offsets.*") on an exact-path lookup
+# miss (see autostream_settings_schema.py's get_field_spec()). Only the
+# per-output offset's static -2000..2000 clamp lives on its row (below,
+# apply_output_offset); the dynamic negative-offset tightening (start-buffer-
+# size-dependent, queried live from the owntone backend) is not a static
+# schema bound and correctly stays a pre-clamp step the handler still does
+# before committing. The AirPlay-mode row is registered for schema
+# completeness -- it is the second field with the same runtime-keyed shape --
+# but send_owntone_output_mode_json's own validation is left
+# untouched here, for two reasons that make folding it in a behaviour change
+# rather than a consolidation:
+#   1. Reject vs coerce. The handler's accepted-value set is exactly
+#      VALID_AIRPLAY_MODES, but it *rejects* anything outside it with a 400
+#      and an enumerated error message. This row's validate callable is
+#      normalize_airplay_mode(), which silently coerces an unknown mode to
+#      DEFAULT_AIRPLAY_MODE -- so routing the handler through the row would
+#      turn a hard rejection into a silent fallback.
+#   2. The buffered-mode availability gate (BUFFERED_AIRPLAY_MODES vs the
+#      backend's live buffered-audio setting) depends on runtime state, not
+#      a static enum bound, so it cannot live on the row at all.
+# This row stays declarative-only for now.
+def _validate_output_offset_ms(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("offset_ms must be a number")
+    return max(-2000, min(2000, int(value)))
+
+
+register_field(
+    "owntone.offsets.*", "owntone", "offsets", _validate_output_offset_ms,
+    bounds=(-2000, 2000), live_class=LiveClass.LIVE,
+)
+
+
+register_field(
+    "owntone.airplay_modes.*", "owntone", "airplay_modes", normalize_airplay_mode,
+    enum=frozenset(VALID_AIRPLAY_MODES), live_class=LiveClass.LIVE,
+)
+
+
+def apply_output_offset(state: object, output_id: str, raw_offset) -> dict:
+    """Clamp, store, and (best-effort) live-push an output offset.
+
+    Shared by send_owntone_output_offset_json (POST /api/owntone/output-offset)
+    and the "Align outputs" apply endpoint so both paths clamp/store/push
+    identically. Returns a dict shaped like the JSON body callers already
+    send, minus the "ok" wrapper key that varies slightly by caller.
+    """
+    output_id = str(output_id or "").strip()
+    if not output_id:
+        return {"ok": False, "error": "output_id required"}
+    # Static -2000..2000 clamp lives on the "owntone.offsets.*"
+    # template schema row (registered above); same clamp, same error
+    # message, only its declaration moved.
+    offset_path = f"owntone.offsets.{output_id}"
+    offset_spec = get_field_spec(offset_path)
+    try:
+        offset_ms = offset_spec.validate(raw_offset)
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+
+    try:
+        base_url = _config_snapshot(state).owntone.base_url
+    except Exception:
+        base_url = ""
+
+    # Negative offsets delay this output's local playback relative to the
+    # stream; push it back further than the start buffer can absorb and
+    # playback underruns. Only tighten (never loosen) the -2000ms UI floor,
+    # and only pay for the backend round trip when the request is actually
+    # negative -- the common positive-offset case never needs it.
+    if offset_ms < 0 and base_url:
+        from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
+        from autostream_player_service import get_setting as _get_setting
+        buf_result = _get_setting(base_url, SETTING_START_BUFFER_MS, timeout=1.5)
+        start_buffer_ms = int(buf_result.value) if buf_result.ok else SETTING_START_BUFFER_MS_DEFAULT
+        max_negative = -(start_buffer_ms - 250)
+        if max_negative > -2000:
+            offset_ms = max(max_negative, offset_ms)
+
+    from autostream_settings import SettingsStore as _SettingsStore
+    _store = getattr(state, "settings", None)
+    if not isinstance(_store, _SettingsStore):
+        return {"ok": False, "error": "Settings store unavailable"}
+
+    try:
+        # offset_ms here may have been dynamically tightened (start-buffer-
+        # size-dependent) beyond the static schema bound already applied
+        # above -- _set_normalized commits it as-is.
+        _store._set_normalized(offset_spec, offset_ms, path=offset_path)
+    except Exception:
+        logging.exception("apply_output_offset: store update failed")
+        return {"ok": False, "error": "Internal error"}
+
+    _owntone_update_live_runtime(state)
+
+    applied_live = False
+    if base_url:
+        import autostream_player_service as _player_service
+        try:
+            caps = _player_service.get_capabilities(base_url, timeout=2)
+            if caps.can_set_output_offset and _player_service.supports_live_offset(base_url, timeout=2):
+                push_result = _player_service.update_output(base_url, output_id, offset_ms=offset_ms, timeout=2)
+                applied_live = bool(push_result.ok)
+        except Exception:
+            # Store write already succeeded above; owntone being down or
+            # unreachable here is not a failure the caller needs to see --
+            # applied_live=False tells the UI the value is queued, not live.
+            logging.info("apply_output_offset: live push failed", exc_info=True)
+
+    return {
+        "ok": True,
+        "output_id": output_id,
+        "offset_ms": offset_ms,
+        "applied_live": applied_live,
+    }
+
+
+def _push_owntone_native_setting(
+    state: object,
+    setting_key: str,
+    value: object,
+    reject_unsupported: bool = False,
+) -> tuple[bool, bool, str]:
+    """Push a native setting to the configured OwnTone-compatible backend.
+    Returns (ok, restart_required, error); starting the restart is the caller's.
+
+    Unsupported settings are tolerated by default: best-effort pushes such as the
+    mDNS grace period fire against whatever backend is configured (including none,
+    in dial mode) and must not surface an error. Callers driving a user-visible,
+    backend-gated control pass reject_unsupported=True to get a real failure.
+    """
+    try:
+        parsed = _config_snapshot(state)
+        base_url = parsed.owntone.base_url
+    except Exception as exc:
+        return False, False, f"Config unavailable: {exc}"
+
+    result = save_setting(base_url, setting_key, value, timeout=5.0)
+    if result.unsupported and reject_unsupported:
+        return False, False, (
+            result.message or "This backend does not support that setting"
+        )
+    if not result.ok and not result.unsupported:
+        return False, False, result.message or "OwnTone API error"
+
+    return True, bool(result.restart_required), ""
+
+
+def apply_mdns_grace_period(state: object, seconds: int) -> tuple[bool, bool, str]:
+    """Push configured mDNS grace to appliance discovery and OwnTone Mini.
+
+    Synchronous: configures the in-process appliance browser and then contacts
+    the OwnTone backend, returning its result. Used by the interactive settings
+    handler, which reports success/restart back to the caller.
+    """
+    import autostream_appliances as appliances
+
+    appliances.set_grace_period(seconds)
+    return _push_owntone_native_setting(
+        state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, seconds
+    )
+
+
+def _forward_mdns_grace_period_to_owntone(
+    state: object,
+    seconds: int,
+) -> tuple[bool, bool, str]:
+    """Best-effort consumer sync for the autostream-owned mDNS grace setting."""
+
+    return _push_owntone_native_setting(
+        state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, seconds
+    )
+
+
+def apply_mdns_grace_period_startup(
+    state: object,
+    on_restart: Optional[Callable[[object], None]] = None,
+) -> None:
+    """Apply the configured mDNS grace at startup without blocking boot.
+
+    Configures the in-process appliance browser synchronously (cheap, always
+    safe, and all a dial needs), then pushes the value to the OwnTone backend on
+    a background daemon thread. Backgrounding keeps a slow or absent backend
+    (e.g. dial mode with no OwnTone) from delaying startup, and isolates the
+    network call from the startup thread. *on_restart*, when given, is called
+    with the state if the backend then asks for a restart.
+    """
+    try:
+        cfg = _config_snapshot(state)
+        seconds = int(cfg.general.mdns_grace_period_seconds)
+    except Exception:
+        logging.debug("startup mdns grace: config unavailable", exc_info=True)
+        return
+
+    import autostream_appliances as appliances
+    appliances.set_grace_period(seconds)
+
+    def _push_to_owntone() -> None:
+        try:
+            ok, restart_needed, err = _push_owntone_native_setting(
+                state, SETTING_DEVICE_REMOVAL_GRACE_PERIOD, seconds
+            )
+            if not ok:
+                logging.debug("startup mdns grace owntone push failed: %s", err)
+            elif restart_needed and on_restart is not None:
+                on_restart(state)
+        except Exception:
+            logging.debug("startup mdns grace owntone push error", exc_info=True)
+
+    threading.Thread(
+        target=_push_to_owntone, daemon=True, name="mdns-grace-startup",
+    ).start()
+
+
+def _buffered_audio_is_enabled(state: object) -> bool:
+    """Report whether the backend currently has buffered audio switched on.
+
+    Backends that do not expose the setting cannot serve buffered modes either,
+    so an unreadable or unsupported result counts as off.
+    """
+    from autostream_player_service import get_setting
+
+    try:
+        parsed = _config_snapshot(state)
+        result = get_setting(
+            parsed.owntone.base_url, SETTING_BUFFERED_AUDIO_ENABLED, timeout=3,
+        )
+    except Exception:
+        logging.debug("buffered-audio probe failed", exc_info=True)
+        return False
+    return bool(result.ok and result.value)
+
+
+def _reset_buffered_output_modes(state: object) -> list[str]:
+    """Fall outputs saved as a buffered-transport mode back to the default mode.
+
+    Called when buffered audio is switched off: those modes are no longer
+    selectable, so leaving them persisted would silently reapply an unavailable
+    mode if the setting were later turned back on, or when an undiscovered
+    speaker reappears. Returns the output ids that were changed.
+    """
+    from autostream_settings import SettingsStore as _SettingsStore
+
+    _store = getattr(state, "settings", None)
+    if not isinstance(_store, _SettingsStore):
+        logging.warning("buffered-audio off: settings store unavailable, modes not reset")
+        return []
+
+    changed: list[str] = []
+
+    def _mutator(raw: dict) -> None:
+        changed.clear()  # keep the tally accurate if the store reapplies the mutator
+        modes = raw.setdefault("owntone", {}).setdefault("airplay_modes", {})
+        for output_id, mode in list(modes.items()):
+            if str(mode or "").strip().lower() in BUFFERED_AIRPLAY_MODES:
+                modes[output_id] = DEFAULT_AIRPLAY_MODE
+                changed.append(str(output_id))
+
+    try:
+        _store.update(_mutator)
+    except Exception:
+        logging.exception("buffered-audio off: failed to reset output modes")
+        return []
+
+    if changed:
+        _owntone_update_live_runtime(state)
+    return changed
+
+
+def _native_setting(state: object, key: str, value: object, *, reject_unsupported: bool = False) -> Outcome:
+    ok, restart_needed, error = _push_owntone_native_setting(
+        state, key, value, reject_unsupported=reject_unsupported)
+    if not ok:
+        return Outcome(ok=False, error=error or "OwnTone API error")
+    return Outcome(ok=True, result={"restart_required": restart_needed})
+
+
+def _set_buffered_audio(state: object, value: object) -> Outcome:
+    ok, restart_needed, error = _push_owntone_native_setting(
+        state, SETTING_BUFFERED_AUDIO_ENABLED, value, reject_unsupported=True)
+    if not ok:
+        return Outcome(ok=False, error=error or "OwnTone API error")
+    reset_outputs: list[str] = []
+    if not value:
+        reset_outputs = _reset_buffered_output_modes(state)
+    return Outcome(ok=True, result={"restart_required": restart_needed, "reset_outputs": reset_outputs})
+
+
+def _set_start_buffer(state: object, value: object) -> Outcome:
+    ok, restart_needed, error = _push_owntone_native_setting(state, SETTING_START_BUFFER_MS, value)
+    if not ok:
+        return Outcome(ok=False, error=error or "OwnTone API error")
+    # The dial status path serves the buffer from this cache; refresh it now so
+    # a change reaches the dial on its next poll.
+    start_buffer_cache.note_saved(value)
+    return Outcome(ok=True, result={"restart_required": restart_needed})
+
+
+def _set_mdns_grace_period(state: object, seconds: int) -> Outcome:
+    settings = _store_of(state)
+    if settings is None:
+        return Outcome(ok=False, error="Settings store unavailable")
+
+    def _mutator(raw_config: dict) -> None:
+        raw_config.setdefault("general", {})["mdns_grace_period_seconds"] = seconds
+
+    try:
+        settings.update(_mutator)
+    except Exception:
+        logging.exception("backend.setting.set: mDNS grace period store update failed")
+        return Outcome(ok=False, error="Internal error")
+
+    import autostream_appliances as appliances
+    appliances.set_grace_period(seconds)
+
+    ok, restart_needed, error = _forward_mdns_grace_period_to_owntone(state, seconds)
+    result: dict = {"restart_required": restart_needed}
+    if not ok:
+        logging.debug("mDNS grace period OwnTone forward failed: %s", error)
+        result["warning"] = error or "OwnTone sync failed"
+    return Outcome(ok=True, result=result)
+
+
+def _set_output_mode(state: object, mode: str, output_id: str) -> Outcome:
+    # A page rendered while buffered audio was on keeps offering the buffered
+    # modes until it is reloaded, so refuse them here rather than trusting the
+    # form's option list to still be current.
+    if mode in BUFFERED_AIRPLAY_MODES and not _buffered_audio_is_enabled(state):
+        return Outcome(
+            ok=False,
+            error="Buffered audio is disabled — enable it before selecting this mode")
+    settings = _store_of(state)
+    if settings is None:
+        return Outcome(ok=False, error="Settings store unavailable")
+
+    def _mutator(raw: dict) -> None:
+        raw.setdefault("owntone", {}).setdefault("airplay_modes", {})[output_id] = mode
+
+    try:
+        settings.update(_mutator)
+    except Exception:
+        logging.exception("backend.setting.set: output mode store update failed")
+        return Outcome(ok=False, error="Internal error")
+
+    _owntone_update_live_runtime(state)
+    return Outcome(ok=True, result={"output_id": output_id, "mode": mode})
+
+
+def _set_output_visibility(state: object, value: object, output_id: str) -> Outcome:
+    output_name = value["output_name"]
+    visible = value["visible"]
+    settings = _store_of(state)
+    if settings is None:
+        return Outcome(ok=False, error="Settings store unavailable")
+
+    def _mutator(raw: dict) -> None:
+        hidden = list(raw.setdefault("webui", {}).get("hidden_outputs") or [])
+        name_cf = output_name.casefold()
+        if visible:
+            hidden = [h for h in hidden if str(h).casefold() != name_cf]
+        else:
+            if not any(str(h).casefold() == name_cf for h in hidden):
+                hidden.append(output_name)
+        raw["webui"]["hidden_outputs"] = hidden
+
+    try:
+        settings.update(_mutator)
+    except Exception:
+        logging.exception("backend.setting.set: output visibility store update failed")
+        return Outcome(ok=False, error="Internal error")
+
+    if output_id:
+        try:
+            _owntone_state_update_known_outputs(state, {output_id: output_name})
+        except Exception:
+            logging.exception("backend.setting.set: known_outputs update failed")
+
+    return Outcome(ok=True, result={"output_name": output_name, "visible": visible})
+
+
+def _set_output_offset(state: object, raw_offset: object, output_id: str) -> Outcome:
+    response = apply_output_offset(state, output_id, raw_offset)
+    if not response.get("ok"):
+        return Outcome(ok=False, error=response.get("error"))
+    return Outcome(ok=True, result={
+        "output_id": response["output_id"],
+        "offset_ms": response["offset_ms"],
+        "applied_live": response["applied_live"],
+    })
+
+
+_BACKEND_SETTINGS = {
+    "uncompressed_audio": lambda state, value, output_id: _native_setting(
+        state, SETTING_UNCOMPRESSED_ALAC, value),
+    "buffered_audio": lambda state, value, output_id: _set_buffered_audio(state, value),
+    "start_buffer_ms": lambda state, value, output_id: _set_start_buffer(state, value),
+    "user_agent": lambda state, value, output_id: _native_setting(
+        state, SETTING_USER_AGENT, value, reject_unsupported=True),
+    "mdns_grace_period": lambda state, value, output_id: _set_mdns_grace_period(state, value),
+    "output_mode": lambda state, value, output_id: _set_output_mode(state, value, output_id),
+    "output_visibility": lambda state, value, output_id: _set_output_visibility(state, value, output_id),
+    "output_offset": lambda state, value, output_id: _set_output_offset(state, value, output_id),
+}
+
+
+def _backend_setting(intent: Intent, wait: float) -> Outcome:
+    """Apply one backend setting. *context* is the request's state. The result
+    says whether the backend asks for a restart ("restart_required") and carries
+    what the setting's route replies with."""
+    args = intent.args
+    return _BACKEND_SETTINGS[args["setting"]](
+        intent.context, args["value"], args.get("output_id") or "")
+
+
+bind("backend.setting.set", _backend_setting, owner=_OWNER)

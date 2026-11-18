@@ -114,8 +114,8 @@ class TestOutputVisibility:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"output_name": "Kitchen", "output_id": "42", "visible": True})
-        with patch("autostream_webui_api.load_state") as m_load, \
-             patch("autostream_webui_api.save_state") as m_save:
+        with patch("autostream_live_config.load_state") as m_load, \
+             patch("autostream_live_config.save_state") as m_save:
             m_load.return_value = {"owntone": {"known_outputs": {}}}
             send_owntone_output_visibility_json(handler, state, body)
         m_save.assert_called_once()
@@ -227,7 +227,7 @@ class TestBufferedModeGuard:
             state = _make_state(config_path, state_path, store)
             handler, sent = _make_handler()
             body = json.dumps({"output_id": "42", "mode": mode})
-            with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=False), \
+            with patch("autostream_live_config._buffered_audio_is_enabled", return_value=False), \
                  patch("autostream_live_config.update_live_owntone_runtime") as m_live:
                 send_owntone_output_mode_json(handler, state, body)
             assert sent["code"] == 200
@@ -246,7 +246,7 @@ class TestBufferedModeGuard:
             state = _make_state(config_path, state_path, store)
             handler, sent = _make_handler()
             body = json.dumps({"output_id": "42", "mode": mode})
-            with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=True), \
+            with patch("autostream_live_config._buffered_audio_is_enabled", return_value=True), \
                  patch("autostream_live_config.update_live_owntone_runtime"):
                 send_owntone_output_mode_json(handler, state, body)
             assert sent["body"]["ok"] is True
@@ -263,7 +263,7 @@ class TestBufferedModeGuard:
                 state = _make_state(config_path, state_path, store)
                 handler, sent = _make_handler()
                 body = json.dumps({"output_id": "42", "mode": mode})
-                with patch("autostream_webui_api._buffered_audio_is_enabled", return_value=buffered_state) as m_guard, \
+                with patch("autostream_live_config._buffered_audio_is_enabled", return_value=buffered_state) as m_guard, \
                      patch("autostream_live_config.update_live_owntone_runtime"):
                     send_owntone_output_mode_json(handler, state, body)
                 assert sent["body"]["ok"] is True
@@ -299,33 +299,33 @@ class TestBufferedAudioIsEnabledHelper:
         return _make_state(config_path, state_path, _make_store(config_path))
 
     def test_false_on_exception(self, tmp_path):
-        from autostream_webui_api import _buffered_audio_is_enabled
+        from autostream_live_config import _buffered_audio_is_enabled
         state = self._state(tmp_path)
-        with patch("autostream_webui_api._config_snapshot", side_effect=RuntimeError("boom")):
+        with patch("autostream_live_config._config_snapshot", side_effect=RuntimeError("boom")):
             assert _buffered_audio_is_enabled(state) is False
 
     def test_false_when_result_not_ok(self, tmp_path):
-        from autostream_webui_api import _buffered_audio_is_enabled
+        from autostream_live_config import _buffered_audio_is_enabled
         state = self._state(tmp_path)
-        with patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_player_service.get_setting") as m_get:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_get.return_value = MagicMock(ok=False, value=True)
             assert _buffered_audio_is_enabled(state) is False
 
     def test_false_when_value_falsey(self, tmp_path):
-        from autostream_webui_api import _buffered_audio_is_enabled
+        from autostream_live_config import _buffered_audio_is_enabled
         state = self._state(tmp_path)
-        with patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_player_service.get_setting") as m_get:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_get.return_value = MagicMock(ok=True, value=False)
             assert _buffered_audio_is_enabled(state) is False
 
     def test_true_when_ok_and_value(self, tmp_path):
-        from autostream_webui_api import _buffered_audio_is_enabled
+        from autostream_live_config import _buffered_audio_is_enabled
         state = self._state(tmp_path)
-        with patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_player_service.get_setting") as m_get:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_get.return_value = MagicMock(ok=True, value=True)
@@ -512,8 +512,8 @@ class TestNativeOwntoneSettings:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": True})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result()
             send_owntone_uncompressed_json(handler, state, body)
@@ -528,8 +528,8 @@ class TestNativeOwntoneSettings:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": False})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(restart_required=True)
@@ -545,8 +545,8 @@ class TestNativeOwntoneSettings:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": True})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False)
@@ -574,8 +574,8 @@ class TestNativeOwntoneSettings:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": 999999})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result()
             send_owntone_start_buffer_json(handler, state, body)
@@ -590,9 +590,9 @@ class TestNativeOwntoneSettings:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": 5})
-        with patch("autostream_webui_api.save_setting") as m_save, \
+        with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_appliances.set_grace_period") as m_browser, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result()
             send_owntone_grace_period_json(handler, state, body)
@@ -609,8 +609,8 @@ class TestNativeOwntoneSettings:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": True})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False, unsupported=True)
@@ -628,8 +628,8 @@ class TestNativeOwntoneSettings:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": True})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False, unsupported=True)
@@ -645,8 +645,8 @@ class TestNativeOwntoneSettings:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": True})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=True)
             send_owntone_buffered_audio_json(handler, state, body)
@@ -674,8 +674,8 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "AirPlay/950.7.1"})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result()
             send_owntone_user_agent_json(handler, state, body)
@@ -692,8 +692,8 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "  AirPlay/950.7.1  \n"})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result()
             send_owntone_user_agent_json(handler, state, body)
@@ -707,7 +707,7 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "Air\r\nPlay/1"})
-        with patch("autostream_webui_api.save_setting") as m_save:
+        with patch("autostream_live_config.save_setting") as m_save:
             send_owntone_user_agent_json(handler, state, body)
         m_save.assert_not_called()
         assert sent["code"] == 400
@@ -720,7 +720,7 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "AirPlay\x7f/1"})
-        with patch("autostream_webui_api.save_setting") as m_save:
+        with patch("autostream_live_config.save_setting") as m_save:
             send_owntone_user_agent_json(handler, state, body)
         m_save.assert_not_called()
         assert sent["code"] == 400
@@ -733,7 +733,7 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "A" * 300})
-        with patch("autostream_webui_api.save_setting") as m_save:
+        with patch("autostream_live_config.save_setting") as m_save:
             send_owntone_user_agent_json(handler, state, body)
         m_save.assert_not_called()
         assert sent["code"] == 400
@@ -746,8 +746,8 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "A" * 255})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result()
             send_owntone_user_agent_json(handler, state, body)
@@ -762,8 +762,8 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "   "})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result()
             send_owntone_user_agent_json(handler, state, body)
@@ -779,7 +779,7 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": 123})
-        with patch("autostream_webui_api.save_setting") as m_save:
+        with patch("autostream_live_config.save_setting") as m_save:
             send_owntone_user_agent_json(handler, state, body)
         m_save.assert_not_called()
         assert sent["code"] == 400
@@ -792,8 +792,8 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "AirPlay/1"})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False, error="owntone_error")
             send_owntone_user_agent_json(handler, state, body)
@@ -810,8 +810,8 @@ class TestUserAgentSetting:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": "AirPlay/1"})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_webui_page_owntone.start_owntone_restart_async") as m_restart:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=False, unsupported=True)
@@ -862,8 +862,8 @@ class TestBufferedAudioResetOutputs:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": False})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_live_config.update_live_owntone_runtime"):
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=True)
@@ -889,8 +889,8 @@ class TestBufferedAudioResetOutputs:
         state = _make_state(config_path, state_path, store)
         handler, sent = _make_handler()
         body = json.dumps({"value": True})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap, \
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap, \
              patch("autostream_live_config.update_live_owntone_runtime") as m_live:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=True)
@@ -910,8 +910,8 @@ class TestBufferedAudioResetOutputs:
         state = _make_state(config_path, state_path, None)  # no settings store
         handler, sent = _make_handler()
         body = json.dumps({"value": False})
-        with patch("autostream_webui_api.save_setting") as m_save, \
-             patch("autostream_webui_api._config_snapshot") as m_snap:
+        with patch("autostream_live_config.save_setting") as m_save, \
+             patch("autostream_live_config._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
             m_save.return_value = self._make_save_result(ok=True)
             send_owntone_buffered_audio_json(handler, state, body)

@@ -227,7 +227,7 @@ class TestStartWebuiBackground:
             patch("autostream_webui._scan_monitor_devices_loop"),
             # The OwnTone push happens on a background daemon thread; stub it so
             # the test asserts only the synchronous browser configuration.
-            patch("autostream_webui_api._push_owntone_native_setting",
+            patch("autostream_live_config._push_owntone_native_setting",
                   return_value=(True, False, "")),
             patch("autostream_appliances.set_grace_period") as m_set,
         ):

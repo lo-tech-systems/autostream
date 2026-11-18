@@ -378,7 +378,7 @@ class TestMdnsGracePeriodEndpoint:
         from autostream_webui_api import send_settings_mdns_grace_period_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.save_setting") as m_save, \
+        with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_appliances.set_grace_period") as m_browser, \
              patch("autostream_webui_api._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
@@ -398,7 +398,7 @@ class TestMdnsGracePeriodEndpoint:
         from autostream_webui_api import send_settings_mdns_grace_period_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
-        with patch("autostream_webui_api.save_setting") as m_save, \
+        with patch("autostream_live_config.save_setting") as m_save, \
              patch("autostream_appliances.set_grace_period") as m_browser, \
              patch("autostream_webui_api._config_snapshot") as m_snap:
             m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))

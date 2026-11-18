@@ -1673,12 +1673,14 @@ def start_webui_background(
                 start_appliance_scanner,
             )
             from autostream_webui_common import _config_snapshot, get_app_version
-            from autostream_webui_api import apply_mdns_grace_period_startup
+            import autostream_live_config
+            from autostream_webui_page_owntone import start_owntone_restart_async
 
             start_dial_scanner(shutdown_event=runtime.stop_flag)
             start_dial_warnings_watcher(shutdown_event=runtime.stop_flag)
             start_appliance_scanner(shutdown_event=runtime.stop_flag)
-            apply_mdns_grace_period_startup(STATE)
+            autostream_live_config.apply_mdns_grace_period_startup(
+                STATE, on_restart=lambda state: start_owntone_restart_async(state, delay_s=0.75))
 
             scanner_thread = threading.Thread(
                 target=_scan_monitor_devices_loop, daemon=True,

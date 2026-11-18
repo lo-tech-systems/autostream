@@ -142,7 +142,7 @@ class TestValidators:
 # ---------------------------------------------------------------------------
 
 class TestRows:
-    def test_the_table_names_the_output_repeat_equaliser_and_settings_rows(self):
+    def test_the_table_names_every_row(self):
         assert set(table.ROWS) == {
             "outputs.set", "output.pin.submit", "outputs.select_default",
             "outputs.deselect_all", "volume.step", "mute.set",
@@ -150,6 +150,7 @@ class TestRows:
             "output.eq.set", "output.eq.reset",
             "settings.apply", "settings.save", "settings.reload", "settings.form_apply",
             "settings.advertisement", "settings.auto_update",
+            "backend.setting.set", "log.level.set",
         }
 
     @pytest.mark.parametrize("name", sorted(table.ROWS))

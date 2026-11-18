@@ -30,8 +30,9 @@ import json
 import logging
 
 from autostream_align import parse_result_entries
+from autostream_intents import Intent, Origin, submit
 from autostream_state import store
-from autostream_webui_api import apply_output_offset, send_json
+from autostream_webui_api import send_json
 from autostream_webui_assets import COMMON_MODAL_CSS, INFO_MODAL_HTML, INFO_MODAL_SCRIPT
 from autostream_webui_common import (
     CSRF_RECOVERY_SCRIPT,
@@ -591,9 +592,12 @@ def send_align_apply_json(handler, state: WebUIState, body: str) -> None:
 
     applied = {}
     for output_id, raw_offset in offsets.items():
-        result = apply_output_offset(state, output_id, raw_offset)
-        if result.get("ok"):
-            applied[result["output_id"]] = result["offset_ms"]
+        reply = submit(Intent(
+            "backend.setting.set",
+            {"setting": "output_offset", "value": raw_offset, "output_id": output_id},
+            Origin.USER, "webui", context=state))
+        if reply.ok:
+            applied[reply.result["output_id"]] = reply.result["offset_ms"]
 
     run = getattr(state, "align_run", None)
     if run is not None:

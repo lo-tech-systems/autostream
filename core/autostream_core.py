@@ -237,6 +237,7 @@ def _bind_intent_handlers() -> None:
     """Import the modules that handle intents; each binds its rows when
     imported."""
     import autostream_live_config
+    import autostream_log_policy  # noqa: F401
     import autostream_output_intents  # noqa: F401
 
     # Each hook finds the coordinator's function when it is called.

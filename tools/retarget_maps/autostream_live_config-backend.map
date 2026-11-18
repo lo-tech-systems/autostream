@@ -1,0 +1,8 @@
+# The backend settings (native OwnTone settings, per-output visibility, mode and offset, the mDNS grace period) moved from the web API into the live configuration module.
+autostream_webui_api.save_setting -> autostream_live_config.save_setting  alias=live_config
+autostream_webui_api.load_state -> autostream_live_config.load_state  alias=live_config
+autostream_webui_api.save_state -> autostream_live_config.save_state  alias=live_config
+autostream_webui_api.apply_mdns_grace_period -> autostream_live_config.apply_mdns_grace_period  alias=live_config
+autostream_webui_api.apply_mdns_grace_period_startup -> autostream_live_config.apply_mdns_grace_period_startup  alias=live_config
+autostream_webui_api._push_owntone_native_setting -> autostream_live_config._push_owntone_native_setting  alias=live_config
+autostream_webui_api._buffered_audio_is_enabled -> autostream_live_config._buffered_audio_is_enabled  alias=live_config

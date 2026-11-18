@@ -84,12 +84,12 @@ def _make_state(tmp_path: Path, *, with_store: bool = True):
 
 class TestMdnsGraceFanout:
     def test_apply_mdns_grace_period_pushes_browser_and_owntone(self, tmp_path):
-        from autostream_webui_api import apply_mdns_grace_period
+        from autostream_live_config import apply_mdns_grace_period
         state, store = _make_state(tmp_path)
         try:
             with patch("autostream_appliances.set_grace_period") as m_browser, \
-                 patch("autostream_webui_api.save_setting") as m_save, \
-                 patch("autostream_webui_api._config_snapshot") as m_snap:
+                 patch("autostream_live_config.save_setting") as m_save, \
+                 patch("autostream_live_config._config_snapshot") as m_snap:
                 m_snap.return_value = MagicMock(owntone=MagicMock(base_url="http://localhost:3689"))
                 m_save.return_value = MagicMock(ok=True, unsupported=False, restart_required=False)
                 ok, restart, err = apply_mdns_grace_period(state, 180)
