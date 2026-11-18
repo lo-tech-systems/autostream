@@ -353,6 +353,23 @@ class TestOutputsPart:
         assert p.unit_by_name("Speaker a") is a and p.unit_by_name("nope") is None
         assert p.selected_units() == (a,)
 
+    def test_a_unit_with_no_row_is_offline_and_the_lookups_skip_it(self):
+        away = self.unit("a", selected=True, reported=None, availability="gone")
+        here = self.unit("b", selected=True)
+        p = state.OutputsPart(units=(away, here))
+        assert away.offline is True and here.offline is False
+        assert p.unit("a") is away
+        assert p.unit_by_name("Speaker a") is None and p.unit_by_name("Speaker b") is here
+        assert p.selected_units() == (here,)
+
+    def test_the_list_volume_and_mute_digests_leave_offline_units_out(self):
+        base = state.OutputsPart(units=(self.unit("a"),), connected=True)
+        card = self.unit("d", reported=None, availability="gone", volume=30)
+        withcard = dataclasses.replace(base, units=(self.unit("a"), card))
+        for digest in (state.outputs_list_digest, state.outputs_volume_digest, state.outputs_mute_digest):
+            assert digest(withcard) == digest(base)
+        assert DIGESTS["outputs"](withcard) != DIGESTS["outputs"](base)
+
     def test_a_unit_waiting_for_a_pin_shows_as_off(self):
         assert self.unit(selected=True).shown_selected is True
         assert self.unit(selected=True, availability="password").shown_selected is False

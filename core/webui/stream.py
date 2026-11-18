@@ -37,7 +37,7 @@ from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 import autostream_logging as log_setup
-from autostream_state import PART_NAMES
+from autostream_state import PART_NAMES, OutputUnitView
 from webui import common
 
 MAX_CLIENTS = 8
@@ -229,7 +229,8 @@ def install(hub: Optional[StreamHub]) -> None:
 # -----------------------------------------------------------------------------
 
 def _jsonable(value):
-    """*value* as plain JSON types: dataclasses by field, mappings with string
+    """*value* as plain JSON types: dataclasses by field (an output unit also
+    carries its offline property), mappings with string
     keys, sequences and sets as lists, enums by value, non-finite floats as
     None."""
     if value is None or isinstance(value, (bool, int, str)):
@@ -239,7 +240,10 @@ def _jsonable(value):
     if isinstance(value, float):
         return value if math.isfinite(value) else None
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return {f.name: _jsonable(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        fields = {f.name: _jsonable(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        if isinstance(value, OutputUnitView):
+            fields["offline"] = value.offline
+        return fields
     if isinstance(value, dict):
         return {str(k): _jsonable(v) for k, v in value.items()}
     if isinstance(value, (frozenset, set)):

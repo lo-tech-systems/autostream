@@ -794,3 +794,48 @@ class TestDeselectAll:
         assert clearing.stops == []
         assert clearing.lists == [[]]
         assert not any(u.selected for u in snap().units)
+
+
+# ---------------------------------------------------------------------------
+# The default speaker's card while the player has no row for it
+# ---------------------------------------------------------------------------
+
+class TestOfflineDefault:
+    CARD = "default:Kitchen"
+
+    @pytest.fixture(autouse=True)
+    def _configured(self):
+        get_authority().set_default_output("Kitchen", 42)
+
+    def test_select_default_does_not_find_a_card_with_no_row(self, player, usage):
+        arrange(row("1", "Hall"))
+        reply = _default()
+        assert reply.ok is False and reply.error == "not_found"
+        assert player.calls == []
+
+    def test_select_default_does_not_find_a_default_whose_row_went_away(self, player, usage):
+        arrange(row("1", "Hall"), row("2", "Kitchen", selected=True))
+        arrange(row("1", "Hall"))
+        assert snap().unit("2").offline
+        reply = _default()
+        assert reply.ok is False and reply.error == "not_found"
+        assert player.calls == []
+
+    def test_a_tap_on_the_card_is_a_choice_and_writes_nothing(self, player):
+        arrange(row("1", "Hall"))
+        get_authority().note_session(True)
+        assert change({"id": self.CARD, "selected": False}) == {"ok": True}
+        assert snap().silence_chosen is True and snap().units[-1].selected is False
+        assert change({"id": self.CARD, "selected": True, "volume": 30}) == {"ok": True}
+        assert snap().silence_chosen is False and snap().units[-1].selected is True
+        assert player.calls == []
+
+    def test_a_tap_on_the_card_by_the_session_is_not_allowed(self, player):
+        arrange(row("1", "Hall"))
+        reply = submit(Intent("outputs.want_default", {"wanted": True}, Origin.SESSION, "coordinator"))
+        assert reply.ok is False and reply.error == "origin_not_allowed"
+
+    def test_a_card_id_means_a_unit_once_the_row_is_there(self, player):
+        arrange(row("1", "Hall"), row("2", "Kitchen"))
+        change({"id": "2", "selected": True, "volume": 30})
+        assert player.calls and player.calls[0][1] == "2"

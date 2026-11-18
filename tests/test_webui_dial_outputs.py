@@ -262,6 +262,19 @@ class TestOutputsList:
         flags = [(o["name"], o["is_default"]) for o in body["outputs"]]
         assert flags == [("Zulu", True), ("Alpha", False)]
 
+    def test_a_default_the_player_does_not_have_is_not_listed(self):
+        from autostream_state.outputs import get_authority
+        get_authority().set_default_output("Zulu", 30)
+        code, body = _invoke_list(
+            {"dial_id": DIAL_ID},
+            list_result=_ok_list(_output("1", "Alpha", 10)),
+            parsed=_parsed(output_name="Zulu"),
+        )
+        assert [o["name"] for o in body["outputs"]] == ["Alpha"]
+        assert all(set(o) == {"id", "name", "selected", "volume", "remote_in_use", "remote_owner",
+                              "is_default", "pin_pending", "needs_auth_key", "pin_claim"}
+                   for o in body["outputs"])
+
     def test_is_default_is_always_a_bool(self):
         from webui.browser.home_model import build_output_list as real_build
 

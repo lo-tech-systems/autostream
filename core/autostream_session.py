@@ -171,6 +171,7 @@ def _start_session_owntone(monitor: "AudioMonitor") -> None:
     """
     monitor._owntone_enabled_ok = False
     monitor._owntone_last_attempt = 0.0
+    monitor.clear_default_output_wait()
     if monitor.owntone_base_url:
         intents.submit(Intent("outputs.deselect_all", {}, Origin.SESSION, "coordinator"))
     get_authority().note_session(True)
@@ -270,6 +271,8 @@ def dispatch_session_event(
             _start_session_owntone(new_monitor)
     elif event == "session_ended":
         _session_nowplaying_end(prev_monitor)
+        if prev_monitor is not None:
+            prev_monitor.clear_default_output_wait()
         if owntone_base_url:
             intents.submit(Intent("outputs.deselect_all", {}, Origin.SESSION, "coordinator"))
         # A new session always gets normal default-output behaviour: the

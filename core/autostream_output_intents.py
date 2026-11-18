@@ -149,6 +149,15 @@ def _deselect_all(intent: Intent, wait: float) -> Outcome:
     return Outcome(ok=False, error=outcome.error or "failed", result={"message": outcome.error})
 
 
+def _want_default(intent: Intent, wait: float) -> Outcome:
+    """The user's tap on the default speaker's card while the player has no
+    row for it. The choice is kept for the session; the speaker starts once
+    it appears."""
+    wanted = bool(intent.args["wanted"])
+    get_authority().want_default(wanted)
+    return Outcome(ok=True, result={"ok": True})
+
+
 def _select_default(intent: Intent, wait: float) -> Outcome:
     """Switch the configured default speaker on. The error names the reason
     it was not: no_default, not_found, pin_pending, in_use, pin_required, or
@@ -274,6 +283,7 @@ set_pin_claim_handler(_claim_late_pin)
 bind("outputs.set", _outputs_set, owner=_OWNER)
 bind("output.pin.submit", _output_pin_submit, owner=_OWNER)
 bind("outputs.select_default", _select_default, owner=_OWNER)
+bind("outputs.want_default", _want_default, owner=_OWNER)
 bind("outputs.deselect_all", _deselect_all, owner=_OWNER)
 bind("volume.step", _volume_step, owner=_OWNER)
 bind("mute.set", _mute_set, owner=_OWNER)

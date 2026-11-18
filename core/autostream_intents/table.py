@@ -136,6 +136,7 @@ def _build_rows() -> dict:
             {"name", "volume"},
             {Origin.SESSION},
         ),
+        _row("outputs.want_default", {"wanted": v.boolean(error=_BAD_BODY)}, {"wanted"}, {Origin.USER}),
         _row("outputs.deselect_all", {}, (), {Origin.SESSION, Origin.USER, Origin.POLICY}),
         _row("receiver.pause", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),
         _row("receiver.play", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),

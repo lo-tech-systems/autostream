@@ -399,6 +399,9 @@ class OutputAuthority:
         self._mute_held = False
         self._mute_counter = 0
         self._silence_chosen = False
+        self._default_name = ""
+        self._default_volume = 0
+        self._default_last_id = ""
         self._start_failure: Optional[StartFailure] = None
         self._failure_seq = 0
         self._session_active = False
@@ -587,6 +590,48 @@ class OutputAuthority:
             return None
         return -(-sum(levels) // len(levels))
 
+    def set_default_output(self, name: str, volume: int) -> None:
+        """The configured default speaker and the level it starts at. The
+        default's card is always listed: when the player has no row for it, a
+        placeholder view stands in until the row appears."""
+        self._touched = True
+        with self._lock:
+            self._default_name = str(name or "").strip()
+            self._default_volume = _clamp(volume)
+            self._default_last_id = ""
+            for u in self._units.values():
+                if self._default_name and u.name == self._default_name:
+                    self._default_last_id = u.id
+            pending = self._publish_locked(Origin.SYSTEM, None)
+        pending.notify()
+
+    def want_default(self, wanted: bool) -> Applied:
+        """The user switched the default speaker's card on or off while the
+        player has no row for it. Nothing is sent: the choice is the session's
+        silence flag, which the self-heal reads, and the speaker starts once
+        its row appears."""
+        self._touched = True
+        with self._lock:
+            self._silence_chosen = not bool(wanted)
+            pending = self._publish_locked(Origin.USER, None)
+        pending.notify()
+        return Applied(version=store().snapshot().version, outcome=None)
+
+    def _placeholder_locked(self) -> Optional[OutputUnitView]:
+        """The default speaker's card for a player that has no unit by that
+        name, or None."""
+        name = self._default_name
+        if not name or not self._connected:
+            return None
+        if any(u.name == name for u in self._units.values()):
+            return None
+        return OutputUnitView(
+            id=self._default_last_id or "default:" + name, name=name,
+            selected=self._session_active and not self._silence_chosen,
+            volume=self._default_volume, muted=False, availability="gone",
+            cause=Origin.SESSION, reported=None,
+        )
+
     def _connecting_locked(self, u: UnitState) -> bool:
         """Wanted during a session, the player has the speaker, and it is not
         yet playing: still starting, between retries, or switched off on the
@@ -609,7 +654,11 @@ class OutputAuthority:
                 availability=u.availability, cause=d.cause, reported=u.reported,
                 connecting=self._connecting_locked(u),
             ))
+        placeholder = self._placeholder_locked()
+        if placeholder is not None:
+            views.append(placeholder)
         return OutputsPart(
+            placeholder_id=placeholder.id if placeholder is not None else "",
             units=tuple(views), connected=self._connected, backend_boot=self._backend_boot,
             event_source=self._event_kind, muted_all=self._muted_all_locked(),
             silence_chosen=self._silence_chosen, start_failure=self._start_failure,
@@ -1419,6 +1468,8 @@ class OutputAuthority:
             seen.add(uid)
             order.append(uid)
             u = self._units.get(uid)
+            if self._default_name and row.name == self._default_name:
+                self._default_last_id = uid
             if u is None:
                 u = UnitState(
                     id=uid, name=row.name,
@@ -1448,14 +1499,17 @@ class OutputAuthority:
             if uid in seen:
                 continue
             u = self._units[uid]
+            # The default speaker's card is never dropped: it reads offline
+            # until the player has a row for it again.
+            is_default = bool(self._default_name) and u.name == self._default_name
             if u.absent_since is None:
-                if boot_changed or u.was_streaming:
+                if boot_changed or u.was_streaming or is_default:
                     u.absent_since = now
                     u.reported = None
                     u.availability = "gone"
                 else:
                     del self._units[uid]
-            elif now - u.absent_since >= ABSENT_KEEP_S:
+            elif now - u.absent_since >= ABSENT_KEEP_S and not is_default:
                 del self._units[uid]
 
     def _update_unit_locked(self, u: UnitState, row: OutputInfo, now: float, fx: _Effects) -> None:
@@ -1758,8 +1812,10 @@ class OutputAuthority:
         kind = w.kind
         uid = w.unit_id
         u = self._units.get(uid) if uid is not None else None
+        # A speaker the player has no row for takes no select or deselect; the
+        # reconcile applies the desired state when its row returns.
         if kind == "select":
-            if u is None:
+            if u is None or u.reported is None:
                 return None
             d = u.desired
             kwargs = dict(
@@ -1778,7 +1834,7 @@ class OutputAuthority:
                     return _HOLD
             return lambda b: [b.update_output(uid, **kwargs)]
         if kind == "deselect":
-            if u is None:
+            if u is None or u.reported is None:
                 return None
             return lambda b: [b.update_output(uid, enabled=False, timeout=WRITE_TIMEOUT_S)]
         if kind == "volume":

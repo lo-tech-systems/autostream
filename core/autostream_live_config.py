@@ -350,6 +350,7 @@ def update_live_owntone_runtime(
                 monitor.owntone_volume_percent = live_volume_percent
                 monitor.owntone_output_offsets_ms = dict(live_output_offsets_ms)
                 monitor.owntone_output_airplay_modes = dict(live_output_airplay_modes)
+        get_authority().set_default_output(live_output_name, live_volume_percent)
         return True
     except Exception as e:
         logging.warning("Could not update live OwnTone runtime settings: %s", e)

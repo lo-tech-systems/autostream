@@ -387,3 +387,14 @@ def test_failures_inside_one_window_give_one_outputs_hint(outputs, monkeypatch):
     for _due, fn in scheduled:
         fn()
     assert emissions == [(["outputs"], []), (["outputs"], [])]
+
+
+def test_the_default_card_appearing_and_changing_sends_no_hint(outputs):
+    outputs.forget()
+    outputs.authority.set_default_output("Speaker Z", 30)
+    outputs.authority.note_session(True)
+    outputs.authority.want_default(False)
+    outputs.authority.want_default(True)
+    outputs.authority.note_session(False)
+    assert any(u.offline for u in state.store().snapshot().outputs.units)
+    assert outputs.calls == []

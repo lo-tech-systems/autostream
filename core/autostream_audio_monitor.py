@@ -73,6 +73,8 @@ class AudioMonitor:
 
     OWNTONE_RETRY_SECONDS = 10.0
     OWNTONE_LOG_THROTTLE_SECONDS = 60.0
+    # A default output still missing this long into a session is warned about once.
+    DEFAULT_MISSING_WARN_SECONDS = 300.0
     # The mismatch WARNING has its own timer so no other message can
     # silence it; the value matches the monitor's own mismatch log interval.
     RATE_MISMATCH_LOG_THROTTLE_SECONDS = 60.0
@@ -190,6 +192,10 @@ class AudioMonitor:
         # --- OwnTone retry state ---
         self._owntone_last_attempt: float = 0.0
         self._owntone_enabled_ok: bool = False
+        # When the default output was first found missing this session, and
+        # whether the long wait has been warned about.
+        self._default_missing_since: Optional[float] = None
+        self._default_missing_warned: bool = False
         # The output authority's player-restart marker when the selection was
         # last applied; a different one later means the player restarted.
         self._outputs_boot_seen: Optional[str] = None
@@ -1284,6 +1290,20 @@ class AudioMonitor:
         ):
             logging.log(level, msg, *args)
 
+    def note_default_output_found(self, now: float, default_name: str) -> None:
+        """The default speaker has a row again: end the wait the refusal
+        logging started."""
+        if self._default_missing_since is None:
+            return
+        logging.info(
+            "Default output '%s' appeared after %d s", default_name, int(now - self._default_missing_since),
+        )
+        self.clear_default_output_wait()
+
+    def clear_default_output_wait(self) -> None:
+        self._default_missing_since = None
+        self._default_missing_warned = False
+
     def _log_default_output_refusal(self, now: float, default_name: str, reply) -> None:
         """The throttled line for a default-output select that was not made."""
         error = reply.error
@@ -1293,10 +1313,19 @@ class AudioMonitor:
                 "No default output configured; cannot apply zero-target fallback.",
             )
         elif error == "not_found":
-            self._throttled_owntone_log(
-                now, logging.WARNING,
-                "Default output '%s' not found in OwnTone; cannot apply fallback.", default_name,
-            )
+            # A speaker that is not on the network yet is waited for: one line
+            # when the wait starts, one when it ends, and one warning if it
+            # lasts.
+            if self._default_missing_since is None:
+                self._default_missing_since = now
+                logging.info("Default output '%s' is not on the network yet; waiting", default_name)
+            elif (not self._default_missing_warned
+                  and now - self._default_missing_since >= self.DEFAULT_MISSING_WARN_SECONDS):
+                self._default_missing_warned = True
+                logging.warning(
+                    "Default output '%s' is still not on the network after %d s",
+                    default_name, int(now - self._default_missing_since),
+                )
         elif error == "pin_pending":
             self._throttled_owntone_log(
                 now, logging.INFO,

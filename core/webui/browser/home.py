@@ -318,7 +318,9 @@ def send_airplay_page(
         _placeholder_state = "hidden"
 
     # Filter and sort outputs through the shared model helper, then annotate with occupancy.
-    output_dicts = build_output_list(parsed, outputs_part.units) if outputs_part.connected else []
+    output_dicts = (
+        build_output_list(parsed, outputs_part.units, include_offline=True) if outputs_part.connected else []
+    )
     try:
         from autostream_state.live import annotate_outputs as _annotate_outputs
         output_dicts = _annotate_outputs(output_dicts)

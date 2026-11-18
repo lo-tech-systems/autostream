@@ -2049,3 +2049,107 @@ class TestConnecting:
         w.a.note_session(True)
         merge(w, [row(1, selected=True, needs_auth_key=True)])
         assert snap().unit("1").availability == "password" and not self.connecting()
+
+
+class TestDefaultCard:
+    NAME = "Speaker 9"
+
+    @pytest.fixture(autouse=True)
+    def configured(self, w):
+        w.a.set_default_output(self.NAME, 35)
+
+    def test_a_default_the_player_does_not_have_is_listed_offline(self, w):
+        merge(w, [row(1)])
+        p = snap()
+        card = p.units[-1]
+        assert (card.id, card.name, card.offline) == ("default:" + self.NAME, self.NAME, True)
+        assert (card.volume, card.muted, card.availability, card.cause) == (35, False, "gone", Origin.SESSION)
+        assert card.reported is None and card.connecting is False
+        assert p.placeholder_id == card.id
+
+    def test_nothing_is_listed_while_the_player_is_unreachable_or_no_default_is_set(self, w):
+        merge(w, [row(1)])
+        w.a.mark_unreachable_for_tests()
+        assert all(u.name != self.NAME for u in snap().units) and snap().placeholder_id == ""
+        merge(w, [row(1)])
+        w.a.set_default_output("", 35)
+        assert [u.id for u in snap().units] == ["1"]
+
+    def test_it_is_selected_in_a_session_until_the_user_chooses_silence(self, w):
+        merge(w, [row(1)])
+        card = lambda: snap().units[-1]  # noqa: E731
+        assert card().selected is False
+        w.a.note_session(True)
+        assert card().selected is True
+        w.a.want_default(False)
+        assert card().selected is False and snap().silence_chosen is True
+        w.a.want_default(True)
+        assert card().selected is True and snap().silence_chosen is False
+        w.a.want_default(False)
+        w.a.note_session(False)
+        assert card().selected is False and snap().silence_chosen is False
+
+    def test_the_tap_writes_nothing_to_the_player(self, w):
+        merge(w, [row(1)])
+        w.a.note_session(True)
+        w.a.want_default(False)
+        w.a.want_default(True)
+        assert w.fb.calls == []
+
+    def test_it_is_not_a_unit_for_the_authority(self, w):
+        merge(w, [row(1)])
+        w.a.note_session(True)
+        assert w.a.select("default:" + self.NAME, Origin.USER, volume=30).refused == "unknown_output"
+        assert w.a.deselect("default:" + self.NAME, Origin.USER).refused == "unknown_output"
+        assert w.a.set_volume("default:" + self.NAME, 30, Origin.USER).refused == "unknown_output"
+        assert w.a.step_volume(5, Origin.USER, default_level=50).refused == "no_active_outputs"
+
+    def test_offline_views_are_skipped_by_the_lookups(self, w):
+        merge(w, [row(1)])
+        w.a.note_session(True)
+        p = snap()
+        assert p.units[-1].selected is True
+        assert p.unit_by_name(self.NAME) is None
+        assert p.selected_units() == ()
+
+    def test_the_row_appearing_replaces_the_placeholder(self, w):
+        merge(w, [row(1)])
+        merge(w, [row(1), row(9, self.NAME)])
+        p = snap()
+        assert [u.id for u in p.units] == ["1", "9"] and p.placeholder_id == ""
+        assert p.unit_by_name(self.NAME).id == "9" and not p.unit("9").offline
+
+    def test_a_default_whose_row_goes_away_is_kept_past_the_usual_wait(self, w):
+        merge(w, [row(1), row(9, self.NAME, selected=True, volume_percent=35)])
+        merge(w, [row(1)])
+        p = snap()
+        gone = p.unit("9")
+        assert gone.offline and gone.selected is True and p.placeholder_id == ""
+        w.t[0] += outputs.ABSENT_KEEP_S + 5
+        merge(w, [row(1)])
+        assert snap().unit("9") is not None and snap().unit("9").offline
+        assert snap().unit_by_name(self.NAME) is None and snap().selected_units() == ()
+
+    def test_another_speaker_that_goes_away_is_still_dropped(self, w):
+        merge(w, [row(1), row(2)])
+        merge(w, [row(1)])
+        assert snap().unit("2") is None
+
+    def test_no_write_reaches_the_player_for_a_default_it_does_not_have(self, w):
+        merge(w, [row(1), row(9, self.NAME, selected=True)])
+        merge(w, [row(1)])
+        w.fb.calls.clear()
+        w.a.deselect("9", Origin.USER).outcome.result(5)
+        w.a.select("9", Origin.USER, volume=30).outcome.result(5)
+        assert w.fb.calls == []
+        assert snap().unit("9").selected is True
+
+    def test_the_dial_lists_do_not_move_when_it_comes_and_goes(self, w):
+        merge(w, [row(1)])
+        base = snap()
+        w.a.note_session(True)
+        w.a.want_default(False)
+        merge(w, [row(1), row(9, self.NAME)])
+        merge(w, [row(1)])
+        for digest in (state.outputs_list_digest, state.outputs_volume_digest, state.outputs_mute_digest):
+            assert digest(snap()) == digest(base)

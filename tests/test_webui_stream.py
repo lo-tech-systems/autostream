@@ -724,6 +724,7 @@ def test_state_json_carries_every_part_as_plain_json(store):
     assert list(body["parts"]["track"]["entries"]) == ["0"]
     assert body["parts"]["outputs"]["units"][0]["cause"] == "user"
     assert body["parts"]["outputs"]["units"][0]["connecting"] is False
+    assert body["parts"]["outputs"]["units"][0]["offline"] is True
     assert body["parts"]["health"]["watchdog_last_restart_at"] is None
     assert json.loads(text) == body
 

@@ -16,7 +16,7 @@ from autostream_pin_pairing import PIN_RE
 from autostream_state.live import get_live_output_eq_status, pin_claim, start_buffer_ms
 from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
-from autostream_state import Origin, active_track
+from autostream_state import Origin, active_track, store
 import autostream_rpi as rpi
 from autostream_sysutils import get_system_hostname
 from webui.system import updates
@@ -25,14 +25,19 @@ from webui.system import updates
 # Output-list builder (shared between Home page and federation)
 # ---------------------------------------------------------------------------
 
-def build_output_list(parsed, units) -> list[dict]:
+def build_output_list(parsed, units, *, include_offline: bool = False) -> list[dict]:
     """Filter and sort the output authority's units into the standard dict
     representation.
 
     Applies hidden-output filtering, puts the configured default first, then
     alphabetical order.  Returns dicts with keys: id, name, selected, volume,
     is_default, needs_auth_key, requires_auth, pin_pending, pin_claim
-    (the requester currently entering a PIN for the output, or "").
+    (the requester currently entering a PIN for the output, or ""),
+    connecting, offline.
+
+    The default speaker's card is listed while the player has no row for it
+    only when *include_offline* is set (the Home page); the dial's list
+    leaves it out.
 
     "volume" is the INTENDED level (the unit's own volume in the snapshot):
     while the output is muted this is the level it will return to on
@@ -51,7 +56,7 @@ def build_output_list(parsed, units) -> list[dict]:
     result: list[dict] = []
     for unit in units:
         row = unit.reported
-        if row is None:
+        if row is None and not (include_offline and unit.offline and unit.name == default_output_name):
             continue  # the player has no row for it at the moment
         out_id = str(unit.id or "").strip()
         name = str(unit.name or "").strip()
@@ -67,10 +72,12 @@ def build_output_list(parsed, units) -> list[dict]:
             "selected": selected,
             "volume": vol,
             "is_default": (name == default_output_name),
-            "needs_auth_key": bool(row.needs_auth_key),
-            "requires_auth": bool(row.requires_auth),
-            "pin_pending": bool(row.pin_pending),
+            "needs_auth_key": bool(row is not None and row.needs_auth_key),
+            "requires_auth": bool(row is not None and row.requires_auth),
+            "pin_pending": bool(row is not None and row.pin_pending),
             "pin_claim": pin_claim(out_id),
+            "connecting": bool(unit.connecting),
+            "offline": bool(unit.offline),
         })
 
     if default_output_name:
@@ -101,7 +108,7 @@ def build_home_state(snap, parsed) -> dict:
     outputs: list[dict] = []
 
     if snap.outputs.connected:
-        outputs = build_output_list(parsed, snap.outputs.units)
+        outputs = build_output_list(parsed, snap.outputs.units, include_offline=True)
 
     try:
         from autostream_state.live import annotate_outputs
@@ -183,7 +190,7 @@ def home_outputs_reply(snap, parsed) -> dict:
     all-speakers mute, and, only when a start has failed, that failure."""
     outputs: list[dict] = []
     if snap.outputs.connected:
-        outputs = build_output_list(parsed, snap.outputs.units)
+        outputs = build_output_list(parsed, snap.outputs.units, include_offline=True)
     try:
         from autostream_state.live import annotate_outputs
         outputs = annotate_outputs(outputs)
@@ -427,6 +434,15 @@ def submit_output_change(
     if not out_id:
         return {"ok": False, "error": "Missing output id"}
     op = str(body.get("op") or "").strip().lower()
+    if op != "pin" and out_id == store().snapshot().outputs.placeholder_id:
+        # The default speaker's card while the player has no row for it:
+        # the tap is a choice for the session, with nothing to send yet.
+        reply = submit(Intent(
+            "outputs.want_default", {"wanted": bool(body.get("selected", False))}, origin, requester,
+        ))
+        if reply.result:
+            return dict(reply.result)
+        return {"ok": False, "error": reply.error, "id": out_id}
     args: dict = {"id": out_id}
     name = body.get("name")
     if name:

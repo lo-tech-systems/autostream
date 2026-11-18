@@ -216,6 +216,12 @@ class OutputUnitView:
     connecting: bool = False                # wanted in a session and the player has it, but it is not playing yet
 
     @property
+    def offline(self) -> bool:
+        """The player has no row for it: the default speaker's card while the
+        speaker is not on the network."""
+        return self.reported is None
+
+    @property
     def shown_selected(self) -> bool:
         """What lists show as on: desired, except that a unit waiting for a
         PIN shows as off with its PIN offer, as the player reports it."""
@@ -233,6 +239,7 @@ class OutputsPart:
     start_failure: Optional[StartFailure] = None
     device_events: bool = False             # the player reports receiver commands and device volumes
     include_tv_supported: bool = False      # rows carry has_homepods: an Apple TV's HomePods can play without it
+    placeholder_id: str = ""                # the id of the default speaker's card when it has no unit behind it
 
     def unit(self, unit_id: str) -> Optional[OutputUnitView]:
         for u in self.units:
@@ -242,13 +249,13 @@ class OutputsPart:
 
     def unit_by_name(self, name: str) -> Optional[OutputUnitView]:
         for u in self.units:
-            if u.name == name:
+            if u.name == name and not u.offline:
                 return u
         return None
 
     def selected_units(self) -> tuple[OutputUnitView, ...]:
-        """The units that are desired selected."""
-        return tuple(u for u in self.units if u.selected)
+        """The units that are desired selected and that the player has."""
+        return tuple(u for u in self.units if u.selected and not u.offline)
 
     def reported_rows(self) -> tuple[OutputInfo, ...]:
         """The player's last row of every unit that has one, in row order."""
@@ -434,17 +441,18 @@ def outputs_list_digest(p: OutputsPart) -> tuple:
     """What a speaker list shows: each unit's name, whether it is on, whether
     it is starting or failed, its PIN fields, and whether the player answers."""
     return (
-        tuple((u.id, u.name, u.shown_selected, u.availability, _unit_pin_fields(u)) for u in p.units),
+        tuple((u.id, u.name, u.shown_selected, u.availability, _unit_pin_fields(u))
+              for u in p.units if not u.offline),
         p.connected,
     )
 
 
 def outputs_volume_digest(p: OutputsPart) -> tuple:
-    return tuple((u.id, u.volume) for u in p.units)
+    return tuple((u.id, u.volume) for u in p.units if not u.offline)
 
 
 def outputs_mute_digest(p: OutputsPart) -> tuple:
-    return (p.muted_all, tuple((u.id, u.muted) for u in p.units))
+    return (p.muted_all, tuple((u.id, u.muted) for u in p.units if not u.offline))
 
 
 DIGESTS: dict[str, Callable] = {

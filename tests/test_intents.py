@@ -152,7 +152,7 @@ class TestValidators:
 class TestRows:
     def test_the_table_names_every_row(self):
         assert set(table.ROWS) == {
-            "outputs.set", "output.pin.submit", "outputs.select_default",
+            "outputs.set", "output.pin.submit", "outputs.select_default", "outputs.want_default",
             "outputs.deselect_all", "volume.step", "mute.set",
             "repeat.arm", "repeat.transport", "repeat.seek", "input.eq.set",
             "output.eq.set", "output.eq.reset",

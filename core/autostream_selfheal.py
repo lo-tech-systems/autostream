@@ -315,6 +315,8 @@ class SelfHeal:
         # nothing is pending, so this costs nothing in the steady state.
         retry_pending_format_reconcile(monitor.owntone_base_url, monitor_status)
 
+        if snap.unit_by_name((monitor.owntone_output_name or "").strip()) is not None:
+            monitor.note_default_output_found(now, monitor.owntone_output_name)
         volume = _clamped_output_volume(monitor.owntone_volume_percent)
         if not snap.selected_units():
             if snap.silence_chosen:

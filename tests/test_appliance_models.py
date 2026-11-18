@@ -181,6 +181,27 @@ class TestBuildOutputList:
         result = webui_home_model.build_output_list(_parsed(hidden_outputs=["BEDROOM"]), _units(raw))
         assert all(o["name"] != "Bedroom" for o in result)
 
+    def test_the_default_with_no_row_is_listed_only_when_asked(self):
+        from autostream_state.outputs import get_authority
+        get_authority().set_default_output("Zulu", 30)
+        units = _units([_out("1", "Alpha")])
+        assert [o["name"] for o in webui_home_model.build_output_list(_parsed(output_name="Zulu"), units)] == ["Alpha"]
+        listed = webui_home_model.build_output_list(_parsed(output_name="Zulu"), units, include_offline=True)
+        assert [o["name"] for o in listed] == ["Zulu", "Alpha"]
+        zulu = listed[0]
+        assert zulu["offline"] is True and zulu["connecting"] is False and zulu["is_default"] is True
+        assert (zulu["needs_auth_key"], zulu["requires_auth"], zulu["pin_pending"]) == (False, False, False)
+        assert listed[1]["offline"] is False
+
+    def test_only_the_default_is_listed_offline(self):
+        from autostream_state.outputs import get_authority
+        get_authority().set_default_output("Zulu", 30)
+        FakeStore().outputs([_out("1", "Alpha", selected=True), _out("2", "Beta")])
+        units = FakeStore().outputs([_out("2", "Beta")]).outputs.units
+        assert sorted(u.name for u in units if u.offline) == ["Alpha", "Zulu"]
+        listed = webui_home_model.build_output_list(_parsed(output_name="Zulu"), units, include_offline=True)
+        assert [o["name"] for o in listed] == ["Zulu", "Beta"]
+
     def test_default_output_sorted_first(self):
         raw = [_out("2", "Zulu"), _out("1", "Alpha"), _out("3", "Garden")]
         result = webui_home_model.build_output_list(_parsed(output_name="Zulu"), _units(raw))
@@ -204,7 +225,7 @@ class TestBuildOutputList:
         result = webui_home_model.build_output_list(_parsed(), _units(raw))
         assert set(result[0].keys()) == {
             "id", "name", "selected", "volume", "is_default",
-            "needs_auth_key", "requires_auth", "pin_pending", "pin_claim",
+            "needs_auth_key", "requires_auth", "pin_pending", "pin_claim", "connecting", "offline",
         }
 
     def test_selected_flag_preserved(self):

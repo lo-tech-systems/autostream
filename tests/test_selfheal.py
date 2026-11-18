@@ -186,7 +186,6 @@ class TestDefaultSelectArguments:
 class TestDefaultRefusal:
     @pytest.mark.parametrize("error,result,level,fragment", [
         ("no_default", {}, logging.WARNING, "No default output configured"),
-        ("not_found", {}, logging.WARNING, "'Test Speaker' not found"),
         ("pin_pending", {}, logging.INFO, "is waiting for a PIN; not auto-enabling it"),
         ("in_use", {"owner": "Hall"}, logging.INFO, "is in use by Hall"),
         ("pin_required", {}, logging.INFO, "requires a PIN"),
@@ -204,11 +203,48 @@ class TestDefaultRefusal:
     def test_the_line_is_throttled_per_reason(self, caplog):
         mon = _make_monitor()
         with caplog.at_level(logging.INFO):
-            mon._log_default_output_refusal(NOW, DEFAULT_NAME, _reply(False, "not_found"))
-            mon._log_default_output_refusal(NOW + 1, DEFAULT_NAME, _reply(False, "not_found"))
+            mon._log_default_output_refusal(NOW, DEFAULT_NAME, _reply(False, "no_default"))
             mon._log_default_output_refusal(NOW + 1, DEFAULT_NAME, _reply(False, "no_default"))
-        assert len([r for r in caplog.records if "not found" in r.getMessage()]) == 1
+            mon._log_default_output_refusal(NOW + 1, DEFAULT_NAME, _reply(False, "pin_required"))
         assert len([r for r in caplog.records if "No default output configured" in r.getMessage()]) == 1
+        assert len([r for r in caplog.records if "requires a PIN" in r.getMessage()]) == 1
+
+    def test_a_default_that_is_not_there_logs_once_when_the_wait_starts(self, caplog):
+        mon = _make_monitor()
+        with caplog.at_level(logging.INFO):
+            for i in range(5):
+                mon._log_default_output_refusal(NOW + 10 * i, DEFAULT_NAME, _reply(False, "not_found"))
+        lines = [r for r in caplog.records if "is not on the network yet" in r.getMessage()]
+        assert len(lines) == 1 and lines[0].levelno == logging.INFO
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_a_default_still_missing_after_five_minutes_warns_once(self, caplog):
+        mon = _make_monitor()
+        with caplog.at_level(logging.INFO):
+            for t in (0, 100, 299, 300, 400, 900):
+                mon._log_default_output_refusal(NOW + t, DEFAULT_NAME, _reply(False, "not_found"))
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1 and "still not on the network after 300 s" in warnings[0].getMessage()
+
+    def test_the_default_appearing_ends_the_wait_with_one_line(self, submitted, fifo_ok, caplog):
+        FakeStore().outputs([row("1", "Other")])
+        mon = _make_monitor()
+        with caplog.at_level(logging.INFO):
+            mon._log_default_output_refusal(NOW, DEFAULT_NAME, _reply(False, "not_found"))
+            FakeStore().outputs([row("1", "Other"), row("2", DEFAULT_NAME)])
+            _run(mon, NOW + 42)
+            _run(mon, NOW + 60)
+        lines = [r.getMessage() for r in caplog.records if "appeared after" in r.getMessage()]
+        assert lines == ["Default output 'Test Speaker' appeared after 42 s"]
+        assert mon._default_missing_since is None
+
+    def test_a_new_session_starts_the_wait_afresh(self, caplog):
+        mon = _make_monitor()
+        with caplog.at_level(logging.INFO):
+            mon._log_default_output_refusal(NOW, DEFAULT_NAME, _reply(False, "not_found"))
+            mon.clear_default_output_wait()
+            mon._log_default_output_refusal(NOW + 5, DEFAULT_NAME, _reply(False, "not_found"))
+        assert len([r for r in caplog.records if "is not on the network yet" in r.getMessage()]) == 2
 
     def test_a_refusal_logs_both_lines_and_leaves_the_retry_armed(self, submitted, fifo_ok, caplog):
         FakeStore().outputs([row("1", DEFAULT_NAME)])
