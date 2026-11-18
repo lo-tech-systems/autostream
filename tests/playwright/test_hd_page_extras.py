@@ -22,7 +22,8 @@ from test_hd_dial import (  # noqa: E402,F401  (fixtures shared with the page sm
     _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_server,
 )
 from test_hd_page_main import (  # noqa: E402,F401
-    SIZES, card, cards, drag_input, hd, open_page, rows, scenario, watch_actions, watch_intents,
+    SIZES, card, cards, drag_input, hd, open_page, rows, scenario, wait_for_state, watch_actions,
+    watch_intents,
 )
 
 pytestmark = pytest.mark.skipif(not _PLAYWRIGHT_INSTALLED, reason="playwright not installed")
@@ -1135,7 +1136,7 @@ class TestPullDown:
         posts = only(sent, "settings")
         assert posts[0] == ("settings", {"brightness": 60})
         assert posts[-1] == ("settings", {"brightness": 75})
-        page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.dial.panel.brightness === 75)")
+        wait_for_state(page, "s.parts.dial.panel.brightness === 75")
         page.wait_for_timeout(300)
         expect(page.locator("#brightness-num")).to_have_text("75")
 
@@ -1157,7 +1158,10 @@ class TestPullDown:
         page.route("**/api/v1/settings", handler)
         drag_input(page, "#brightness", [60, 65, 70], final=75)
         expect(page.locator("#brightness-num")).to_have_text("75")
-        page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.dial.panel.brightness === 75)")
+        wait_for_state(page, "s.parts.dial.panel.brightness === 75")
+        # A handler still holding a request when the page closes fails the
+        # next test's setup, so let every one finish before checking.
+        page.unroute_all(behavior="wait")
         assert most[0] == 1
         assert order[0] == 60 and order[-1] == 75
 
@@ -1170,7 +1174,7 @@ class TestPullDown:
         page.locator("#sleep-after button", has_text="Never").click()
         page.wait_for_timeout(200)
         assert only(sent, "settings") == [("settings", {"sleep_after_s": 900}), ("settings", {"sleep_after_s": 0})]
-        page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.dial.panel.sleep_after_s === 0)")
+        wait_for_state(page, "s.parts.dial.panel.sleep_after_s === 0")
         expect(page.locator("#sleep-after button[aria-pressed=true]")).to_have_text("Never")
 
     def test_a_refused_setting_snaps_back(self, page, hd):
