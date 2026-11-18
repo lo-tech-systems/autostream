@@ -21,6 +21,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
 from autostream_peer_client import PeerReply, PeerSnapshot
 from autostream_peer_registry import Sighting
 import dial_core
+import dial_network
 import dial_peer_view
 from dial_config import DialDisplayConfig
 from dial_display import WARNING_DESCRIPTORS, DialDisplay
@@ -480,13 +481,17 @@ def make_display(
         gr = lambda: roster
     else:
         gr = lambda: _roster_from_targets(gt(), repeat_capable)
+    core = dial_core.DialCore(
+        "dial-uuid",
+        warnings=warnings or WarningManager(WARNING_DESCRIPTORS, clock=wall_clock or time.time),
+        reboot=lambda: dial_network.request_reboot(),
+    )
     display = DialDisplay(
         config=cfg,
-        dial_id="dial-uuid",
+        core=core,
         logo_path=TEST_LOGO_PATH,
         backend_factory=lambda: fb,
         backend_factory_builder=backend_factory_builder,
-        warnings=warnings or WarningManager(WARNING_DESCRIPTORS, clock=wall_clock or time.time),
     )
     attach_bridge(display, gt, gr)
     return display, fb, gt

@@ -39,6 +39,8 @@ import dial_display as dd
 from dial_config import DialDisplayConfig
 from dial_core_focus import FOCUS_PENDING_GRACE_S
 from dial_core_state import ApplianceWarning, eq_gain
+from dial_core import DialCore
+import dial_network
 from dial_display import WARNING_DESCRIPTORS, DialDisplay, SELECTOR_TIMEOUT_SECONDS
 from dial_mdns import PlayingTarget
 from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
@@ -166,12 +168,14 @@ def _make_display(targets, get_roster, cfg=None, backend=None, warnings=None) ->
     cfg = cfg if cfg is not None else DialDisplayConfig(fitted=True)
     fb = backend if backend is not None else FakeBackend()
     gt = MagicMock(return_value=list(targets))
+    core = DialCore(
+        "dial-uuid", warnings=warnings, reboot=lambda: dial_network.request_reboot(),
+    )
     display = DialDisplay(
         config=cfg,
-        dial_id="dial-uuid",
+        core=core,
         logo_path=_TEST_LOGO_PATH,
         backend_factory=lambda: fb,
-        warnings=warnings,
     )
     attach_bridge(display, gt, get_roster)
     return display, fb, gt
@@ -505,7 +509,7 @@ _PATCHES = (
     ("dial_artwork.default_fetch_artwork", lambda ctx, img: {"return_value": (b"jpegdata", "")}),
     ("dial_display.decode_artwork", lambda ctx, img: {"return_value": img}),
     ("dial_display_compositor.transform_artwork_for_panel", lambda ctx, img: {"return_value": img}),
-    ("dial_display._request_reboot", lambda ctx, img: {}),
+    ("dial_network.request_reboot", lambda ctx, img: {}),
 )
 
 

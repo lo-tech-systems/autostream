@@ -23,7 +23,7 @@ def attach_screen(core, kind, stack):
         from dial_display import DialDisplay
         from dial_test_support import TEST_LOGO_PATH, FakeBackend
         display = DialDisplay(
-            config=DialDisplayConfig(fitted=True), dial_id="dial-uuid",
+            config=DialDisplayConfig(fitted=True),
             logo_path=TEST_LOGO_PATH, backend_factory=FakeBackend, core=core,
         )
         stack.append(display.stop)

@@ -267,6 +267,7 @@ class TestRealThreads:
              patch("dial_display.decode_artwork", return_value=picture), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=picture):
             monkeypatch.setattr(dial_core, "FOLD_INTERVAL_S", 0.05)
+            display.core.start()
             display.start()
             try:
                 assert self._wait_until(lambda: len(fb.displayed) > 0, limit=2.0)
@@ -277,14 +278,17 @@ class TestRealThreads:
                 assert len(fb.displayed) == settled
             finally:
                 display.stop()
+                display.core.stop()
         assert display.get_status()["showing"] in ("artwork", "logo", "noop")
 
     def test_the_view_stops_cleanly_with_the_core_folding(self, monkeypatch):
         display, fb, gt = make_display(targets=[])
         monkeypatch.setattr(dial_core, "FOLD_INTERVAL_S", 0.02)
+        display.core.start()
         display.start()
         assert self._wait_until(lambda: display._core.snapshot().ticks >= 2)
         threads = [display._core._thread, display._repaint_thread]
         display.stop()
+        display.core.stop()
         assert not any(t.is_alive() for t in threads)
         assert display._subscription is None

@@ -299,7 +299,7 @@ class TestClosing:
         display = _rig()
         _lose_wifi(display)
         open_warnings_page(display)
-        with patch("dial_display._request_reboot") as reboot:
+        with patch("dial_network.request_reboot") as reboot:
             tap_card(display, 0)
         reboot.assert_called_once_with()
         _fold(display)
@@ -381,7 +381,7 @@ class TestLateTaps:
         _fold(display)
         assert display._screen_request == "main"
         _fold(display)
-        with patch("dial_display._request_reboot") as reboot:
+        with patch("dial_network.request_reboot") as reboot:
             tap_card(display, 0)
             tap_card(display, 1)
         reboot.assert_not_called()
@@ -394,7 +394,7 @@ class TestLateTaps:
         # Next is folded in but the new entry is not painted yet.
         tap_card(display, 0)
         display._screen_request = None
-        with patch("dial_display._request_reboot") as reboot:
+        with patch("dial_network.request_reboot") as reboot:
             with display._lock:
                 display._apply_screen_requests_locked()
             tap_card(display, 1)

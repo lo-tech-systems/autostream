@@ -135,7 +135,6 @@ class TestCoreWiring:
         order = captured["order"]
         assert order.count("core.stop") == 1
         assert order.index("core.stop") < order.index("display.stop")
-        assert captured["display"]._owns_core is False
 
     def test_the_display_paints_the_core_main_built(self):
         captured = _run_core_wiring()

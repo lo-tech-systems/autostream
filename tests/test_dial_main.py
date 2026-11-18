@@ -1052,13 +1052,14 @@ class TestScreenSettingsLiveApply:
 
     def test_post_screen_settings_enables_real_display_manager(self):
         from dial_config import DialConfig, DialDisplayConfig
+        from dial_core import DialCore
         from dial_display import DialDisplay, NoOpBackend
         from dial_http_server import DialHTTPServer
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
         display = DialDisplay(
             config=cfg.display,
-            dial_id=cfg.uuid,
+            core=DialCore(cfg.uuid),
             backend_factory=NoOpBackend,
         )
         server = DialHTTPServer.__new__(DialHTTPServer)
@@ -1081,13 +1082,14 @@ class TestScreenSettingsLiveApply:
 
     def test_post_screen_settings_toggles_rotate_on_real_display_manager(self):
         from dial_config import DialConfig, DialDisplayConfig
+        from dial_core import DialCore
         from dial_display import DialDisplay, NoOpBackend
         from dial_http_server import DialHTTPServer
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, rotate=False))
         display = DialDisplay(
             config=cfg.display,
-            dial_id=cfg.uuid,
+            core=DialCore(cfg.uuid),
             backend_factory=NoOpBackend,
         )
         display.enable()
@@ -1113,13 +1115,14 @@ class TestScreenSettingsLiveApply:
 
     def test_post_screen_settings_applies_screen_type_and_bgr_on_real_display_manager(self):
         from dial_config import DialConfig, DialDisplayConfig
+        from dial_core import DialCore
         from dial_display import DialDisplay, NoOpBackend
         from dial_http_server import DialHTTPServer
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, bgr=False))
         display = DialDisplay(
             config=cfg.display,
-            dial_id=cfg.uuid,
+            core=DialCore(cfg.uuid),
             backend_factory=NoOpBackend,
         )
         display.enable()

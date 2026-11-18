@@ -1891,6 +1891,7 @@ class TestArtworkDoesNotStompSecondaryScreen:
 class TestThreadingLifecycle:
     def test_start_stop_clean_shutdown(self):
         display, fb, gt = make_display(targets=[])
+        display.core.start()
         display.start()
         time.sleep(0.05)
         thread = display._core._thread
@@ -1898,6 +1899,7 @@ class TestThreadingLifecycle:
         assert thread.name == "dial-core"
         assert display._subscription is not None
         display.stop()
+        display.core.stop()
         assert fb.closed is True
         assert not thread.is_alive()
         assert not display._repaint_thread.is_alive()
@@ -1908,7 +1910,7 @@ class TestThreadingLifecycle:
         core = DialCore("dial-uuid")
         display = dd.DialDisplay(
             config=DialDisplayConfig(fitted=False),
-            dial_id="dial-uuid", backend_factory=lambda: FakeBackend(), core=core,
+            core=core, backend_factory=lambda: FakeBackend(),
         )
         display.start()
         assert core._thread is None
@@ -1933,10 +1935,8 @@ class TestCreateDialDisplay:
         core = DialCore("abc123")
         display = create_dial_display(cfg, core)
         assert isinstance(display, DialDisplay)
-        assert display._dial_id == "abc123"
         assert display._config is cfg.display
         assert display.core is core
-        assert display._owns_core is False
 
     def test_factory_uses_noop_backend(self):
         cfg = MagicMock()
@@ -9397,7 +9397,7 @@ class TestUpdateWarnings:
         apply_update_view(display, self._progress(phase="packages"))
         _fold(display)
         assert display._screen == "update"
-        with patch("dial_display._request_reboot") as reboot:
+        with patch("dial_network.request_reboot") as reboot:
             apply_update_view(display, self._progress(phase="reboot", percent=96))
             _fold(display)
         reboot.assert_not_called()

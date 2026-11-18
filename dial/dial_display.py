@@ -87,16 +87,11 @@ from dial_network import (
     LINK_CONNECTED,
     LINK_DOWN,
 )
-from dial_network import request_reboot as _request_reboot
 from dial_repeat_store import heard_position
 from dial_info import INFO_LABELS
 from dial_warning_bell import Bell, whole_bell
 from dial_warning_page import Card, WarningsPageState, status_card
 from dial_warning_text import WARNING_DESCRIPTORS
-from dial_update_watch import (
-    UPDATE_SEEN_PATH,
-    UpdateWatcher,
-)
 from dial_touch_layout import (
     CARD_BUTTON_ZONES,
     CONTENT_COMPACT,
@@ -117,7 +112,6 @@ from dial_warnings import (
     ACTION_RESTART,
     KIND_STATUS,
     WarningDescriptor,
-    WarningManager,
 )
 
 DEFAULT_DISPLAY_LOGO_PATH = "/opt/autostream/images/autostream-logo-centred-dark.png"
@@ -775,15 +769,11 @@ class DialDisplay:
     def __init__(
         self,
         config,
-        dial_id: str,
+        core: "DialCore",
         logo_path: str = DEFAULT_DISPLAY_LOGO_PATH,
         replay_logo_path: str = DEFAULT_DISPLAY_REPLAY_LOGO_PATH,
         backend_factory=NoOpBackend,
         backend_factory_builder=None,
-        warnings: "WarningManager | None" = None,
-        update_watcher: "UpdateWatcher | None" = None,
-        update_seen_path: str = UPDATE_SEEN_PATH,
-        core: "DialCore | None" = None,
     ) -> None:
         self._lock = threading.Lock()
         self._config = config
@@ -798,7 +788,6 @@ class DialDisplay:
         # _layout_metrics() read directly — always equal to self._layout.
         # mm_per_px.
         self._mm_per_px = self._layout.mm_per_px
-        self._dial_id = dial_id
         self._logo_path = logo_path
         self._replay_logo_path = replay_logo_path
         self._backend_factory = backend_factory
@@ -876,16 +865,8 @@ class DialDisplay:
         # The appliance model, which folds the appliances on its own thread
         # and publishes snapshots. While started, this view subscribes and its
         # repaint thread folds each new snapshot into the screen (see
-        # _apply_snapshot). The warning manager, update watcher and update
-        # marker path are handed to the core when the display builds it
-        # (tests inject them); a core built here is started and stopped
-        # with the display.
-        self._owns_core = core is None
-        self._core = core if core is not None else DialCore(
-            dial_id, warnings=warnings,
-            update_watcher=update_watcher, update_seen_path=update_seen_path,
-            reboot=lambda: _request_reboot(),
-        )
+        # _apply_snapshot). The caller builds, starts and stops the core.
+        self._core = core
         self._core.set_io(CoreIO(
             on_artwork_error=self._record_error, log_limiter=self._log_limiter,
         ))
@@ -1140,8 +1121,6 @@ class DialDisplay:
         except Exception as e:
             logging.warning("dial display: failed to start repaint thread: %s", e)
             self._repaint_thread = None
-        if self._owns_core:
-            self._core.start()
         # Fold in whatever the core has published already.
         self._overlay_signal.poke()
 
@@ -1150,8 +1129,6 @@ class DialDisplay:
         # Wake the repaint thread out of its Event.wait() so it notices
         # _repaint_stop_event promptly rather than at its next timeout tick.
         self._overlay_signal.set()
-        if self._owns_core:
-            self._core.stop()
         if self._subscription is not None:
             self._core.unsubscribe(self._subscription)
             self._subscription = None
@@ -4879,7 +4856,6 @@ def create_dial_display(cfg, core) -> DialDisplay:
     """
     return DialDisplay(
         config=cfg.display,
-        dial_id=cfg.uuid,
         backend_factory=_adafruit_backend_factory_for_screen_type(cfg.display.screen_type),
         backend_factory_builder=_adafruit_backend_factory_for_screen_type,
         core=core,
