@@ -327,13 +327,18 @@ def start(
     *,
     app_version: Callable[[], str],
     sweeps: Sequence[Callable[[], None]] = (),
+    on_peer_removed: Sequence[Callable[[str], None]] = (),
 ) -> None:
     """Start the dial and appliance scanners, the dial warnings watcher and
     the device-scan, announcement and identification-provider threads. Called
-    once, before the web server starts."""
+    once, before the web server starts. Each *on_peer_removed* callable is
+    registered with the appliance registry before its scanner starts, and is
+    called with the id of a peer that has gone."""
     try:
         dials.start_dial_scanner(shutdown_event=life.stop)
         dial_warnings.start_watcher(shutdown_event=life.stop)
+        for fn in on_peer_removed:
+            appliances.register_peer_removal_callback(fn)
         appliances.start_appliance_scanner(shutdown_event=life.stop)
 
         threading.Thread(

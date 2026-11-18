@@ -56,7 +56,6 @@ from autostream_appliances import (
     get_appliance_sighting,
     get_conflict_ids,
     grace_remaining_ms,
-    register_peer_removal_callback,
     scanner_ready,
 )
 from autostream_federation import EXPIRY_SECONDS as _FED_EXPIRY_SECONDS, FEDERATION_VERSION as _FED_VERSION
@@ -295,9 +294,6 @@ def sweep_token_cache() -> None:
         expired = [aid for aid, (_, exp) in _token_cache.items() if exp <= now]
         for aid in expired:
             _token_cache.pop(aid, None)
-
-
-register_peer_removal_callback(evict_gateway_token)
 
 
 # ---------------------------------------------------------------------------

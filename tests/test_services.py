@@ -71,6 +71,24 @@ class TestStart:
         assert announce[1][0] is life and announce[1][3] == (sweep,)
         assert all(t[3] is True for t in threads)
 
+    def test_peer_removal_callbacks_are_registered_before_the_appliance_scanner(self):
+        life = _life()
+        order = []
+
+        def hook(appliance_id):
+            pass
+
+        with patch.object(services.dials, "start_dial_scanner"), \
+             patch.object(services.dial_warnings, "start_watcher"), \
+             patch.object(services.appliances, "register_peer_removal_callback",
+                          side_effect=lambda fn: order.append(("register", fn))), \
+             patch.object(services.appliances, "start_appliance_scanner",
+                          side_effect=lambda **kw: order.append(("scanner", None))), \
+             patch.object(services.threading, "Thread"):
+            services.start(life, "settings", app_version=lambda: "v", on_peer_removed=(hook,))
+
+        assert order == [("register", hook), ("scanner", None)]
+
     def test_a_failing_start_is_logged_and_raised_and_starts_no_thread(self, caplog):
         life = _life()
         with patch.object(services.dials, "start_dial_scanner", side_effect=RuntimeError("boom")), \
