@@ -96,6 +96,22 @@ def resize_supersampled(img: Image.Image, size: tuple[int, int]) -> Image.Image:
     return img.resize(size, _RESAMPLE)
 
 
+_RESAMPLE_BOX = Image.Resampling.BOX
+_RESAMPLE_NEAREST = Image.Resampling.NEAREST
+
+
+def resample_filter(source: tuple[int, int], target: tuple[int, int]):
+    """The Pillow filter for scaling a finished frame from its logical size
+    to the panel: BOX (area averaging, cheap, exact for the integer
+    reductions the layout-size table produces) whenever either axis
+    shrinks; NEAREST when both grow, so a small layout previewed on a
+    larger panel keeps its hard pixel edges rather than a blurred
+    rendition of them."""
+    if target[0] < source[0] or target[1] < source[1]:
+        return _RESAMPLE_BOX
+    return _RESAMPLE_NEAREST
+
+
 def decode_artwork(data: bytes) -> Image.Image | None:
     """Decode, validate, and orient fetched provider artwork bytes.
 

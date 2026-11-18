@@ -62,6 +62,7 @@ import dial_display_state as dds
 import dial_warning_text as dwt
 import dial_display_compositor as dd_compositor
 import dial_display_draw as dd_draw
+import dial_display_image as dd_image
 import dial_display_views as dd_views
 from dial_core_state import NOWIFI_PROMPT_STREAK, NowPlaying, OutputRow, artwork_key
 from dial_display import (
@@ -4819,17 +4820,17 @@ class TestListPagingMatchesPaintedRows:
 
 class TestResampleFilter:
     def test_shrinking_either_axis_uses_box(self):
-        assert dd._resample_filter((640, 480), (320, 240)) is dd._RESAMPLE_BOX
-        assert dd._resample_filter((640, 480), (640, 240)) is dd._RESAMPLE_BOX
+        assert dd_image.resample_filter((640, 480), (320, 240)) is Image.Resampling.BOX
+        assert dd_image.resample_filter((640, 480), (640, 240)) is Image.Resampling.BOX
 
     def test_growing_both_axes_uses_nearest(self):
-        assert dd._resample_filter((160, 128), (320, 240)) is dd._RESAMPLE_NEAREST
+        assert dd_image.resample_filter((160, 128), (320, 240)) is Image.Resampling.NEAREST
 
     def test_equal_size_falls_on_the_nearest_branch(self):
         # Never actually reached in practice — _push_frame_locked skips the
         # call entirely when sizes already match — but the function's own
         # boundary behaviour is pinned here regardless.
-        assert dd._resample_filter((320, 240), (320, 240)) is dd._RESAMPLE_NEAREST
+        assert dd_image.resample_filter((320, 240), (320, 240)) is Image.Resampling.NEAREST
 
 
 class TestNoResizeWhenSizesMatch:
@@ -4844,7 +4845,7 @@ class TestNoResizeWhenSizesMatch:
         fb.displayed.clear()
         sentinel = Image.new("RGB", (320, 240))
         with patch.object(display._compositor, "compose", return_value=sentinel), \
-             patch("dial_display._resample_filter") as mock_resample:
+             patch("dial_display.resample_filter") as mock_resample:
             display._display_locked(sentinel)
         assert fb.displayed[-1] is sentinel
         mock_resample.assert_not_called()
@@ -4864,7 +4865,7 @@ class TestRendersAtLogicalArrivesPhysical:
         display, fb, gt = make_display(
             screen_type="ili9341_320x240", screen_size_inches=2.8, layout_size="large", backend=fb,
         )
-        with patch("dial_display._resample_filter", wraps=dd._resample_filter) as spy:
+        with patch("dial_display.resample_filter", wraps=dd_image.resample_filter) as spy:
             display.enable()
         assert display._current_base_image.size == (640, 480)
         assert fb.displayed[-1].size == (320, 240)

@@ -58,6 +58,7 @@ from dial_display_views import (
 from dial_display_image import (
     decode_artwork,
     load_logo,
+    resample_filter,
 )
 from dial_display_backend import (
     DEFAULT_PANEL_HEIGHT, DEFAULT_PANEL_WIDTH, DisplayBackend, NoOpBackend, backend_factory_for,
@@ -281,22 +282,6 @@ def _defers_sleep(screen: str, request: "str | None") -> bool:
     (an open_* call just ran on the touch thread), holds off the idle-sleep
     countdown. Plain reads."""
     return _policy(screen).defers_sleep or (request is not None and _policy(request).defers_sleep)
-
-
-_RESAMPLE_BOX = Image.Resampling.BOX
-_RESAMPLE_NEAREST = Image.Resampling.NEAREST
-
-
-def _resample_filter(source: tuple[int, int], target: tuple[int, int]):
-    """The Pillow filter for scaling a finished frame from its logical size
-    to the panel: BOX (area averaging, cheap, exact for the integer
-    reductions the layout-size table produces) whenever either axis
-    shrinks; NEAREST when both grow, so a small layout previewed on a
-    larger panel keeps its hard pixel edges rather than a blurred
-    rendition of them."""
-    if target[0] < source[0] or target[1] < source[1]:
-        return _RESAMPLE_BOX
-    return _RESAMPLE_NEAREST
 
 
 def _repeat_counter_value(rec, now: float) -> float:
@@ -1681,7 +1666,7 @@ class DialDisplay:
             composed = compose()
             physical = (self._backend.width, self._backend.height)
             if composed.size != physical:
-                composed = composed.resize(physical, _resample_filter(composed.size, physical))
+                composed = composed.resize(physical, resample_filter(composed.size, physical))
         except Exception as e:
             self._record_write_failure_locked(e)
             return
