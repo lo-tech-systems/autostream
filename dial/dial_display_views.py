@@ -289,7 +289,7 @@ class OutputViewState:
 class EqViewState:
     """Immutable snapshot of what the EQ page should show — the
     compose_eq() counterpart to RepeatViewState/OutputViewState. Built by
-    the display manager from its EqScreenState (dial_display.py) on the
+    the display manager from its ApplianceScreenState (dial_display.py) on the
     repeat-screen compose path; this module has no idea what a PEQ band is,
     only two optional dB values to draw as bars.
 

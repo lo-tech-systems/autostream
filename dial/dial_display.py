@@ -430,16 +430,18 @@ class SelectorState:
 
 
 @dataclass(frozen=True)
-class RepeatScreenState:
-    """Immutable snapshot of which appliance the repeat screen is open for
-    — built once, when the screen opens (_apply_screen_requests_locked),
-    from the last-published roster snapshot. Never rebuilt while the
-    screen stays open: the daemon-state content shown on it (armed, the
-    Replaying line, ...) comes fresh from the core's snapshot on every
-    repaint instead — see _build_repeat_view_locked."""
+class ApplianceScreenState:
+    """Immutable record of the appliance-bound page that is open (the repeat
+    page, the EQ page or the outputs list): which appliance it shows, the
+    inactivity clock and, for the outputs list, its paging. Built once, when
+    the page opens, from the last-published roster snapshot, and never
+    rebuilt while it stays open: what the page shows (the repeat store's
+    record, the EQ readings, the outputs rows) comes fresh from the core's
+    snapshot on every repaint."""
     appliance_id: str
     service_name: str
     opened_at: float
+    page: int = 0
 
 
 @dataclass(frozen=True)
@@ -500,33 +502,12 @@ class InfoValueState:
 
 
 @dataclass(frozen=True)
-class OutputsScreenState:
-    """The outputs list screen: which appliance it is showing, its paging
-    and the inactivity clock. The rows are the core's, read from its
-    snapshot at paint time (see DialDisplay._rows_of)."""
-    appliance_id: str
-    service_name: str
-    page: int
-    opened_at: float
-
-
-@dataclass(frozen=True)
 class OutputDetailState:
     """The per-output page: the output it was opened for. Its row is read
     from the outputs state at every paint, so a level change or a
     disappearance shows without this being rebuilt."""
     appliance_id: str
     output_id: str
-    opened_at: float
-
-
-@dataclass(frozen=True)
-class EqScreenState:
-    """The EQ page: which appliance it is showing and the inactivity clock.
-    The bass/treble readings are the core's, read from its snapshot at
-    paint time (loaded False draws "-" and dimmed controls)."""
-    appliance_id: str
-    service_name: str
     opened_at: float
 
 
@@ -669,7 +650,7 @@ def _offerable(rows: "tuple[OutputRow, ...]") -> "tuple[OutputRow, ...]":
     return tuple(r for r in rows if not r.remote_in_use)
 
 
-def _held_outputs(snapshot, state: "OutputsScreenState | None"):
+def _held_outputs(snapshot, state: "ApplianceScreenState | None"):
     """The core's outputs state for the appliance the outputs screen *state*
     shows, or None when the core holds none for it."""
     held = snapshot.outputs
@@ -678,7 +659,7 @@ def _held_outputs(snapshot, state: "OutputsScreenState | None"):
     return held
 
 
-def _held_eq(snapshot, state: "EqScreenState | None"):
+def _held_eq(snapshot, state: "ApplianceScreenState | None"):
     """The core's EQ state for the appliance the EQ page *state* shows, or
     None when the core holds none for it."""
     held = snapshot.eq
@@ -907,11 +888,11 @@ class DialDisplay:
         # the first poll runs.
         self._selector: SelectorState | None = None
         # The repeat screen's own state — built once when it opens (see
-        # RepeatScreenState); None while the main/selector/picker screen is
+        # ApplianceScreenState); None while the main/selector/picker screen is
         # showing. Written by the repeat thread under self._lock, read
         # lock-free by the touch thread's repeat_toggle_tap()/repeat_start_
         # tap()/repeat_stop_tap() entries.
-        self._repeat_screen: RepeatScreenState | None = None
+        self._repeat_screen: ApplianceScreenState | None = None
         # Plain str written by _display_repeat_locked from the RepeatViewState
         # it just built ("enable" or "replaying") — read lock-free by
         # touch_surface() (with at most one repaint's staleness, the same
@@ -975,10 +956,10 @@ class DialDisplay:
         # output_toggle_tap()/output_volume_tap() entries, mirroring
         # self._repeat_screen's discipline. Its rows are the core's, less
         # the outputs another appliance has taken, read at use.
-        self._outputs: OutputsScreenState | None = None
+        self._outputs: ApplianceScreenState | None = None
         # The EQ page's own state (appliance, clock) — same discipline; its
         # bands are the core's.
-        self._eq: "EqScreenState | None" = None
+        self._eq: "ApplianceScreenState | None" = None
 
         # The per-output detail page's own state — same write/read
         # discipline as self._outputs.
@@ -2595,15 +2576,16 @@ class DialDisplay:
     def _rows_of(self, state) -> tuple:
         """Every row of a list screen's *state*: its own for the selector,
         picker and info pages, the core's last fetched outputs (less those
-        another appliance has taken) for the outputs list."""
-        if isinstance(state, OutputsScreenState):
+        another appliance has taken) for the outputs list. Of the list
+        screens only the outputs list holds an ApplianceScreenState."""
+        if isinstance(state, ApplianceScreenState):
             held = _held_outputs(self._core.snapshot(), state)
             return _offerable(held.rows) if held is not None else ()
         return state.rows
 
     def _current_page_rows(self, state) -> tuple:
         """The current page's slice of *state*'s rows (see _rows_of()), for
-        a SelectorState, PickerState, InfoState or OutputsScreenState. Shared by
+        a SelectorState, PickerState, InfoState or ApplianceScreenState. Shared by
         the touch-thread pick entries (lock-free) and the repaint-thread list
         builders so the two can never disagree about which rows are on
         screen; rows_per_page comes from dial_touch_layout, the same source
@@ -2841,6 +2823,13 @@ class DialDisplay:
         self._replay_timer_frame_at = 0.0
         self._replay_timer_id = appliance_id
 
+    def _focused_entry(self, snap):
+        """The roster entry of the focused/reporting appliance in *snap*, or
+        None when nothing is focused or it has dropped out of the roster.
+        Plain reads."""
+        appliance_id = snap.focused_id()
+        return snap.appliance(appliance_id) if appliance_id else None
+
     def _capable_target_lockfree(self, capability: str):
         """The appliance entry the outputs or EQ screens act on: the focused/
         reporting appliance when it advertises *capability* ("dial_outputs"
@@ -2848,9 +2837,7 @@ class DialDisplay:
         reads of the newest snapshot, like the core's focus_volume_target().
         The compact-tier veto on EQ lives in the snapshot's eq_available
         (computed once per poll tick), not here."""
-        snap = self._core.snapshot()
-        appliance_id = snap.focused_id()
-        entry = snap.appliance(appliance_id) if appliance_id else None
+        entry = self._focused_entry(self._core.snapshot())
         if entry is None or entry.auth == AUTH_UNAUTHORIZED or not getattr(entry, capability):
             return None
         return entry
@@ -2986,23 +2973,6 @@ class DialDisplay:
         self._pressed = None
         self._overlay_signal.set()
 
-    def _build_repeat_screen_locked(self) -> "RepeatScreenState | None":
-        """Build a RepeatScreenState for the currently focused/reporting
-        appliance from the newest snapshot's appliance list. Caller holds
-        self._lock; runs on the repeat thread only. Returns None when
-        there is no focus/reporting appliance right now, or it has since
-        dropped out of the roster — either way the screen request is simply
-        dropped and whatever was on screen before stays there."""
-        snap = self._core.snapshot()
-        appliance_id = snap.focused_id()
-        entry = snap.appliance(appliance_id) if appliance_id else None
-        if entry is None:
-            return None
-        return RepeatScreenState(
-            appliance_id=appliance_id, service_name=entry.service_name,
-            opened_at=time.monotonic(),
-        )
-
     def _open_main_locked(self) -> bool:
         """The "main" row's opener: pop to main. Extracted verbatim from
         the old request-folding branch so the table's `open` field can
@@ -3078,12 +3048,14 @@ class DialDisplay:
         return True
 
     def _open_repeat_locked(self) -> bool:
-        """The repeat row's opener: build the screen, or refuse (leaving
-        the current screen in place) when there is nothing to build it for
-        — see _build_repeat_screen_locked."""
-        screen = self._build_repeat_screen_locked()
-        if screen is None:
+        """The repeat row's opener: open the page for the focused/reporting
+        appliance in the newest snapshot's roster, or refuse (leaving the
+        current screen in place) when there is none or it has dropped out
+        of the roster. Caller holds self._lock."""
+        entry = self._focused_entry(self._core.snapshot())
+        if entry is None:
             return False
+        screen = ApplianceScreenState(entry.appliance_id, entry.service_name, time.monotonic())
         # A fresh open re-anchors the counter: the first replaying frame
         # paints whatever second is current, never held against a value
         # painted before the screen was last closed.
@@ -3103,10 +3075,7 @@ class DialDisplay:
         entry = self._capable_target_lockfree("dial_eq")
         if entry is None:
             return False
-        self._eq = EqScreenState(
-            appliance_id=entry.appliance_id, service_name=entry.service_name,
-            opened_at=time.monotonic(),
-        )
+        self._eq = ApplianceScreenState(entry.appliance_id, entry.service_name, time.monotonic())
         self._screen = "eq"
         return True
 
@@ -3127,10 +3096,7 @@ class DialDisplay:
             self._outputs_return = self._screen
         elif self._screen != "output":
             self._outputs_return = "main"
-        self._outputs = OutputsScreenState(
-            appliance_id=entry.appliance_id, service_name=entry.service_name,
-            page=0, opened_at=time.monotonic(),
-        )
+        self._outputs = ApplianceScreenState(entry.appliance_id, entry.service_name, time.monotonic())
         self._screen = "outputs"
         return True
 
@@ -3838,7 +3804,7 @@ class DialDisplay:
         alpha = 1.0 if elapsed < REPLAY_TIMER_SHOW_S else 1.0 - (elapsed - REPLAY_TIMER_SHOW_S) / REPLAY_TIMER_FADE_S
         return position[0], alpha, position[1]
 
-    def _build_repeat_view_locked(self, screen: "RepeatScreenState | None", now: float) -> RepeatViewState:
+    def _build_repeat_view_locked(self, screen: "ApplianceScreenState | None", now: float) -> RepeatViewState:
         """Build the compositor's RepeatViewState from the repeat store's
         CURRENT record for *screen* — the daemon-state-to-layout mapping:
         no/unavailable record or a live source (recording/pending/idle)
@@ -3946,7 +3912,7 @@ class DialDisplay:
         # advancing against this reference, so it must always move.
         self._repeat_painted_second = view.counter_second
 
-    def _shown_eq(self, state: "EqScreenState", control: str) -> "int | None":
+    def _shown_eq(self, state: "ApplianceScreenState", control: str) -> "int | None":
         """The bass or treble value *control* should currently show on the
         page *state*: the core's pending optimistic override for *control*
         when it has not expired, else the core's last reading for the
@@ -3959,7 +3925,7 @@ class DialDisplay:
         held = _held_eq(self._core.snapshot(), state)
         return eq_gain(held.bands, control) if held is not None else None
 
-    def _build_eq_view_locked(self, screen: "EqScreenState | None", now: float) -> EqViewState:
+    def _build_eq_view_locked(self, screen: "ApplianceScreenState | None", now: float) -> EqViewState:
         """Build the compositor's EqViewState from *screen* — reads
         bass/treble through the optimistic override (see _shown_eq()) so a
         just-tapped stepper moves on the same frame as the tap, before the

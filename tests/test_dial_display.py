@@ -3581,7 +3581,7 @@ class TestReplayReveal:
         base = Image.linear_gradient("L").resize((fb.width, fb.height)).convert("RGB")
         with display._lock:
             display._screen = "repeat"
-            display._repeat_screen = dd.RepeatScreenState(
+            display._repeat_screen = dd.ApplianceScreenState(
                 appliance_id=self.AID, service_name="Kitchen", opened_at=at,
             )
             display._current_base_image = base
@@ -5936,7 +5936,7 @@ class TestRepeatLineInterpolation:
         fully controlled by the test."""
         with display._lock:
             display._screen = "repeat"
-            display._repeat_screen = dd.RepeatScreenState(
+            display._repeat_screen = dd.ApplianceScreenState(
                 appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
             )
 
@@ -6005,7 +6005,7 @@ class TestNextRepaintDeadline:
         display.enable()
         with display._lock:
             display._screen = "repeat"
-            display._repeat_screen = dd.RepeatScreenState(
+            display._repeat_screen = dd.ApplianceScreenState(
                 appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
             )
         return display
@@ -6071,7 +6071,7 @@ class TestRepeatCounterFloors:
         aid = "20" * 10
         display, fb, gt = make_display(targets=[])
         display.enable()
-        screen = dd.RepeatScreenState(
+        screen = dd.ApplianceScreenState(
             appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
         )
         for position, expected in [(2.0, "0:00"), (2.9, "0:00"), (3.0, "0:01"), (3.9, "0:01")]:
@@ -6089,7 +6089,7 @@ class TestRepeatCounterFloors:
         aid = "22" * 10
         display, fb, gt = make_display(targets=[])
         display.enable()
-        screen = dd.RepeatScreenState(
+        screen = dd.ApplianceScreenState(
             appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
         )
         # (latency, reported position, expected counter)
@@ -6133,7 +6133,7 @@ class TestRepeatCounterPaintedReference:
         display.enable()
         with display._lock:
             display._screen = "repeat"
-            display._repeat_screen = dd.RepeatScreenState(
+            display._repeat_screen = dd.ApplianceScreenState(
                 appliance_id=self.AID, service_name="Kitchen", opened_at=1000.0,
             )
         return display
@@ -6835,7 +6835,7 @@ class TestOnOutputsResult:
         """A display with the outputs screen up for *appliance_id* and the
         core holding *rows* for it (nothing when *held* is False)."""
         display, fb, gt = make_display(targets=[])
-        display._outputs = dd.OutputsScreenState(
+        display._outputs = dd.ApplianceScreenState(
             appliance_id=appliance_id, service_name="Kitchen",
             page=page, opened_at=time.monotonic(),
         )
