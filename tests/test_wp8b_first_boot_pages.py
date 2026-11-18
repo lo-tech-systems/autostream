@@ -110,6 +110,12 @@ class TestFirstBootOwtonePage:
         html = self._get_html(tmp_path)
         assert 'name="output_name"' in html
 
+    def test_the_choice_is_labelled_as_the_auto_start_speaker(self, tmp_path):
+        html = self._get_html(tmp_path)
+        assert "<legend>Auto-Start Speaker</legend>" in html
+        assert "Speaker:" in html
+        assert "Default Output" not in html
+
     def test_has_continue_button(self, tmp_path):
         html = self._get_html(tmp_path)
         assert ">Continue<" in html

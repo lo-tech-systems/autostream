@@ -4,7 +4,7 @@ WP4A acceptance tests: live audio and playback-default settings via /api/setting
 
 Tests cover:
   - Validator functions (_validate_gain_db, _validate_volume_percent,
-    _validate_silence_seconds, _validate_output_name)
+    _validate_silence_seconds)
   - Store persistence for all WP4A fields
   - Live-effect calls with _live_* functions
   - Live-failure path (live_fn returns False / raises)
@@ -29,7 +29,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 from autostream_settings import SettingsStore, as_view
 from webui.browser.api_settings import send_settings_post_json
 from webui.browser.api_settings import _SETTINGS_FIELDS
-from autostream_live_config import _validate_output_name
 from autostream_live_config import _validate_silence_seconds
 from autostream_live_config import _validate_volume_percent
 from autostream_live_config import _validate_gain_db
@@ -198,28 +197,6 @@ class TestValidateSilenceSeconds:
             _validate_silence_seconds("30")
 
 
-# ── Validator: _validate_output_name ─────────────────────────────────────────
-
-class TestValidateOutputName:
-    def test_valid_name(self):
-        assert _validate_output_name("Living Room") == "Living Room"
-
-    def test_strips_whitespace(self):
-        assert _validate_output_name("  Deck  ") == "Deck"
-
-    def test_non_string_raises(self):
-        with pytest.raises(ValueError):
-            _validate_output_name(123)
-
-    def test_empty_raises(self):
-        with pytest.raises(ValueError):
-            _validate_output_name("")
-
-    def test_whitespace_only_raises(self):
-        with pytest.raises(ValueError):
-            _validate_output_name("   ")
-
-
 # ── _SETTINGS_FIELDS presence ─────────────────────────────────────────────────
 
 class TestSettingsFieldsWp4aPresent:
@@ -233,7 +210,7 @@ class TestSettingsFieldsWp4aPresent:
             assert f in _SETTINGS_FIELDS
 
     def test_owntone_fields(self):
-        assert "owntone.output_name" in _SETTINGS_FIELDS
+        assert "owntone.default_outputs" in _SETTINGS_FIELDS
         assert "owntone.volume_percent" in _SETTINGS_FIELDS
 
     def test_silence_field(self):
@@ -244,7 +221,7 @@ class TestSettingsFieldsWp4aPresent:
             "audio1.gain_db", "audio2.gain_db",
             "audio1.eq_40hz_db", "audio1.eq_100hz_db", "audio1.eq_8khz_db",
             "audio2.eq_40hz_db", "audio2.eq_100hz_db", "audio2.eq_8khz_db",
-            "owntone.output_name", "owntone.volume_percent",
+            "owntone.default_outputs", "owntone.volume_percent",
             "general.silence_seconds",
         ]
         for f in wp4a_fields:
@@ -296,12 +273,12 @@ class TestWp4aStorePersistence:
         assert resp["ok"] is True
         assert store.snapshot().owntone.volume_percent == 42
 
-    def test_owntone_output_name_written_to_store(self, tmp_path):
+    def test_owntone_default_outputs_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
         with patch("autostream_live_config.update_live_owntone_runtime", return_value=True):
-            resp = _post(state, "owntone.output_name", "Deck Speakers")
+            resp = _post(state, "owntone.default_outputs", [{"id": "A", "name": "Deck Speakers", "volume": 30}])
         assert resp["ok"] is True
-        assert [m.name for m in store.snapshot().owntone.default_outputs] == ["Deck Speakers"]
+        assert [(m.name, m.volume) for m in store.snapshot().owntone.default_outputs] == [("Deck Speakers", 30)]
 
     def test_silence_seconds_written_to_store(self, tmp_path):
         state, store = _make_state(str(tmp_path))
@@ -352,13 +329,10 @@ class TestWp4aLiveEffects:
         m.assert_called_once_with(2, eq_40hz_db=0.0, eq_100hz_db=-1.0, eq_8khz_db=2.0)
         assert resp["live"] is True
 
-    def test_owntone_name_calls_update_live_runtime(self, tmp_path):
+    def test_owntone_default_outputs_calls_update_live_runtime(self, tmp_path):
         state, store = _make_state(str(tmp_path))
-        def _setup(raw):
-            raw.setdefault("owntone", {})["volume_percent"] = 30
-        store.update(_setup)
         with patch("autostream_live_config.update_live_owntone_runtime", return_value=True) as m:
-            resp = _post(state, "owntone.output_name", "Kitchen")
+            resp = _post(state, "owntone.default_outputs", [{"id": "", "name": "Kitchen", "volume": 30}])
         assert m.call_args.kwargs["settings"] is not None and "output_name" not in m.call_args.kwargs
         assert resp["live"] is True
 
@@ -425,9 +399,9 @@ class TestWp4aValidationRejection:
         resp = _post(state, "general.silence_seconds", 4)
         assert resp["ok"] is False
 
-    def test_output_name_empty_rejected(self, tmp_path):
+    def test_an_empty_default_set_rejected(self, tmp_path):
         state, _ = _make_state(str(tmp_path))
-        resp = _post(state, "owntone.output_name", "   ")
+        resp = _post(state, "owntone.default_outputs", [])
         assert resp["ok"] is False
 
     def test_gain_bool_rejected(self, tmp_path):

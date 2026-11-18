@@ -213,7 +213,7 @@ class TestSetupCustomiseRepeatControls:
         html = _render_setup_page(tmp_path)
         assert "refreshRepeatSetupNote()" in html
         assert "id === 'playback'" in html
-        assert "fetch('/api/status'" in html
+        assert "fetch('/api/v1/state?parts=repeat'" in html
 
     def test_unavailable_reason_message_text_present_in_js(self, tmp_path):
         html = _render_setup_page(tmp_path)

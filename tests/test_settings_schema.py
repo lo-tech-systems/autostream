@@ -115,7 +115,7 @@ _EXPECTED_SETTINGS_FIELD_PATHS = frozenset({
     "audio2.eq_40hz_db",
     "audio2.eq_100hz_db",
     "audio2.eq_8khz_db",
-    "owntone.output_name",
+    "owntone.default_outputs",
     "owntone.volume_percent",
     "general.silence_seconds",
     "general.audio_path",

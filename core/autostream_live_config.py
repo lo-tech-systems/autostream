@@ -627,17 +627,6 @@ def _unit_id_for_name(name: str) -> str:
     return ""
 
 
-def _validate_output_name(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("Value must be a string")
-    v = value.strip()
-    if not v:
-        raise ValueError("Value must be a non-empty string")
-    named = _NamedOutput(v)
-    named.unit_id = _unit_id_for_name(v)
-    return named
-
-
 _DEFAULT_OUTPUT_NAME_MAX = 256
 _DEFAULT_OUTPUT_ID_MAX = 64
 
@@ -673,16 +662,17 @@ def _validate_default_outputs(value: object) -> list[dict]:
 
 
 def _mutate_default_outputs(raw: dict, section: str, key: str, value: object) -> None:
-    """FieldSpec.mutate for owntone.default_outputs: the set replaces the
-    legacy single name."""
+    """FieldSpec.mutate for owntone.default_outputs: the set replaces any
+    legacy single name. The set may arrive frozen, as an intent's arguments
+    are, so it is stored as a plain list of plain dicts."""
     owntone = raw.setdefault("owntone", {})
-    owntone["default_outputs"] = value
+    owntone["default_outputs"] = [dict(m) for m in value]
     owntone.pop("output_name", None)
 
 
 def _mutate_output_name(raw: dict, section: str, key: str, value: object) -> None:
-    """FieldSpec.mutate for owntone.output_name (kept for the Setup select):
-    one member at the start volume."""
+    """First boot's choice of output: a one-member Auto-Start set at the start
+    volume."""
     owntone = raw.setdefault("owntone", {})
     volume = int(owntone.get("volume_percent", 20) or 20)
     _mutate_default_outputs(
@@ -692,8 +682,8 @@ def _mutate_output_name(raw: dict, section: str, key: str, value: object) -> Non
 
 
 def _mutate_volume_percent(raw: dict, section: str, key: str, value: object) -> None:
-    """FieldSpec.mutate for owntone.volume_percent: a one-member set keeps one
-    speaker and one volume, so its level follows."""
+    """First boot's start volume: a one-member set keeps one speaker and one
+    volume, so its level follows."""
     owntone = raw.setdefault("owntone", {})
     owntone["volume_percent"] = value
     listed = owntone.get("default_outputs")
@@ -702,8 +692,8 @@ def _mutate_volume_percent(raw: dict, section: str, key: str, value: object) -> 
 
 
 def _live_owntone_set(state: object, value: object) -> bool:
-    """Live effect of the Auto-Start set, its compat name and the start
-    volume: the authority takes what the store holds."""
+    """Live effect of the Auto-Start set and the start volume: the authority
+    takes what the store holds."""
     settings = writable_store(getattr(state, "settings", None))
     if settings is None:
         return False
@@ -990,10 +980,8 @@ def _mutate_input_type(raw: dict, section: str, key: str, value: object) -> None
 # settings routes and the Setup form.
 register_field("owntone.default_outputs", "owntone", "default_outputs", _validate_default_outputs,
                live=_live_owntone_set, mutate=_mutate_default_outputs, live_class=LiveClass.LIVE)
-register_field("owntone.output_name", "owntone", "output_name", _validate_output_name,
-               live=_live_owntone_set, mutate=_mutate_output_name, live_class=LiveClass.LIVE)
 register_field("owntone.volume_percent", "owntone", "volume_percent", _validate_volume_percent,
-               live=_live_owntone_set, mutate=_mutate_volume_percent, live_class=LiveClass.LIVE)
+               live=_live_owntone_set, live_class=LiveClass.LIVE)
 register_field("general.silence_seconds", "general", "silence_seconds", _validate_silence_seconds,
                live=_live_silence, live_class=LiveClass.LIVE)
 register_field("general.audio_path", "general", "audio_path", _validate_audio_path,

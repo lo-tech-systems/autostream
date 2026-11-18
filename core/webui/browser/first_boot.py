@@ -122,9 +122,9 @@ def send_first_boot_owntone_page(
 <form method="POST" action="/first-boot/owntone/continue">
   <input type="hidden" name="csrf_token" value="{html.escape(csrf_token)}">
   <fieldset>
-    <legend>Default Output</legend>
+    <legend>Auto-Start Speaker</legend>
     <label>
-      Output:
+      Speaker:
       <select name="output_name" id="fb_output_name">
         {output_options}
       </select>

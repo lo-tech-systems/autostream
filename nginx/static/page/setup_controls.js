@@ -305,6 +305,20 @@
           refreshPlaybackCardSub();
           if (liveEnabled) settingsSaveFieldDebounced('owntone.volume_percent', parseInt(v, 10), 300);
         }
+        // Take one speaker out of the Auto-Start set. The last one stays:
+        // the appliance needs a speaker to start on.
+        function removeAutoStart(btn){
+          const buttons = Array.from(document.querySelectorAll('#autostart_members .autostart-remove'));
+          const kept = buttons.filter(function(b){ return b !== btn; });
+          if (!kept.length) return;
+          btn.closest('.autostart-row').remove();
+          kept.forEach(function(b){ b.disabled = kept.length === 1; });
+          document.getElementById('autostart_last').textContent = kept.length === 1 ? ' At least one speaker is needed.' : '';
+          refreshPlaybackCardSub();
+          if (liveEnabled) settingsSaveField('owntone.default_outputs', kept.map(function(b){
+            return {id: b.dataset.id, name: b.dataset.name, volume: parseInt(b.dataset.volume, 10)};
+          }));
+        }
         function syncInputUi(inputIndex){
           const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
           const enabledName = prefix + '_enabled';

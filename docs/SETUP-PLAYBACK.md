@@ -1,25 +1,23 @@
 # Setup - Playback Defaults
 
-Open **Setup** and expand the **Playback** card. Its collapsed row shows the current default
-speaker and volume (for example "Living Room · 45%").
+Open **Setup** and expand the **Playback** card. Its collapsed row shows the Auto-Start
+speakers and the start volume (for example "Living Room · 45%").
 
 Every control on this card applies immediately as you change it. There is no separate Save
 button.
 
-## Default Speakers
+## Auto-Start Speakers
 
-A drop-down lists the AirPlay outputs OwnTone can currently see. Picking one sets it as the
-speaker autostream uses by default. Speakers you've hidden from autostream (the **Show in
-autostream** toggle on [Setup-OwnTone](SETUP-OWNTONE.md)) are left out of the list unless one
-of them is already your saved default, in which case it still appears so you don't lose track
-of what's selected.
+The speakers autostream starts when playback begins. Each is listed with the volume it starts
+at. To change the set, choose the speakers you want on **Home** while something is playing, then
+tap the pin above the speaker list and confirm.
 
-If no outputs have been discovered yet, the list shows "Looking for speakers…" underneath
-while autostream keeps looking for them in the background.
+Each speaker has a **Remove** button. The last speaker cannot be removed, because autostream
+needs at least one to start on.
 
-## Default Volume
+## Start volume for other speakers
 
-A slider from 0-100% sets the default output volume.
+A slider from 0-100% sets the volume a speaker starts at when it is not in the Auto-Start set.
 
 ## Silence detection
 

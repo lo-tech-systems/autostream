@@ -230,6 +230,25 @@ var pageData = (function () {
         // last sample compared with the slider here, so it follows the slider
         // without waiting for the next poll.
         var _inputLevelLast = {};
+        // The two inputs as the readout wants them, from the inputs and
+        // monitor parts: no level unless the monitor is connected, and the
+        // texts the page was given for an input that is absent.
+        function _inputLevelsFromState(body){
+          const parts = (body && body.parts) || {};
+          const entries = (parts.inputs && parts.inputs.entries) || [];
+          const connected = !!(parts.monitor && parts.monitor.connected);
+          const missing = pageData.missing_rate_texts || ['', ''];
+          return {inputs: [1, 2].map(function(i){
+            const e = entries.find(function(x){ return x && x.index === i; });
+            const lv = e && e.level;
+            return {
+              index: i,
+              dbfs: (connected && lv && typeof lv.dbfs === 'number') ? lv.dbfs : null,
+              sample_rate_text: e ? e.sample_rate_text : missing[1],
+              rate_matching_note: e ? e.rate_note : missing[0],
+            };
+          })};
+        }
         function _applyInputLevelMark(inputIndex){
           const el = document.getElementById('audio' + inputIndex + '_level_val');
           if (!el) return;
@@ -252,9 +271,9 @@ var pageData = (function () {
           });
         }
         var _inputLevelPoller = Poller({
-          url: '/api/inputs/levels',
+          url: '/api/v1/state?parts=inputs,monitor',
           intervalMs: 1000,
           activeOnly: true,
           fetchOptions: {headers: {'X-CSRF-Token': window.__CSRF || ''}},
-          onData: _applyInputLevels,
+          onData: function(body){ _applyInputLevels(_inputLevelsFromState(body)); },
         });

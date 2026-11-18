@@ -105,3 +105,6 @@
       .bt-scan-empty{color:var(--color-text-muted,#888);font-style:italic;}
     
 #panel-playback { padding-bottom: 4.5rem; }
+.autostart-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.3rem 0; }
+.autostart-none { padding: 0.3rem 0; color: var(--color-text-secondary); }
+.autostart-remove[disabled] { opacity: 0.45; }

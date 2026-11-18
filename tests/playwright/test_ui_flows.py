@@ -75,22 +75,21 @@ _RATE_MATCHING_NOTE_STUB = "Stub note for input {index}."
 
 
 def _stub_levels_reply() -> dict:
-    """The /api/inputs/levels reply the stub serves; a test edits it between polls."""
+    """The state body the stub serves for the Setup level readout (the inputs
+    and monitor parts); a test edits it between polls. Input 2 is not running,
+    so it has no entry."""
     return {
         "ok": True,
-        "connected": True,
-        "inputs": [
-            {"index": 1, "enabled": True, "running": True, "dbfs": -52.0,
-             "sample_rate_text": "Sample rate: 48\u00a0kHz",
-             "rate_matching_note": _RATE_MATCHING_NOTE_STUB.format(index=1),
-             "dynamic_rate_matching": False, "rate_mismatch_hz": 0,
-             "negotiated_hz": 48000, "monitor_supports_rate_matching": True},
-            {"index": 2, "enabled": False, "running": False, "dbfs": None,
-             "sample_rate_text": "Sample rate: not running",
-             "rate_matching_note": _RATE_MATCHING_NOTE_STUB.format(index=2),
-             "dynamic_rate_matching": False, "rate_mismatch_hz": 0,
-             "negotiated_hz": 0, "monitor_supports_rate_matching": False},
-        ],
+        "parts": {
+            "monitor": {"connected": True},
+            "inputs": {"entries": [
+                {"index": 1, "device": "hw:1,0", "input_type": "turntable", "capturing": True,
+                 "replay_origin": False,
+                 "rate_note": _RATE_MATCHING_NOTE_STUB.format(index=1),
+                 "sample_rate_text": "Sample rate: 48 kHz", "rate_mismatch_hz": 0,
+                 "level": {"index": 1, "dbfs": -52.0}},
+            ]},
+        },
     }
 
 
@@ -115,7 +114,7 @@ class _StubHandler(BaseHTTPRequestHandler):
             key = self.path.rsplit("/", 1)[-1]
             body = _STUB_CARD_JSON.get(key, b'{"ok": false, "error": "unknown_card"}')
             ct = "application/json"
-        elif self.path.startswith("/api/inputs/levels"):
+        elif self.path.startswith("/api/v1/state"):
             body = json.dumps(_STUB_LEVELS).encode("utf-8")
             ct = "application/json"
         elif self.path.startswith("/api/"):
@@ -433,7 +432,7 @@ class TestPanelScopedPolling:
 
     def test_input_levels_poll_is_panel_scoped(self, page: "Page", base_url: str):
         _assert_poll_is_panel_scoped(
-            page, base_url, "/api/inputs/levels", "Input 1", "panel-input1"
+            page, base_url, "/api/v1/state?parts=inputs,monitor", "Input 1", "panel-input1"
         )
 
 
@@ -526,7 +525,7 @@ class TestInputTypeAndSensitivity:
         self._open_input1(page, base_url)
         note = page.locator("#audio1_rate_matching_note")
         expect(note).to_have_text("Stub note for input 1.", timeout=3000)
-        _STUB_LEVELS["inputs"][0]["rate_matching_note"] = "Changed while the card was open."
+        _STUB_LEVELS["parts"]["inputs"]["entries"][0]["rate_note"] = "Changed while the card was open."
         expect(note).to_have_text("Changed while the card was open.", timeout=3000)
         expect(page.locator("#panel-input1")).to_be_visible()
 
@@ -538,7 +537,7 @@ class TestInputTypeAndSensitivity:
         self._open_input1(page, base_url)
         line = page.locator("#audio1_sample_rate")
         expect(line).to_have_text("Sample rate: 48\u00a0kHz", timeout=3000)
-        _STUB_LEVELS["inputs"][0]["sample_rate_text"] = (
+        _STUB_LEVELS["parts"]["inputs"]["entries"][0]["sample_rate_text"] = (
             "Sample rate: 44.1\u00a0kHz (device opened at 48\u00a0kHz)"
         )
         expect(line).to_have_text(

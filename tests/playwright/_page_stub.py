@@ -317,7 +317,8 @@ _SETUP_BT_STATUS = {"adapter_present": True, "paired": None, "link": "disconnect
 
 
 @contextmanager
-def _setup_session(*, bt_enabled=False, bt_status=None, dial_sightings=(), dial_entries=(), outputs=()):
+def _setup_session(*, bt_enabled=False, bt_status=None, dial_sightings=(), dial_entries=(), outputs=(),
+                   default_outputs=None):
     """Yield ``(state, auth)`` for the Setup page with the collaborators it reads
     (the settings, the speaker list, the host's names, the dial lists and
     Bluetooth) replaced by plain fakes."""
@@ -330,7 +331,10 @@ def _setup_session(*, bt_enabled=False, bt_status=None, dial_sightings=(), dial_
     auth.get_boot_pin_value.return_value = None
     with tempfile.TemporaryDirectory() as tmp:
         config_path = Path(tmp) / "config.json"
-        config_path.write_text(json.dumps(_SETUP_CONFIG), encoding="utf-8")
+        config = json.loads(json.dumps(_SETUP_CONFIG))
+        if default_outputs is not None:
+            config["owntone"] = {"default_outputs": list(default_outputs), "volume_percent": 20}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
         store = SettingsStore(str(config_path), _save_interval_seconds=9999, _writer=MagicMock())
         state = WebUIState(str(config_path), str(Path(tmp) / "state.json"), settings=as_view(store))
         if bt_enabled:
@@ -353,18 +357,19 @@ def _setup_session(*, bt_enabled=False, bt_status=None, dial_sightings=(), dial_
 
 
 def _render_setup(*, bt_enabled: bool = False, bt_status: dict | None = None,
-                  dial_sightings=(), dial_entries=(), outputs=(), **_fakes) -> bytes:
+                  dial_sightings=(), dial_entries=(), outputs=(), default_outputs=None, **_fakes) -> bytes:
     from webui.browser.setup.page import send_setup_page  # noqa: PLC0415
 
     handler, chunks = _handler("/setup")
     with _setup_session(bt_enabled=bt_enabled, bt_status=bt_status, dial_sightings=dial_sightings,
-                        dial_entries=dial_entries, outputs=outputs) as (state, auth):
+                        dial_entries=dial_entries, outputs=outputs,
+                        default_outputs=default_outputs) as (state, auth):
         send_setup_page(handler, state, auth)
     return b"".join(chunks)
 
 
 def setup_card_json(*, bt_enabled: bool = False, bt_status: dict | None = None,
-                    dial_sightings=(), dial_entries=(), outputs=()) -> dict[str, bytes]:
+                    dial_sightings=(), dial_entries=(), outputs=(), default_outputs=None) -> dict[str, bytes]:
     """Render every Setup card's lazy ``GET /api/setup/card/<key>`` reply, keyed
     by card key, as the stub server hands them to the page."""
     from webui.browser.setup.page import handle_setup_card_get
@@ -372,7 +377,8 @@ def setup_card_json(*, bt_enabled: bool = False, bt_status: dict | None = None,
 
     replies: dict[str, bytes] = {}
     with _setup_session(bt_enabled=bt_enabled, bt_status=bt_status, dial_sightings=dial_sightings,
-                        dial_entries=dial_entries, outputs=outputs) as (state, auth):
+                        dial_entries=dial_entries, outputs=outputs,
+                        default_outputs=default_outputs) as (state, auth):
         for card in CARDS:
             handler, chunks = _handler(f"/api/setup/card/{card.key}")
             handle_setup_card_get(handler, state, auth, card.key)

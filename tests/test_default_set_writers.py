@@ -1,8 +1,7 @@
 """tests/test_default_set_writers.py
 
 The writers of the Auto-Start set: the owntone.default_outputs field, the
-compat writers kept for the Setup select and the volume slider, first boot,
-and the outputs.save_default intent. Whatever the order of two writes, the
+start volume slider, first boot, and the outputs.save_default intent. Whatever the order of two writes, the
 store and the output authority end holding the same set.
 """
 from __future__ import annotations
@@ -111,33 +110,13 @@ class TestDefaultOutputsField:
         assert got == [{"id": "A", "name": "Lounge", "volume": 30}]
 
 
-class TestCompatWriters:
-    def test_the_name_writes_one_member_with_the_units_id(self, store, w):
-        merge(w, [row("K1", "Kitchen")])
-        write(store, "owntone.output_name", "Kitchen")
-        assert members(store) == [("K1", "Kitchen", 20)]
-        assert "output_name" not in store._raw["owntone"]
-        assert authority_members() == [("K1", "Kitchen", 20)]
-
-    def test_the_name_of_an_unknown_speaker_has_no_id(self, store, w):
-        write(store, "owntone.output_name", "Garage")
-        assert members(store) == [("", "Garage", 20)]
-
-    def test_the_volume_moves_a_single_member_with_it(self, store, w):
+class TestStartVolume:
+    def test_the_volume_leaves_the_set_alone(self, store, w):
         write(store, "owntone.default_outputs", [{"id": "A", "name": "Lounge", "volume": 30}])
         write(store, "owntone.volume_percent", 55)
         assert store.snapshot().owntone.volume_percent == 55
-        assert members(store) == [("A", "Lounge", 55)]
-        assert authority_members() == [("A", "Lounge", 55)]
+        assert members(store) == [("A", "Lounge", 30)]
         assert get_authority().start_volume() == 55
-
-    def test_the_volume_leaves_a_larger_set_alone(self, store, w):
-        write(store, "owntone.default_outputs", [
-            {"id": "A", "name": "Lounge", "volume": 30},
-            {"id": "B", "name": "Kitchen", "volume": 40},
-        ])
-        write(store, "owntone.volume_percent", 55)
-        assert members(store) == [("A", "Lounge", 30), ("B", "Kitchen", 40)]
 
 
 class TestFirstBoot:

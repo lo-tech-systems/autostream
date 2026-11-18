@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import html
 
-from autostream_state import store
 from autostream_rpi import is_high_performance_pi
 from webui.common import settings_card_html
 from webui.browser.setup import cards_inputs, context
@@ -49,32 +48,38 @@ def _setup_owntone_more_settings_html(parsed) -> str:
     return owntone_button_html
 
 
+def _auto_start_row_html(member, only_one: bool) -> str:
+    """One Auto-Start member: its name and level, and a button to remove it.
+    The last member cannot be removed, since the appliance needs one."""
+    name = html.escape(member.name)
+    return (
+        "<div class='autostart-row'>"
+        f"<span class='autostart-name'>{name} &middot; {int(member.volume)}%</span>"
+        f"<button type='button' class='pill-btn small autostart-remove' aria-label='Remove {name}'"
+        f" data-id='{html.escape(member.id)}' data-name='{name}' data-volume='{int(member.volume)}'"
+        f" onclick='removeAutoStart(this)'{' disabled' if only_one else ''}>Remove</button>"
+        "</div>"
+    )
+
+
+AUTO_START_HELP = "To change it, choose speakers on Home, then tap the pin."
+AUTO_START_LAST_MEMBER = " At least one speaker is needed."
+
+
 def _setup_playback_defaults_card_html(parsed) -> str:
-    """Playback panel -- "Default Speakers" / "Default Volume" card."""
-    owntone_outputs_html = ""
-    member_names = {m.name for m in parsed.owntone.default_outputs}
-    first_member = parsed.owntone.default_outputs[0].name if parsed.owntone.default_outputs else ""
-    outputs_part = store().snapshot().outputs
-    if outputs_part.connected:
-        hidden = {str(n).strip().casefold() for n in (parsed.webui.hidden_outputs or ()) if str(n).strip()}
-        for out in outputs_part.reported_rows():
-            nm = str(out.name or "")
-            if not nm:
-                continue
-            if nm.strip().casefold() in hidden and nm not in member_names:
-                continue
-            sel = " selected" if nm == first_member else ""
-            owntone_outputs_html += f"<option value='{html.escape(nm)}'{sel}>{html.escape(nm)}</option>"
+    """Playback panel -- "Auto-Start Speakers" list and "Start volume" card.
+
+    The list is read-only apart from removing a member; the set is chosen on
+    Home. The start volume is for speakers outside the set."""
+    members = list(parsed.owntone.default_outputs)
+    rows = "".join(_auto_start_row_html(m, len(members) == 1) for m in members) or (
+        "<div class='autostart-none'>None.</div>"
+    )
+    last = AUTO_START_LAST_MEMBER if len(members) <= 1 else ""
     playback_defaults_inner_html = f"""
-          <label>Default Speakers:
-            <select id="owntone_output_select" name="owntone_output_name" onchange="refreshPlaybackCardSub(); if(liveEnabled) settingsSaveField('owntone.output_name', this.value);">
-              {owntone_outputs_html}
-            </select>
-            <div id="owntone_output_hint" class="helptext" style="display:none;">
-              Looking for speakers&hellip;
-            </div>
-          </label>
-          <label><div class="slider-header"><span>Default Volume:</span><span id="vol_val">{parsed.owntone.volume_percent}%</span></div>
+          <div id="autostart_members"><strong>Auto-Start Speakers</strong>{rows}</div>
+          <div id="autostart_help" class="helptext">{AUTO_START_HELP}<span id="autostart_last">{last}</span></div>
+          <label><div class="slider-header"><span>Start volume for other speakers:</span><span id="vol_val">{parsed.owntone.volume_percent}%</span></div>
           <input type="range" min="0" max="100" value="{parsed.owntone.volume_percent}" oninput="syncVol(this.value)">
           <input type="hidden" id="owntone_volume_percent" name="owntone_volume_percent" value="{parsed.owntone.volume_percent}"></label>
         """

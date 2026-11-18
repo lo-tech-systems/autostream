@@ -16,6 +16,7 @@ import html
 import logging
 from typing import Optional
 
+from autostream_state import MISSING_RATE_TEXTS
 from webui.assets import ICON_PADLOCK_LOCKED, ICON_PADLOCK_UNLOCKED, INFO_MODAL_HTML
 from webui import static
 from webui.common import build_page_html, build_top_banner_html
@@ -370,7 +371,7 @@ def send_setup_page(
     )
     _script_files = [
         "a2hs.js", "autosave.js", "info_modal.js",
-        "setup_controls.js", "setup_outputs.js", "setup_panels.js", "setup_dials.js", "setup_network.js",
+        "setup_controls.js", "setup_panels.js", "setup_dials.js", "setup_network.js",
         "setup_factory_reset.js",
     ]
     if bt_enabled:
@@ -389,6 +390,7 @@ def send_setup_page(
         "bt_status": bt_status if isinstance(bt_status, dict) else None,
         "bt_ui_text": cards_bluetooth._bluetooth_input_fragment_text(bt_status),
         "sd_health": sd_health,
+        "missing_rate_texts": list(MISSING_RATE_TEXTS),
     })
     _poll_js_src = static.script_tag("poll.js")
     html_body = build_page_html(

@@ -394,8 +394,9 @@ class TestSetupPageHtmlControls:
     def test_no_hidden_threshold_field(self, html):
         assert 'type="hidden" id="audio_silence_threshold"' not in html
 
-    def test_output_select_wired(self, html):
-        assert "settingsSaveField('owntone.output_name', this.value)" in html
+    def test_auto_start_removal_saves_the_remaining_set(self, html):
+        assert "settingsSaveField('owntone.default_outputs'" in html
+        assert "onclick='removeAutoStart(this)'" in html
 
     def test_track_id_checkbox_wired(self, html):
         assert "settingsSaveField('track_identification.enabled', this.checked)" in html
@@ -552,7 +553,7 @@ class TestPlaybackPanelCardSplit:
         panel = self._playback_panel(html)
         # Four distinct settings_card_html() divs (identified by their
         # unique static content) inside the playback panel.
-        assert 'id="owntone_output_select"' in panel
+        assert 'id="autostart_members"' in panel
         assert 'id="sil_val"' in panel
         assert 'id="repeat_enabled"' in panel
         assert 'id="general_audio_path"' in panel
@@ -669,8 +670,8 @@ class TestPlaybackPanelCardSplit:
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         for expected_id in (
-            "owntone_output_select",
-            "owntone_output_hint",
+            "autostart_members",
+            "autostart_help",
             "vol_val",
             "owntone_volume_percent",
             "sil_val",

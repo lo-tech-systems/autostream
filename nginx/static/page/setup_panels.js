@@ -129,9 +129,9 @@ var pageData = (function () {
           var unavailEl = document.getElementById('repeat-unavailable-note');
           var populated = false;
           try {
-            var r = await fetch('/api/status', { cache: 'no-store' });
+            var r = await fetch('/api/v1/state?parts=repeat', { cache: 'no-store' });
             var d = await r.json();
-            var repeat = (d && d.repeat) || null;
+            var repeat = (d && d.parts && d.parts.repeat && d.parts.repeat.block) || null;
             if (!repeat) return false;  // absent on old monitor binaries -- feature unsupported
             // Freshness gate for the just-changed-a-setting poll: the status
             // cache lags the change by a second or two, so the first
@@ -277,8 +277,9 @@ var pageData = (function () {
         function refreshPlaybackCardSub() {
           var sub = document.getElementById('playback-card-sub');
           if (!sub || !_setupPanelIsLoaded('playback')) return;
-          var sel = document.getElementById('owntone_output_select');
-          var speaker = sel ? (sel.value || 'No speaker selected') : 'No speaker selected';
+          var names = Array.from(document.querySelectorAll('#autostart_members .autostart-remove'))
+            .map(function(b){ return b.dataset.name; });
+          var speaker = names.length ? names.join(', ') : 'No speaker selected';
           var volEl = document.getElementById('owntone_volume_percent');
           var vol = volEl ? volEl.value : '0';
           sub.textContent = speaker + ' \u00b7 ' + vol + '%';

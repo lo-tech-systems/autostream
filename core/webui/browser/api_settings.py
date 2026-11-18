@@ -125,7 +125,7 @@ class _LateFields(Mapping):
         "audio1.eq_40hz_db", "audio1.eq_100hz_db", "audio1.eq_8khz_db",
         "audio2.eq_40hz_db", "audio2.eq_100hz_db", "audio2.eq_8khz_db",
         "repeat.enabled", "repeat.codec", "repeat.target_minutes",
-        "owntone.output_name", "owntone.volume_percent",
+        "owntone.default_outputs", "owntone.volume_percent",
         "general.silence_seconds", "general.audio_path",
         "audio1.capture_device", "audio2.capture_device",
         "audio1.enabled", "audio2.enabled",
