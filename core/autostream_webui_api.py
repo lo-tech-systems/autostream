@@ -88,7 +88,7 @@ from autostream_dials import (
 )
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, session_source_input_index, store
-from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
+from autostream_dial_warnings import current_warnings, warnings_payload
 from autostream_state.live import get_live_output_eq_status
 from autostream_pin_pairing import REQUESTER_WEBUI, dial_requester
 from autostream_appliance_models import (
@@ -538,8 +538,6 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         send_json(handler, 200, {"ok": False, "error": str(e)})
         return
 
-    poke_dial_warnings()
-
     # Build display dict so the client can update the DOM without recalculation.
     _display: dict = {}
     try:
@@ -610,8 +608,6 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     if result is None or not result.applied:
         send_json(handler, 200, {"ok": False, "error": "Reset could not be applied"})
         return
-
-    poke_dial_warnings()
 
     response: dict = {
         "ok": True,
@@ -1165,7 +1161,7 @@ def _dial_outputs_list(parsed) -> Optional[list]:
     if not part.connected:
         return None
     outputs = build_output_list(parsed, part.units)
-    from autostream_output_usage import annotate_outputs
+    from autostream_state.live import annotate_outputs
     return [
         {
             "id": o["id"], "name": o["name"], "selected": o["selected"],
@@ -2356,7 +2352,7 @@ _LOG_LEVEL_PUT_ALLOWED_FIELDS: frozenset[str] = frozenset({"level"})
 
 def send_log_level_get_json(handler, state: WebUIState) -> None:
     """GET /api/log-level — return current log-level policy state."""
-    from autostream_log_policy import get_log_level_state
+    from autostream_state.live import get_log_level_state
     result = get_log_level_state(
         state.config_path, settings=getattr(state, "settings", None)
     )

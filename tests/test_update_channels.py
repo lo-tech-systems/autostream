@@ -892,7 +892,6 @@ class TestSetupPageChannelToggle:
             get_app_version=MagicMock(return_value="1.0.0-test"),
             _get_dial_sightings=MagicMock(return_value=[]),
             parse_dial_entries=MagicMock(return_value=[]),
-            suggested_silence_threshold_dbfs=MagicMock(return_value=-40.0),
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
         ):

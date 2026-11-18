@@ -41,13 +41,9 @@ from autostream_players import (
     SETTING_UNCOMPRESSED_ALAC,
     SETTING_USER_AGENT,
 )
-from autostream_player_service import (
-    get_capabilities,
-    get_setting,
-    list_outputs,
-    output_supported_config_modes,
-)
+from autostream_player_service import output_supported_config_modes
 from autostream_state import store
+from autostream_state.live import get_capabilities, get_setting, list_outputs
 from autostream_sysutils import run_admin_cmd
 from autostream_webui_common import CSRF_RECOVERY_SCRIPT, _config_snapshot, build_page_html, build_top_banner_html, locked_load_config, send_html
 from autostream_webui_assets import AUTOSAVE_JS, COMMON_MODAL_CSS, RESTART_MODAL_HTML

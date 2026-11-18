@@ -83,7 +83,6 @@ def _render() -> tuple[bytes, bytes]:
         with fake_outputs_result(outputs), \
              patch("autostream_webui_page_setup.get_ap_ssid", return_value="autostream-setup"), \
              patch("autostream_webui_page_setup.get_system_hostname", return_value="autostream"), \
-             patch("autostream_webui_page_setup.suggested_silence_threshold_dbfs", return_value=-50.0), \
              patch("autostream_webui_page_setup.get_app_version", return_value="2.0.0"), \
              patch("autostream_webui_page_setup.parse_dial_entries", return_value=[entry]), \
              patch("autostream_webui_page_setup._get_dial_sightings", return_value=[sighting]):

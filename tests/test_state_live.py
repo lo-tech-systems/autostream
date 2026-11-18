@@ -119,3 +119,87 @@ class TestMonitorOutputRate:
             assert live.get_live_monitor_output_rate(fallback=44100) == 44100
         warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
         assert len(warnings) == 1
+
+
+class TestPlayerReads:
+    def test_get_setting_passes_its_arguments_and_timeout_on(self):
+        with patch("autostream_player_service.get_setting", return_value="reply") as src:
+            assert live.get_setting("http://p", "key", timeout=1) == "reply"
+        src.assert_called_once_with("http://p", "key", timeout=1)
+
+    def test_get_setting_default_timeout_is_the_players(self):
+        with patch("autostream_player_service.get_setting") as src:
+            live.get_setting("http://p", "key")
+        src.assert_called_once_with("http://p", "key", timeout=3.0)
+
+    def test_get_capabilities_passes_its_arguments_and_timeout_on(self):
+        with patch("autostream_player_service.get_capabilities", return_value="caps") as src:
+            assert live.get_capabilities("http://p", timeout=2) == "caps"
+        src.assert_called_once_with("http://p", timeout=2)
+
+    def test_list_outputs_passes_its_arguments_and_timeout_on(self):
+        with patch("autostream_player_service.list_outputs", return_value="rows") as src:
+            assert live.list_outputs("http://p", timeout=1) == "rows"
+        src.assert_called_once_with("http://p", timeout=1)
+
+    def test_get_owntone_runtime_info_passes_its_arguments_on(self):
+        with patch("autostream_player_service.get_owntone_runtime_info", return_value="info") as src:
+            assert live.get_owntone_runtime_info(refresh_if_stale=False) == "info"
+            live.get_owntone_runtime_info("http://p", timeout=1)
+        assert src.call_args_list[0].args == ("",)
+        assert src.call_args_list[0].kwargs == {"timeout": 3.0, "refresh_if_stale": False}
+        assert src.call_args_list[1].args == ("http://p",)
+        assert src.call_args_list[1].kwargs == {"timeout": 1, "refresh_if_stale": True}
+
+    def test_get_vibra_runtime_info_reads_the_shared_client(self):
+        with patch("track_id.vibra_shazam.get_vibra_runtime_info", return_value="v") as src:
+            assert live.get_vibra_runtime_info() == "v"
+        src.assert_called_once_with()
+
+
+class TestBoundReads:
+    def test_an_unbound_name_raises(self):
+        with patch.dict(live._bound, clear=True):
+            with pytest.raises(live.LiveNotBound):
+                live.annotate_outputs([])
+            with pytest.raises(live.LiveNotBound):
+                live.get_log_level_state("c.ini")
+
+    def test_a_bound_read_passes_its_arguments_on(self):
+        calls = []
+        with patch.dict(live._bound, clear=True):
+            live.bind("annotate_outputs", lambda outputs: calls.append(outputs) or ["x"], owner="m")
+            live.bind("get_log_level_state", lambda *a, **k: (a, k), owner="m")
+            assert live.annotate_outputs([1]) == ["x"]
+            assert live.get_log_level_state("c.ini", settings="s") == (("c.ini",), {"settings": "s"})
+        assert calls == [[1]]
+
+    def test_a_second_owner_raises_and_the_first_keeps_the_name(self):
+        with patch.dict(live._bound, clear=True):
+            live.bind("annotate_outputs", lambda outputs: "first", owner="one")
+            with pytest.raises(ValueError):
+                live.bind("annotate_outputs", lambda outputs: "second", owner="two")
+            assert live.annotate_outputs([]) == "first"
+            assert live.bound_owner("annotate_outputs") == "one"
+
+    def test_the_same_owner_may_bind_again(self):
+        with patch.dict(live._bound, clear=True):
+            live.bind("annotate_outputs", lambda outputs: "first", owner="one")
+            live.bind("annotate_outputs", lambda outputs: "second", owner="one")
+            assert live.annotate_outputs([]) == "second"
+
+    def test_an_unknown_name_cannot_be_bound(self):
+        with pytest.raises(ValueError):
+            live.bind("get_setting", lambda *a: None, owner="m")
+
+    def test_every_bindable_name_is_bound_once_the_coordinator_is_imported(self):
+        import autostream_core  # noqa: F401
+        for name in live.BINDABLE:
+            assert live.bound_owner(name) is not None, name
+
+    def test_the_bound_reads_reach_the_replaced_function_of_their_owner(self):
+        import autostream_core  # noqa: F401
+        with patch("autostream_output_usage.annotate_outputs", return_value=["patched"]):
+            assert live.annotate_outputs([]) == ["patched"]
+        with patch("autostream_log_policy.get_log_level_state", return_value={"ok": True}):
+            assert live.get_log_level_state("c.ini") == {"ok": True}

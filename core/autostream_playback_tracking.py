@@ -13,6 +13,7 @@ import logging
 import threading
 from typing import Optional
 
+import autostream_dial_warnings as dial_warnings
 import autostream_runtime as runtime
 import autostream_state
 from autostream_bluetooth_client import classify_loopback_hw
@@ -165,6 +166,8 @@ def _counters_reset(intent: Intent, wait: float) -> Outcome:
         "bearing": reset_input_bearing,
     }[intent.args["item"]]
     result = fn(int(intent.args["input"]))
+    if result.applied:
+        dial_warnings.poke()
     return Outcome(
         ok=bool(result.applied),
         error=None if result.applied else "not_applied",
@@ -176,6 +179,7 @@ def _playback_config_set(intent: Intent, wait: float) -> Outcome:
     args = dict(intent.args)
     index = int(args.pop("input"))
     updated = update_playback_input_config(index, **args)
+    dial_warnings.poke()
     return Outcome(ok=True, result={"updated": bool(updated)})
 
 

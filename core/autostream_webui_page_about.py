@@ -32,9 +32,9 @@ from autostream_bluetooth_client import (
     bluetooth_installed,
     bluetooth_services_enabled,
 )
-from autostream_player_service import get_owntone_runtime_info
 from autostream_rpi import get_cpu_busy_percent, get_cpu_temperature_c
 from autostream_state import store
+from autostream_state.live import get_owntone_runtime_info, get_vibra_runtime_info
 from autostream_sysutils import (
     fmt_bytes,
     get_effective_memory_info,
@@ -42,7 +42,6 @@ from autostream_sysutils import (
     get_static_system_facts,
     sdcard_health_display,
 )
-from track_id.vibra_shazam import get_vibra_runtime_info
 
 from autostream_webui_common import (
     _config_snapshot,

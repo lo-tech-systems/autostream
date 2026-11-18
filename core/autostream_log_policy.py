@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from autostream_intents.table import Intent, Outcome, bind
+from autostream_state import live
 from autostream_config import (
     CONFIG_IO_LOCK,
     VALID_LOG_LEVELS,
@@ -345,3 +346,11 @@ def _log_level_set(intent: Intent, wait: float) -> Outcome:
 
 
 bind("log.level.set", _log_level_set, owner="autostream_log_policy")
+
+
+def _live_get_log_level_state(*args, **kwargs) -> dict:
+    # Looked up at call time, so a replaced get_log_level_state is the one used.
+    return get_log_level_state(*args, **kwargs)
+
+
+live.bind("get_log_level_state", _live_get_log_level_state, owner="autostream_log_policy")

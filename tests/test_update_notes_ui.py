@@ -62,7 +62,6 @@ def _render_setup_page() -> str:
          patch(f"{mod}.build_top_banner_html", new=lambda **kw: ("", "")), \
          patch(f"{mod}.get_system_hostname", new=lambda: "test-host"), \
          patch(f"{mod}.get_app_version", new=lambda: "1.0.0"), \
-         patch(f"{mod}.suggested_silence_threshold_dbfs", new=lambda tt: -45.0), \
          patch(f"{mod}.get_ap_ssid", new=lambda: "test-ssid"), \
          patch(f"{mod}.parse_dial_entries", new=lambda: []), \
          patch(f"{mod}._get_dial_sightings", new=lambda: []):

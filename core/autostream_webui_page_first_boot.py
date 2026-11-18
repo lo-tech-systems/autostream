@@ -35,7 +35,6 @@ from autostream_commissioning import (
     mark_commissioning_complete,
 )
 from autostream_intents import Intent, Origin, submit
-from autostream_player_service import output_supported_config_modes
 from autostream_state import store
 from autostream_sysutils import get_system_hostname, set_system_hostname
 from autostream_webui_api import send_json

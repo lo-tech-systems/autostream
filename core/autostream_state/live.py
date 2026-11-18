@@ -1,11 +1,12 @@
-"""autostream_state.live -- reads that go to the monitor daemon on the
-caller's thread, with their own timeouts. Not part of the snapshot: two calls
-may see different moments.
+"""autostream_state.live -- reads that go to the monitor daemon, the player and
+other collaborators on the caller's thread, with their own timeouts. Not part of
+the snapshot: two calls may see different moments.
 """
 from __future__ import annotations
 
 import logging
-from typing import Optional
+import threading
+from typing import Callable, Optional
 
 import autostream_monitor_client as monitor_client
 
@@ -65,3 +66,97 @@ def get_live_monitor_output_rate(
     except Exception as e:
         logging.warning("Could not get live monitor output rate: %s", e)
         return fallback
+
+
+# ---------------------------------------------------------------------------
+# Reads that go to the player, the track-identification client or the
+# occupancy and log-policy modules on the caller's thread.
+#
+# Each function keeps the arguments, I/O and timeouts of the function it
+# fronts. The Level 0 sources are imported inside the functions, so importing
+# this package pulls none of them in. The Level 2 sources cannot be imported
+# from here; their own module binds them (see bind()).
+# ---------------------------------------------------------------------------
+
+class LiveNotBound(RuntimeError):
+    """A live read whose Level 2 owner has not been imported."""
+
+
+# Names that a Level 2 module implements and binds when it is imported.
+BINDABLE = ("annotate_outputs", "get_log_level_state")
+
+_bound_lock = threading.Lock()
+_bound: dict[str, tuple[Callable, str]] = {}
+
+
+def bind(name: str, fn: Callable, *, owner: str) -> None:
+    """Called once by the Level 2 module that implements *name*; a second
+    owner raises. The owner binding again (a module imported twice under test)
+    replaces its own entry."""
+    if name not in BINDABLE:
+        raise ValueError(f"{name!r} is not a bindable live read; known: {BINDABLE}")
+    with _bound_lock:
+        current = _bound.get(name)
+        if current is not None and current[1] != owner:
+            raise ValueError(f"live read {name!r} is already bound by {current[1]}")
+        _bound[name] = (fn, owner)
+
+
+def bound_owner(name: str) -> Optional[str]:
+    """The module that bound *name*, or None."""
+    with _bound_lock:
+        entry = _bound.get(name)
+    return entry[1] if entry else None
+
+
+def _call_bound(name: str, *args, **kwargs):
+    with _bound_lock:
+        entry = _bound.get(name)
+    if entry is None:
+        raise LiveNotBound(f"live read {name!r} has no owner; import the module that binds it")
+    return entry[0](*args, **kwargs)
+
+
+def get_setting(base_url: str, key: str, *, timeout: float = 3.0):
+    """One setting of the player (autostream_player_service.get_setting)."""
+    import autostream_player_service as player_service  # noqa: PLC0415
+    return player_service.get_setting(base_url, key, timeout=timeout)
+
+
+def get_capabilities(base_url: str, *, timeout: float = 3.0):
+    """What the player can do (autostream_player_service.get_capabilities)."""
+    import autostream_player_service as player_service  # noqa: PLC0415
+    return player_service.get_capabilities(base_url, timeout=timeout)
+
+
+def list_outputs(base_url: str, *, timeout: float = 3.0):
+    """The player's output list, asked directly (autostream_player_service.list_outputs).
+    For the readiness probe of the OwnTone setup page, which waits for the
+    player's API to answer after a restart; every other reader uses the
+    outputs part of the snapshot."""
+    import autostream_player_service as player_service  # noqa: PLC0415
+    return player_service.list_outputs(base_url, timeout=timeout)
+
+
+def get_owntone_runtime_info(base_url: str = "", *, timeout: float = 3.0, refresh_if_stale: bool = True):
+    """The player's cached runtime metadata (autostream_player_service.get_owntone_runtime_info)."""
+    import autostream_player_service as player_service  # noqa: PLC0415
+    return player_service.get_owntone_runtime_info(
+        base_url, timeout=timeout, refresh_if_stale=refresh_if_stale)
+
+
+def get_vibra_runtime_info():
+    """The track-identification client's in-memory runtime metadata
+    (track_id.vibra_shazam.get_vibra_runtime_info)."""
+    from track_id import vibra_shazam  # noqa: PLC0415
+    return vibra_shazam.get_vibra_runtime_info()
+
+
+def annotate_outputs(outputs: list[dict]) -> list[dict]:
+    """The output dicts with remote-occupancy fields added (bound by autostream_output_usage)."""
+    return _call_bound("annotate_outputs", outputs)
+
+
+def get_log_level_state(*args, **kwargs):
+    """The log-level policy state (bound by autostream_log_policy)."""
+    return _call_bound("get_log_level_state", *args, **kwargs)

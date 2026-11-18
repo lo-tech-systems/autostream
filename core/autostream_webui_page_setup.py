@@ -46,9 +46,6 @@ from autostream_players import (
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MIN_MINUTES,
 )
-from autostream_playback_stats import (
-    suggested_silence_threshold_dbfs,
-)
 from autostream_rpi import is_high_performance_pi
 from autostream_sysutils import (
     SDCARD_HEALTH_METHODS,
@@ -827,7 +824,7 @@ def _setup_owntone_more_settings_html(parsed) -> str:
     """"More Owntone Settings" / "Run Speaker Synchronisation" button block."""
     _align_supported = True
     try:
-        from autostream_player_service import get_capabilities as _get_capabilities
+        from autostream_state.live import get_capabilities as _get_capabilities
         _align_supported = bool(
             _get_capabilities(parsed.owntone.base_url, timeout=3).can_set_output_offset
         )

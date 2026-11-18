@@ -58,7 +58,7 @@ def _offsets_supported(state: WebUIState) -> bool:
     page shows a clear notice instead of controls that cannot work.
     """
     try:
-        from autostream_player_service import get_capabilities
+        from autostream_state.live import get_capabilities
         base_url = _config_snapshot(state).owntone.base_url
         return bool(get_capabilities(base_url, timeout=3).can_set_output_offset)
     except Exception:

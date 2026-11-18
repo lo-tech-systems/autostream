@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Callable
 
+from autostream_state import live
 from autostream_config import (
     OUTPUT_USAGE_POLL_INTERVAL_DEFAULT,
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
@@ -641,3 +642,11 @@ def annotate_outputs(outputs: list[dict]) -> list[dict]:
             out["remote_owner_service"] = ""
         result.append(out)
     return result
+
+
+def _live_annotate_outputs(outputs: list[dict]) -> list[dict]:
+    # Looked up at call time, so a replaced annotate_outputs is the one used.
+    return annotate_outputs(outputs)
+
+
+live.bind("annotate_outputs", _live_annotate_outputs, owner="autostream_output_usage")

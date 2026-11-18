@@ -15,14 +15,10 @@ from typing import Optional
 
 import autostream_pin_pairing as pairing
 from autostream_config import parse_config
-from autostream_state.live import get_live_output_eq_status
+from autostream_state.live import get_live_output_eq_status, get_setting
 from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
 from autostream_state import Origin, active_track, store
-from autostream_player_service import (
-    config_airplay_mode_to_backend,
-    get_setting,
-)
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_rpi import get_appliance_id
 from autostream_sysutils import get_system_hostname
@@ -155,7 +151,7 @@ def build_home_state(
         outputs = build_output_list(parsed, snap.outputs.units)
 
     try:
-        from autostream_output_usage import annotate_outputs
+        from autostream_state.live import annotate_outputs
         outputs = annotate_outputs(outputs)
     except Exception:
         pass

@@ -115,7 +115,6 @@ class _SetupRenderer:
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),
             parse_dial_entries=MagicMock(return_value=[]),
-            suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
         ):
@@ -462,7 +461,6 @@ class TestInput1EnableToggle:
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),
             parse_dial_entries=MagicMock(return_value=[]),
-            suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
         ):
@@ -547,7 +545,6 @@ class TestSetupPageLiveEnabled:
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),
             parse_dial_entries=MagicMock(return_value=[]),
-            suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
         ):
@@ -672,7 +669,6 @@ class TestPlaybackPanelCardSplit:
             get_app_version=MagicMock(return_value="1.0.0"),
             _get_dial_sightings=MagicMock(return_value=[]),
             parse_dial_entries=MagicMock(return_value=[]),
-            suggested_silence_threshold_dbfs=MagicMock(return_value=-50.0),
             build_top_banner_html=MagicMock(return_value=("", "")),
             _set_flash_cookie=MagicMock(),
             is_high_performance_pi=MagicMock(return_value=True),

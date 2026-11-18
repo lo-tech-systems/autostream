@@ -1,0 +1,2 @@
+# The dial warnings poke moved into the playback intent handlers.
+autostream_webui_api.poke_dial_warnings -> autostream_dial_warnings.poke  alias=dial_warnings

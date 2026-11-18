@@ -350,7 +350,7 @@ class TestPokeSites:
             patch("autostream_webui_api._config_snapshot", side_effect=OSError("no config")),
             fake_playback(SimpleNamespace(inputs={})),
             patch("autostream_webui_api.send_json"),
-            patch("autostream_webui_api.poke_dial_warnings") as poke,
+            patch("autostream_dial_warnings.poke") as poke,
         ):
             api.send_service_reset_json(
                 handler, MagicMock(), json.dumps({"item": "stylus", "input": 1}))
@@ -365,7 +365,7 @@ class TestPokeSites:
                                                last_service_at=None)),
             patch("autostream_webui_api._config_snapshot", side_effect=OSError("no config")),
             patch("autostream_webui_api.send_json"),
-            patch("autostream_webui_api.poke_dial_warnings") as poke,
+            patch("autostream_dial_warnings.poke") as poke,
         ):
             api.send_service_reset_json(
                 MagicMock(), MagicMock(), json.dumps({"item": "stylus", "input": 1}))
@@ -391,7 +391,7 @@ class TestPokeSites:
             patch("autostream_webui_api.classify_loopback_hw", return_value="x"),
             fake_playback(SimpleNamespace(inputs={})),
             patch("autostream_webui_api.send_json"),
-            patch("autostream_webui_api.poke_dial_warnings") as poke,
+            patch("autostream_dial_warnings.poke") as poke,
         ):
             api.send_service_config_json(
                 MagicMock(), state,
