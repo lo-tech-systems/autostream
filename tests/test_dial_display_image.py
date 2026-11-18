@@ -388,3 +388,18 @@ class TestRenderBackdrops:
 
     def test_missing_logo_is_none(self, tmp_path):
         assert ddi.render_logo_backdrop(str(tmp_path / "absent.png")) is None
+
+
+class TestResampleFilter:
+    def test_shrinking_either_axis_uses_box(self):
+        assert ddi.resample_filter((640, 480), (320, 240)) is Image.Resampling.BOX
+        assert ddi.resample_filter((640, 480), (640, 240)) is Image.Resampling.BOX
+
+    def test_growing_both_axes_uses_nearest(self):
+        assert ddi.resample_filter((160, 128), (320, 240)) is Image.Resampling.NEAREST
+
+    def test_equal_size_falls_on_the_nearest_branch(self):
+        # Never actually reached in practice — _push_frame_locked skips the
+        # call entirely when sizes already match — but the function's own
+        # boundary behaviour is pinned here regardless.
+        assert ddi.resample_filter((320, 240), (320, 240)) is Image.Resampling.NEAREST

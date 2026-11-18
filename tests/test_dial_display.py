@@ -46,8 +46,7 @@ from dial_display_views import (
 )
 from dial_display_palette import LIST_BG_RGB
 from dial_display_profiles import DEFAULT_PROFILE_KEY, get_profile, mm_per_px_for_size
-from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_IGNORED, LINK_UNKNOWN, NetworkView
-from dial_sdhealth import SdHealthView, STATUS_OFF, STATUS_UNSUPPORTED, STATUS_VALID
+from dial_network import LINK_CONNECTED, LINK_DOWN, LINK_UNKNOWN
 from dial_layout_metrics import metrics_for
 from dial_touch_layout import TouchZone, layout_for, list_layout_for, repeat_layout_for
 from autostream_peer_client import PeerReply
@@ -61,12 +60,11 @@ import dial_display as dd
 import dial_display_controls as ddc
 import dial_display_repeat_line as ddr
 import dial_display_state as dds
-import dial_warning_text as dwt
 import dial_display_compositor as dd_compositor
 import dial_display_draw as dd_draw
 import dial_display_image as dd_image
 import dial_display_views as dd_views
-from dial_core_state import NOWIFI_PROMPT_STREAK, NowPlaying, OutputRow, artwork_key
+from dial_core_state import NowPlaying, OutputRow, artwork_key
 from dial_display import (
     SCREEN_POLICIES,
     SELECTOR_TIMEOUT_SECONDS,
@@ -75,7 +73,7 @@ from dial_display import (
     create_dial_display,
 )
 from dial_display_backend import DisplayBackend, NoOpBackend
-from dial_warnings import KIND_STATUS, WarningManager
+from dial_warnings import KIND_STATUS
 from dial_test_support import (
     FakeBackend,
     _FakeClock,
@@ -84,7 +82,6 @@ from dial_test_support import (
     _status_result,
     _target,
     _track_id,
-    apply_update_view,
     eq_optimistic,
     fold,
     make_display,
@@ -92,7 +89,6 @@ from dial_test_support import (
     on_network_view,
     on_outputs_result,
     on_repeat_result,
-    on_sd_health_view,
     open_warnings_page,
     outputs_rows,
     patch_monotonic,
@@ -104,18 +100,14 @@ from dial_test_support import (
     seed_repeat,
     sent,
     sent_kwargs,
-    set_appliance_warnings,
     set_eq_optimistic,
     set_focus_pending,
     set_roster,
     tap_card,
     tap_output,
-    tick_update_watch,
-    tick_warnings,
     update_availability,
-    warning_active,
-    warning_cleared,
 )
+from dial_display_test_support import _fold, _view
 
 
 # ---------------------------------------------------------------------------
@@ -4820,21 +4812,6 @@ class TestListPagingMatchesPaintedRows:
 # rest of this suite exercises a chosen size.
 # ---------------------------------------------------------------------------
 
-class TestResampleFilter:
-    def test_shrinking_either_axis_uses_box(self):
-        assert dd_image.resample_filter((640, 480), (320, 240)) is Image.Resampling.BOX
-        assert dd_image.resample_filter((640, 480), (640, 240)) is Image.Resampling.BOX
-
-    def test_growing_both_axes_uses_nearest(self):
-        assert dd_image.resample_filter((160, 128), (320, 240)) is Image.Resampling.NEAREST
-
-    def test_equal_size_falls_on_the_nearest_branch(self):
-        # Never actually reached in practice — _push_frame_locked skips the
-        # call entirely when sizes already match — but the function's own
-        # boundary behaviour is pinned here regardless.
-        assert dd_image.resample_filter((320, 240), (320, 240)) is Image.Resampling.NEAREST
-
-
 class TestNoResizeWhenSizesMatch:
     """A composed size that already matches the physical panel is not resized,
     and _layout_metrics() equals metrics_for at the display's own density."""
@@ -5052,100 +5029,6 @@ class TestLayoutMetricsLockFree:
             release.set()
             t.join(timeout=2)
         assert "metrics" in result  # returned without blocking on self._lock
-
-
-# ---------------------------------------------------------------------------
-# Shared paging/list-state helpers — pure functions, exercised directly
-# without a display instance where possible.
-# ---------------------------------------------------------------------------
-
-class TestClampPageAndPageSlice:
-    def test_clamp_page_empty_rows_is_zero(self):
-        assert dds.clamp_page(3, 0, 3) == 0
-
-    def test_clamp_page_beyond_last_clamps(self):
-        assert dds.clamp_page(10, 5, 3) == 1  # 5 rows at 3/page -> pages 0, 1
-
-    def test_clamp_page_exact_multiple_has_no_extra_trailing_page(self):
-        assert dds.clamp_page(2, 6, 3) == 1  # 6 rows at 3/page -> pages 0, 1 only
-
-    def test_clamp_page_negative_clamps_to_zero(self):
-        assert dds.clamp_page(-1, 5, 3) == 0
-
-    def test_page_slice_returns_start_and_rows(self):
-        rows = tuple(range(5))
-        start, page_rows = dds.page_slice(rows, 1, 3)
-        assert start == 3
-        assert page_rows == (3, 4)
-
-    def test_page_slice_stale_page_yields_empty_tuple(self):
-        rows = tuple(range(5))
-        _, page_rows = dds.page_slice(rows, 5, 3)  # well past the last page
-        assert page_rows == ()
-
-
-class TestListStateForHelper:
-    def test_none_state_gives_placeholder(self):
-        state = dds.list_state_for(None, 3, "No rows", lambda r: (r, False))
-        assert state.rows == (("No rows", False),)
-        assert state.has_prev is False
-        assert state.has_next is False
-
-    def test_empty_state_gives_placeholder(self):
-        selector = dds.ListScreenState(rows=(), page=0, opened_at=0.0)
-        state = dds.list_state_for(selector, 3, "No devices", dds.selector_list_row)
-        assert state.rows == (("No devices", False),)
-        assert state.has_prev is False
-        assert state.has_next is False
-
-    def test_playing_selector_row_maps_to_play_glyph_triple(self):
-        rows = (dial_core_state.SelectorRow(appliance_id="a", label="A", current=False, playing=True),)
-        selector = dds.ListScreenState(rows=rows, page=0, opened_at=0.0)
-        state = dds.list_state_for(selector, 3, "No devices", dds.selector_list_row)
-        assert state.rows == (("A", False, dd_views.PLAY_GLYPH),)
-
-    def test_non_playing_selector_row_maps_to_pair(self):
-        rows = (dial_core_state.SelectorRow(appliance_id="a", label="A", current=True, playing=False),)
-        selector = dds.ListScreenState(rows=rows, page=0, opened_at=0.0)
-        state = dds.list_state_for(selector, 3, "No devices", dds.selector_list_row)
-        assert state.rows == (("A", True),)
-
-    def test_picker_row_maps_to_label_and_formatted_duration(self):
-        rows = (dial_core_state.PickerRow(appliance_id="a", service_name="A", ip="1.2.3.4", port=80,
-                              label="A", seconds=90.0),)
-        picker = dds.ListScreenState(rows=rows, page=0, opened_at=0.0)
-        state = dds.list_state_for(picker, 3, "Nothing to replay", dds.picker_list_row)
-        assert state.rows == (("A", False, "1:30"),)
-
-    def test_has_next_true_only_when_rows_remain_after_the_page(self):
-        rows = tuple(
-            dial_core_state.SelectorRow(appliance_id=str(i), label=str(i), current=False)
-            for i in range(4)
-        )
-        first_page = dds.list_state_for(
-            dds.ListScreenState(rows=rows, page=0, opened_at=0.0), 3, "No devices", dds.selector_list_row,
-        )
-        assert first_page.has_next is True
-        second_page = dds.list_state_for(
-            dds.ListScreenState(rows=rows, page=1, opened_at=0.0), 3, "No devices", dds.selector_list_row,
-        )
-        assert second_page.has_next is False
-
-    def test_pressed_defaults_to_none(self):
-        selector = dds.ListScreenState(
-            rows=(dial_core_state.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
-        )
-        state = dds.list_state_for(selector, 3, "No devices", dds.selector_list_row)
-        assert state.pressed is None
-
-    def test_pressed_passes_through_unchanged(self):
-        selector = dds.ListScreenState(
-            rows=(dial_core_state.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
-        )
-        state = dds.list_state_for(
-            selector, 3, "No devices", dds.selector_list_row, pressed=(TouchZone.LIST_ROW, 1),
-        )
-        assert state.pressed == (TouchZone.LIST_ROW, 1)
 
 
 class TestCurrentPageRows:
@@ -6814,19 +6697,6 @@ class TestOnRepeatResultOnScreen:
         with display._lock:
             on_repeat_result(display, "transport", aid, 200, {"ok": True, "state": "hold",
                                                               "armed": False, "position_seconds": 0.0})
-
-
-# ---------------------------------------------------------------------------
-# _offerable: the outputs the outputs screen can offer.
-# ---------------------------------------------------------------------------
-
-class TestOfferableOutputs:
-    def test_remote_in_use_row_dropped(self):
-        rows = dds.offerable(outputs_rows({"ok": True, "outputs": [
-            {"id": "1", "name": "Bedroom", "selected": False, "volume": 0, "remote_in_use": True},
-            {"id": "2", "name": "Kitchen", "selected": True, "volume": 50, "remote_in_use": False},
-        ]}))
-        assert [r.id for r in rows] == ["2"]
 
 
 # ---------------------------------------------------------------------------
@@ -8631,15 +8501,6 @@ class TestInfoValueScreen:
 # test_dial_display_warnings.py).
 # ---------------------------------------------------------------------------
 
-def _view(link, bars=0):
-    return NetworkView(link=link, device_state="", bars=bars, updated_at=1.0)
-
-
-def _fold(display):
-    with display._lock:
-        display._repaint_current_locked()
-
-
 class TestNoWifiStateMachine:
     def _idle_display(self, connected=True):
         display, fb, gt = make_display(targets=[])
@@ -8779,25 +8640,6 @@ class TestNoWifiStateMachine:
         display, fb = self._idle_display()
         on_network_view(display, object())        # no .link attribute
         on_network_view(display, None)
-
-# ---------------------------------------------------------------------------
-# Test helpers for the warnings: a settable clock and an SD health reading
-# (see dial_sdhealth.py for is_low()'s hysteresis rule).
-# ---------------------------------------------------------------------------
-
-class _Clock:
-    """A settable fake wall clock for the warning manager: pass `.now` as
-    WarningManager's clock= and move `.t` directly."""
-
-    def __init__(self, t: float) -> None:
-        self.t = t
-
-    def now(self) -> float:
-        return self.t
-
-
-def _sd_view(status, percent=None, check="passed"):
-    return SdHealthView(status=status, percent=percent, check=check, updated_at=1.0)
 
 
 # ---------------------------------------------------------------------------
@@ -9096,437 +8938,6 @@ class TestIdentifiedWithoutArtwork:
             display.fold_for_tests()
         show_artwork.assert_not_called()
         assert display.get_status()["showing"] == "logo"
-
-
-# ---------------------------------------------------------------------------
-# Generic warning capabilities: title_for, progress_for, interrupting,
-# auto_clear_after_s and the button-less form, driven through rows
-# registered for the test only.
-# ---------------------------------------------------------------------------
-
-def _notice_descriptor(**overrides):
-    from dial_warnings import WarningDescriptor
-    fields = dict(
-        id="notice", kind=KIND_STATUS, priority=200, screen="notice",
-        title="Working", message_for=lambda sev: f"step {sev}", severity_for=lambda sev: "info",
-        buttons=(),
-        title_for=lambda sev: f"Title {sev}", progress_for=lambda sev: sev * 10,
-        interrupting=True, auto_clear_after_s=None,
-    )
-    fields.update(overrides)
-    return WarningDescriptor(**fields)
-
-
-class TestGenericWarningCapabilities:
-    @pytest.fixture
-    def rig(self):
-        clock = _Clock(1_000_000.0)
-        started = []
-
-        def build(**overrides):
-            notice = _notice_descriptor(**overrides)
-            display, fb, gt = make_display(
-                targets=[],
-                warnings=WarningManager(WARNING_DESCRIPTORS + (notice,), clock=clock.now),
-            )
-            for p in (
-                patch.dict(dwt.WARNING_BY_ID, {notice.id: notice}),
-                patch.dict(dd.SCREEN_POLICIES, {notice.screen: dd._status_policy_row(notice)}),
-            ):
-                p.start()
-                started.append(p)
-            display.enable()
-            display.fold_for_tests()
-            _fold(display)
-            return display, fb, clock
-
-        yield build
-        for p in started:
-            p.stop()
-
-    def _painted_view(self, display):
-        with patch.object(
-            display._compositor, "compose_warning", wraps=display._compositor.compose_warning,
-        ) as mock_compose:
-            with display._lock:
-                display._display_card_locked()
-        return mock_compose.call_args.args[3]
-
-    def test_the_nowifi_and_sdhealth_rows_keep_the_default_descriptor_fields(self):
-        for desc in (d for d in WARNING_DESCRIPTORS if d.id in ("nowifi", "sdhealth")):
-            assert desc.title_for is None and desc.progress_for is None
-            assert desc.interrupting is False and desc.auto_clear_after_s is None
-
-    def test_painter_uses_title_for_and_progress_for(self, rig):
-        display, fb, clock = rig()
-        warning_active(display, "notice", severity=4)
-        _fold(display)
-        view = self._painted_view(display)
-        assert view.title == "Title 4"
-        assert view.message == "step 4"
-        assert view.percent == 40
-        assert view.buttons == ()
-
-    def test_painter_falls_back_to_the_fixed_title_and_no_percent(self, rig):
-        display, fb, clock = rig(title_for=None, progress_for=None)
-        warning_active(display, "notice", severity=4)
-        _fold(display)
-        view = self._painted_view(display)
-        assert view.title == "Working"
-        assert view.percent is None
-
-    def test_a_warning_card_carries_no_percent(self):
-        display, fb, gt = make_display(targets=[])
-        display.enable()
-        display.fold_for_tests()
-        on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
-        open_warnings_page(display)
-        view = self._painted_view(display)
-        assert view.percent is None and view.title == "microSD Health"
-
-    def test_tick_warnings_clears_expired_rows(self, rig):
-        display, fb, clock = rig(auto_clear_after_s=60.0)
-        warning_active(display, "notice", severity=1)
-        _fold(display)
-        assert display._screen == "notice"
-        clock.t += 59.0
-        tick_warnings(display)
-        assert display._screen_request is None and display._screen == "notice"
-        clock.t += 2.0
-        tick_warnings(display)
-        assert not display.core.warnings.is_active("notice")
-        assert display._screen_request == "main"
-        _fold(display)
-        assert display._screen == "main" and display._warning_screen is None
-
-    def test_tick_warnings_clear_drops_a_pending_request(self, rig):
-        display, fb, clock = rig(auto_clear_after_s=10.0)
-        warning_active(display, "notice", severity=1)
-        assert display._screen_request == "notice"
-        clock.t += 11.0
-        tick_warnings(display)
-        assert display._screen_request is None
-
-    def test_interrupting_opens_over_a_secondary_screen(self, rig):
-        display, fb, clock = rig()
-        display._screen_request = "selector"
-        _fold(display)
-        assert display._screen == "selector"
-        warning_active(display, "notice", severity=2)
-        assert display._screen_request == "notice"
-        _fold(display)
-        assert display._screen == "notice"
-        assert display._selector is None
-
-    def test_non_interrupting_does_not_open_over_a_secondary_screen(self, rig):
-        display, fb, clock = rig(interrupting=False)
-        display._screen_request = "selector"
-        _fold(display)
-        warning_active(display, "notice", severity=2)
-        assert display._screen_request is None
-        _fold(display)
-        assert display._screen == "selector"
-
-    def test_interrupting_wakes_a_sleeping_panel(self, rig):
-        display, fb, clock = rig()
-        with display._lock:
-            display._sleep_locked()
-        assert display._display_sleeping
-        warning_active(display, "notice", severity=2)
-        assert display._screen_request == "notice"
-        _fold(display)
-        assert not display._display_sleeping
-        assert display._screen == "notice"
-
-    def test_non_interrupting_does_not_wake_a_sleeping_panel(self, rig):
-        display, fb, clock = rig(interrupting=False)
-        with display._lock:
-            display._sleep_locked()
-        warning_active(display, "notice", severity=2)
-        assert display._screen_request is None
-        assert display._display_sleeping
-
-    def test_interrupting_refresh_and_tick_do_not_rewake_after_sleep(self, rig):
-        display, fb, clock = rig()
-        warning_active(display, "notice", severity=2)
-        _fold(display)
-        with display._lock:
-            display._sleep_locked()
-        warning_active(display, "notice", severity=3)
-        tick_warnings(display)
-        assert display._screen_request is None and display._display_sleeping
-        display.notify_touch_activity()
-        _fold(display)
-        assert not display._display_sleeping and display._screen == "notice"
-
-    def test_interrupting_never_opens_over_restarting(self, rig):
-        display, fb, clock = rig()
-        display._screen_request = "restarting"
-        _fold(display)
-        assert display._screen == "restarting"
-        warning_active(display, "notice", severity=2)
-        assert display._screen_request is None
-        _fold(display)
-        assert display._screen == "restarting"
-
-    def test_interrupting_does_not_request_again_while_showing(self, rig):
-        display, fb, clock = rig()
-        warning_active(display, "notice", severity=2)
-        _fold(display)
-        warning_active(display, "notice", severity=3)
-        tick_warnings(display)
-        assert display._screen_request is None
-
-    def test_higher_priority_page_is_not_replaced_by_a_lower_interrupting_one(self, rig):
-        display, fb, clock = rig(priority=10)
-        warning_active(display, "update_result")
-        _fold(display)
-        assert display._screen == "update_result"
-        warning_active(display, "notice", severity=2)
-        _fold(display)
-        assert display._screen == "update_result"
-
-    def test_higher_priority_interrupting_page_replaces_an_open_lower_one(self, rig):
-        display, fb, clock = rig()
-        warning_active(display, "update_result")
-        _fold(display)
-        assert display._screen == "update_result"
-        warning_active(display, "notice", severity=2)
-        _fold(display)
-        assert display._screen == "notice"
-
-
-# ---------------------------------------------------------------------------
-# The software update cards: the update-result file mapped onto the "update"
-# and "update_result" warning rows.
-# ---------------------------------------------------------------------------
-
-class TestUpdateWarnings:
-    @pytest.fixture
-    def rig(self, tmp_path):
-        from dial_update_watch import UpdateWatcher
-        clock = _Clock(1_000_000.0)
-        display, fb, gt = make_display(
-            targets=[],
-            warnings=WarningManager(WARNING_DESCRIPTORS, clock=clock.now),
-        )
-        display.core.update_seen_path = str(tmp_path / "seen")
-        display.core.update_watcher = UpdateWatcher(str(tmp_path / "update-result.env"))
-        display.enable()
-        display.fold_for_tests()
-        _fold(display)
-        display.result_path = tmp_path / "update-result.env"
-        display.seen_path = tmp_path / "seen"
-        display.clock = clock
-        return display
-
-    @staticmethod
-    def _progress(phase="packages", percent=45, **kw):
-        from dial_update_watch import UpdateView
-        return UpdateView(status="in_progress", percent=percent, phase=phase, tag="0.7.0",
-                          previous_tag="0.6.0", message="a long message that must not be shown",
-                          last_run_at="2000-01-01T00:00:00+00:00", **kw)
-
-    @staticmethod
-    def _finished(status="success", **kw):
-        from dial_update_watch import UpdateView
-        fields = dict(status=status, percent=100, phase="done", tag="0.7.0", previous_tag="0.6.0",
-                      last_run_at="2000-01-01T01:00:00+00:00")
-        fields.update(kw)
-        return UpdateView(**fields)
-
-    @staticmethod
-    def _painted_view(display):
-        with patch.object(
-            display._compositor, "compose_warning", wraps=display._compositor.compose_warning,
-        ) as mock_compose:
-            with display._lock:
-                display._display_card_locked()
-        return mock_compose.call_args.args[3]
-
-    def test_in_progress_view_opens_update_card_over_selector_and_wakes(self, rig):
-        display = rig
-        display._screen_request = "selector"
-        _fold(display)
-        assert display._screen == "selector"
-        with display._lock:
-            display._sleep_locked()
-        apply_update_view(display, self._progress())
-        _fold(display)
-        assert display._screen == "update"
-        assert not display._display_sleeping
-        assert display._selector is None
-
-    def test_update_card_shows_title_phase_label_and_bar(self, rig):
-        display = rig
-        apply_update_view(display, self._progress(phase="packages", percent=45))
-        _fold(display)
-        view = self._painted_view(display)
-        assert view.title == dwt.UPDATING_TEXT == "Updating..."
-        assert view.message == "Upgrading OS"
-        assert view.percent == 45
-        assert view.buttons == ()
-
-    def test_phase_label_follows_the_phase_and_never_the_file_message(self, rig):
-        display = rig
-        for phase, label in (
-            ("download", "Downloading"), ("packages", "Upgrading OS"), ("python", "Installing"),
-            ("files", "Installing"), ("configure", "Installing"), ("staged", "Restarting"),
-            ("something-new", "Please wait"), ("", "Please wait"),
-        ):
-            apply_update_view(display, self._progress(phase=phase))
-            _fold(display)
-            assert self._painted_view(display).message == label, phase
-
-    def test_update_card_replaces_an_open_warnings_card(self, rig):
-        display = rig
-        on_network_view(display, _view(LINK_CONNECTED, bars=3))
-        for _ in range(3):
-            on_network_view(display, _view(LINK_DOWN))
-        open_warnings_page(display)
-        assert display._screen == "warnings"
-        apply_update_view(display, self._progress())
-        _fold(display)
-        assert display._screen == "update" and display._warnings_page is None
-        # Nothing opens the warnings card back over it while it runs.
-        on_network_view(display, _view(LINK_DOWN))
-        display.open_warnings()
-        _fold(display)
-        assert display._screen == "update"
-
-    def test_update_card_has_no_buttons_and_the_inert_surface(self):
-        from dial_touch import _GEOMETRY_FOR_SURFACE
-        from dial_touch_layout import GEOMETRY_NONE
-        desc = dwt.WARNING_BY_ID["update"]
-        assert desc.buttons == ()
-        assert desc.interrupting is True and desc.auto_clear_after_s is None
-        assert desc.priority > dwt.WARNING_BY_ID["update_result"].priority
-        assert _GEOMETRY_FOR_SURFACE[dd.SCREEN_POLICIES["update"].surface[0]] == GEOMETRY_NONE
-
-    def test_reboot_phase_switches_to_restarting_without_requesting_reboot(self, rig):
-        display = rig
-        apply_update_view(display, self._progress(phase="packages"))
-        _fold(display)
-        assert display._screen == "update"
-        with patch("dial_network.request_reboot") as reboot:
-            apply_update_view(display, self._progress(phase="reboot", percent=96))
-            _fold(display)
-        reboot.assert_not_called()
-        assert display._screen == "restarting"
-        assert not display.core.warnings.is_active("update")
-        # Nothing opens over the restarting screen.
-        apply_update_view(display, self._progress(phase="files"))
-        _fold(display)
-        assert display._screen == "restarting"
-
-    def test_verify_phase_shows_nothing(self, rig):
-        display = rig
-        apply_update_view(display, self._progress(phase="verify", percent=96))
-        assert display._screen_request is None
-        _fold(display)
-        assert display._screen == "main"
-        assert not display.core.warnings.is_active("update")
-
-    def test_success_shows_result_once_then_clears_after_an_hour(self, rig):
-        display = rig
-        apply_update_view(display, self._progress())
-        _fold(display)
-        apply_update_view(display, self._finished())
-        _fold(display)
-        assert display._screen == "update_result"
-        assert not display.core.warnings.is_active("update")
-        view = self._painted_view(display)
-        assert (view.title, view.message, view.buttons) == ("Updated", "Version 0.7.0", ("Close",))
-        assert view.percent is None
-        display.clock.t += dwt.UPDATE_RESULT_SECONDS - 1
-        tick_warnings(display)
-        assert display.core.warnings.is_active("update_result")
-        display.clock.t += 2
-        tick_warnings(display)
-        assert not display.core.warnings.is_active("update_result")
-        _fold(display)
-        assert display._screen == "main"
-        # The same result arriving again (a restart re-reading the file) stays quiet.
-        apply_update_view(display, self._finished())
-        _fold(display)
-        assert display._screen == "main"
-
-    def test_result_card_close_ends_the_status(self, rig):
-        display = rig
-        apply_update_view(display, self._finished())
-        _fold(display)
-        assert display._screen == "update_result"
-        assert display.touch_surface() == ("card1", False, False, False, False)
-        tap_card(display, 0)
-        _fold(display)
-        assert display._screen == "main"
-        assert not display.core.warnings.is_active("update_result")
-        tick_warnings(display)
-        _fold(display)
-        assert display._screen == "main"
-
-    def test_failure_rolled_back_message_names_previous_version(self, rig):
-        display = rig
-        apply_update_view(display, self._finished("failure", rolled_back=True, phase="rolled_back"))
-        _fold(display)
-        view = self._painted_view(display)
-        assert (view.title, view.message) == ("Update failed", "Restored 0.6.0")
-
-    def test_failure_not_rolled_back_message_says_previous_kept(self, rig):
-        display = rig
-        apply_update_view(display, self._finished("failure", phase="failed"))
-        _fold(display)
-        view = self._painted_view(display)
-        assert (view.title, view.message) == ("Update failed", "0.6.0 kept")
-
-    def test_seen_marker_suppresses_repeat_on_restart(self, rig):
-        display = rig
-        apply_update_view(display, self._finished())
-        assert display.seen_path.read_text().strip() == "2000-01-01T01:00:00+00:00"
-        # A new process: same result file, same marker.
-        again, fb, gt = make_display(targets=[])
-        again.core.update_seen_path = str(display.seen_path)
-        again.enable()
-        again.fold_for_tests()
-        _fold(again)
-        apply_update_view(again, self._finished())
-        _fold(again)
-        assert again._screen == "main" and not again.core.warnings.is_active("update_result")
-        # A different (later) result is shown.
-        apply_update_view(again, self._finished("failure", last_run_at="2000-01-02T00:00:00+00:00"))
-        _fold(again)
-        assert again._screen == "update_result"
-
-    def test_fresh_install_with_no_status_shows_nothing(self, rig):
-        from dial_update_watch import UpdateView
-        display = rig
-        apply_update_view(display, UpdateView())
-        _fold(display)
-        assert display._screen == "main"
-        assert not display.seen_path.exists()
-
-    def test_tick_reads_the_file_once_per_change(self, rig):
-        display = rig
-        display.result_path.write_text(
-            "STATUS=in_progress\nPERCENT_COMPLETE=30\nMESSAGE=x\nLAST_RUN_AT=t1\nPHASE=files\n",
-        )
-        tick_update_watch(display)
-        _fold(display)
-        assert display._screen == "update"
-        assert display.core.warnings.reading("update").percent == 30
-        display._screen_request = "main"
-        _fold(display)
-        tick_update_watch(display)
-        assert display._screen_request is None
-
-    def test_result_card_replaces_open_progress_card(self, rig):
-        display = rig
-        apply_update_view(display, self._progress())
-        _fold(display)
-        assert display._screen == "update"
-        apply_update_view(display, self._finished())
-        _fold(display)
-        assert display._screen == "update_result"
 
 
 class TestAsleepIdleTouchDoesNotPressAnything:
