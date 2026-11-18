@@ -228,9 +228,12 @@ class OwnToneBackend(OwnToneHttpBackendBase):
         offset_ms: Optional[int] = None,
         mode: Optional[str] = None,
         include_tv: Optional[bool] = None,
+        muted: Optional[bool] = None,
     ) -> ActionResult:
         # include_tv belongs to owntone-mini's Apple TV groups; upstream has
         # no such option, so it is accepted and left out of the request.
+        if muted is not None:
+            return self._unsupported_action("muted")
         payload: dict[str, Any] = {}
         if enabled is not None:
             payload["selected"] = bool(enabled)
@@ -263,6 +266,9 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             payload,
             allow_pin_required=bool(enabled),
         )
+
+    def set_output_muted(self, output_id: str, muted: bool) -> ActionResult:
+        return self._unsupported_action("set_output_muted")
 
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
         pin_text = str(pin or "").strip()

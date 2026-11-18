@@ -258,6 +258,9 @@ class OutputInfo:
     # would be accepted now
     session_held: bool = False
     session_holdable: bool = False
+    # The player keeps the speaker silent on autostream's word; volume_percent
+    # is then the level it returns to
+    muted: bool = False
 
     def extra_dict(self) -> dict[str, Any]:
         """Return extra metadata as a plain dict when needed."""
@@ -386,6 +389,7 @@ class PlayerBackend(ABC):
         offset_ms: Optional[int] = None,
         mode: Optional[str] = None,
         include_tv: Optional[bool] = None,
+        muted: Optional[bool] = None,
     ) -> ActionResult:
         """Update multiple fields on one output in a single backend request.
 
@@ -396,6 +400,9 @@ class PlayerBackend(ABC):
 
         include_tv chooses, for an Apple TV that leads its HomePods,
         whether the TV itself plays too.  Backends without the option ignore it.
+
+        muted, when given, is applied before enabled, so a speaker switched on
+        muted starts silent; volume_percent is then the level it returns to.
         """
 
     def set_output_hold(self, output_id: str, held: bool) -> ActionResult:
@@ -403,6 +410,11 @@ class PlayerBackend(ABC):
         the hold, which restarts it at the live position. A backend that
         cannot hold a speaker refuses with not_holdable."""
         return ActionResult(ok=False, error="This player cannot hold a speaker", error_code="not_holdable")
+
+    @abstractmethod
+    def set_output_muted(self, output_id: str, muted: bool) -> ActionResult:
+        """Silence a speaker, keeping its level, or end that. Its row then
+        reads muted, with volume_percent the level it returns to."""
 
     @abstractmethod
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:

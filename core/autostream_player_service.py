@@ -1508,6 +1508,7 @@ def update_output(
     offset_ms: int | None = None,
     mode: str | None = None,
     include_tv: bool | None = None,
+    muted: bool | None = None,
     timeout: float = 3.0,
 ) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.update_output(
@@ -1517,11 +1518,16 @@ def update_output(
         offset_ms=offset_ms,
         mode=mode,
         include_tv=include_tv,
+        muted=muted,
     )
 
 
 def set_output_hold(base_url: str, output_id: str, held: bool, *, timeout: float = 3.0) -> ActionResult:
     return resolve_backend(base_url, timeout=timeout).backend.set_output_hold(output_id, held)
+
+
+def set_output_muted(base_url: str, output_id: str, muted: bool, *, timeout: float = 3.0) -> ActionResult:
+    return resolve_backend(base_url, timeout=timeout).backend.set_output_muted(output_id, muted)
 
 
 def submit_output_pin(base_url: str, output_id: str, pin: str, *, timeout: float = 3.0) -> ActionResult:

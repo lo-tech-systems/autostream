@@ -437,6 +437,33 @@ class TestPutOutputFields:
         assert result.ok is False
         assert result.error_code == "request_failed"
 
+    def test_a_mute_and_its_end_are_put_on_the_output(self):
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players._session.put", return_value=r) as put:
+            assert _mini().set_output_muted("12", True).ok is True
+            assert _mini().set_output_muted("12", False).ok is True
+        assert [call.kwargs.get("json") for call in put.call_args_list] == [{"muted": True}, {"muted": False}]
+        assert all(call.args[0].endswith("/api/outputs/12") for call in put.call_args_list)
+
+    def test_a_refused_mute_is_a_failed_result(self):
+        r = _resp(status=400, content=b"")
+        with patch("autostream_players._session.put", return_value=r):
+            result = _mini().set_output_muted("12", True)
+        assert result.ok is False and result.error_code == "http_error"
+
+    def test_a_speaker_switched_on_muted_sends_all_three_fields(self):
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players._session.put", return_value=r) as put:
+            assert _mini().update_output("12", enabled=True, volume_percent=30, muted=True).ok is True
+        assert put.call_args.kwargs.get("json") == {"selected": True, "volume": 30, "muted": True}
+
+    def test_upstream_has_no_mute_of_its_own(self):
+        with patch("autostream_players._session.put") as put:
+            b = self._b()
+            assert b.set_output_muted("12", True).error_code == "unsupported"
+            assert b.update_output("12", enabled=True, muted=True).error_code == "unsupported"
+        put.assert_not_called()
+
 
 # ---------------------------------------------------------------------------
 # OwnTone Mini: list_outputs
@@ -1263,6 +1290,13 @@ class TestMiniSessionAndHomepodsFields:
         out = OwnToneBackend(base_url="http://localhost:3689")._normalize_output_info(_ROW_PLAIN)
         assert out.session_state == ""
         assert out.has_homepods is None
+
+    def test_a_muted_row_reads_muted_and_any_other_does_not(self):
+        assert _mini()._normalize_output_info({"id": "x", "volume": 40, "muted": True}).muted is True
+        assert _mini()._normalize_output_info({"id": "x", "volume": 40}).muted is False
+        assert _mini()._normalize_output_info({"id": "x", "muted": "yes"}).muted is False
+        out = _mini()._normalize_output_info({"id": "x", "volume": 40, "muted": True})
+        assert out.volume_percent == 40
 
 
 class TestMiniRowFlagsAndChannelCapabilities:

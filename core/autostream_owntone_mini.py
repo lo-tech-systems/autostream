@@ -456,6 +456,7 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
             base,
             current_mode=current_mode,
             supported_modes=supported_modes,
+            muted=output.get("muted") is True,
             **self._session_fields(output),
         )
 
@@ -564,10 +565,15 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
         offset_ms: Optional[int] = None,
         mode: Optional[str] = None,
         include_tv: Optional[bool] = None,
+        muted: Optional[bool] = None,
     ) -> ActionResult:
         payload: dict[str, Any] = {}
         if enabled is not None:
             payload["selected"] = bool(enabled)
+        if muted is not None:
+            # The daemon applies the mute first, so a speaker switched on
+            # muted starts silent
+            payload["muted"] = bool(muted)
         if include_tv is not None:
             # Applied together with "selected"; the daemon ignores it for an
             # output that is not an Apple TV leading a group.
@@ -616,6 +622,9 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
 
     def set_output_hold(self, output_id: str, held: bool) -> ActionResult:
         return self._put_output_fields(output_id, {"hold": bool(held)})
+
+    def set_output_muted(self, output_id: str, muted: bool) -> ActionResult:
+        return self._put_output_fields(output_id, {"muted": bool(muted)})
 
     def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
         pin_text = str(pin or "").strip()

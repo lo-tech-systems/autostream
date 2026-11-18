@@ -101,6 +101,10 @@ class FakeBackend:
         self._record("set_output_hold", output_id, held, timeout=timeout)
         return self._next()
 
+    def set_output_muted(self, output_id, muted, timeout):
+        self._record("set_output_muted", output_id, muted, timeout=timeout)
+        return self._next()
+
     def refresh_runtime_state(self, timeout):
         self._record("refresh_runtime_state", timeout=timeout)
         return self._next()

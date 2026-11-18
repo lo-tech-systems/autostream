@@ -1674,7 +1674,8 @@ class TestPlayerServiceBackend:
         import autostream_player_service as ps
         seen = []
         for name in ("list_outputs", "update_output", "set_selected_outputs", "stop_and_disable_all",
-                     "submit_output_pin", "refresh_runtime_state", "get_capabilities", "event_channel_info"):
+                     "submit_output_pin", "refresh_runtime_state", "get_capabilities", "event_channel_info",
+                     "set_output_hold", "set_output_muted"):
             monkeypatch.setattr(ps, name, lambda *a, _n=name, **k: seen.append((_n, a, k)) or "r")
         b = PlayerServiceBackend("http://p:1")
         assert b.list_outputs(10.0) == "r"
@@ -1683,6 +1684,11 @@ class TestPlayerServiceBackend:
         b.stop_and_disable_all(3.0)
         b.submit_output_pin("5", "1234", 3.0)
         b.refresh_runtime_state(3.0)
+        b.set_output_hold("5", True, 3.0)
+        b.set_output_muted("5", True, 3.0)
+        assert seen[-2:] == [("set_output_hold", ("http://p:1", "5", True), {"timeout": 3.0}),
+                             ("set_output_muted", ("http://p:1", "5", True), {"timeout": 3.0})]
+        del seen[-2:]
         b.capabilities()
         b.event_channel_info()
         assert seen == [

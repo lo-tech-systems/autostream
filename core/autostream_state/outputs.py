@@ -198,6 +198,8 @@ class OutputBackend(Protocol):
 
     def set_output_hold(self, output_id: str, held: bool, timeout: float) -> ActionResult: ...
 
+    def set_output_muted(self, output_id: str, muted: bool, timeout: float) -> ActionResult: ...
+
     def refresh_runtime_state(self, timeout: float) -> ActionResult: ...
 
     def capabilities(self) -> BackendCapabilities: ...
@@ -229,6 +231,9 @@ class PlayerServiceBackend:
 
     def set_output_hold(self, output_id: str, held: bool, timeout: float) -> ActionResult:
         return player_service.set_output_hold(self.base_url, output_id, held, timeout=timeout)
+
+    def set_output_muted(self, output_id: str, muted: bool, timeout: float) -> ActionResult:
+        return player_service.set_output_muted(self.base_url, output_id, muted, timeout=timeout)
 
     def refresh_runtime_state(self, timeout: float) -> ActionResult:
         return player_service.refresh_runtime_state(self.base_url, timeout=timeout)

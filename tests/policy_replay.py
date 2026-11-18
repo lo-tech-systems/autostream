@@ -81,11 +81,16 @@ class PlayerModel(FakeBackend):
         for r in self.raw:
             if r["id"] != output_id:
                 continue
+            if fields.get("muted") is not None:
+                r["muted"] = bool(fields["muted"])
             if "enabled" in fields:
                 r["selected"] = bool(fields["enabled"])
-                if not fields["enabled"] and isinstance(r.get("session"), dict):
-                    # Switching a speaker off ends its session, and its hold
-                    r["session"] = dict(r["session"], held=False)
+                if not fields["enabled"]:
+                    # Switching a speaker off ends its mute, and its session
+                    # and hold
+                    r["muted"] = False
+                    if isinstance(r.get("session"), dict):
+                        r["session"] = dict(r["session"], held=False)
             if fields.get("volume_percent") is not None:
                 r["volume"] = fields["volume_percent"]
         self.rows = _rows(self.raw)
@@ -111,6 +116,15 @@ class PlayerModel(FakeBackend):
         self.rows = _rows(self.raw)
         return ActionResult(ok=True)
 
+    def set_output_muted(self, output_id, muted, timeout):
+        """The player silences the speaker and keeps its level."""
+        self._record("set_output_muted", output_id, muted, timeout=timeout)
+        for r in self.raw:
+            if r["id"] == output_id:
+                r["muted"] = bool(muted)
+        self.rows = _rows(self.raw)
+        return ActionResult(ok=True)
+
 
 def _writes(fb: FakeBackend) -> list:
     out = []
@@ -120,7 +134,7 @@ def _writes(fb: FakeBackend) -> list:
             out.append([name, args[0], fields])
         elif name == "set_selected_outputs":
             out.append([name, list(args[0])])
-        elif name == "set_output_hold":
+        elif name in ("set_output_hold", "set_output_muted"):
             out.append([name, args[0], args[1]])
         else:
             out.append([name])
