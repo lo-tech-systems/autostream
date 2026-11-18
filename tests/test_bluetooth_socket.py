@@ -178,7 +178,7 @@ class TestDispatchStatus:
         srv = FakeServer()
         del srv._status["version"]
         r = dispatch(_req({"cmd": "status"}), srv)
-        assert r["version"] == "0.5.2"
+        assert r["version"] == "0.5.3"
 
     def test_status_adapter_blocked_passthrough(self):
         srv = FakeServer()
