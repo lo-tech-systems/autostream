@@ -19,6 +19,7 @@ Contents:
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import threading
@@ -131,54 +132,66 @@ class PeerSource:
 
 
 # -----------------------------------------------------------------------------
-# Resolving the appliance
+# Refusals and resolving the appliance
 # -----------------------------------------------------------------------------
 
-def _refuse(handler, status: int, error: str, **kwargs) -> None:
-    common.send_browser_api_error(handler, status, error, **kwargs)
+class _Refused(Exception):
+    def __init__(self, status: int, error: str, **kwargs) -> None:
+        super().__init__(error)
+        self.status, self.error, self.kwargs = status, error, kwargs
 
 
-def _client_for(handler, state, peer_id: str):
-    """The PeerClient for *peer_id*, or None after sending the refusal. Reads
-    this appliance's own control setting first, then what the id names."""
+def _refuse(status: int, error: str, **kwargs):
+    raise _Refused(status, error, **kwargs)
+
+
+def _answering(serve):
+    """Turn a refusal raised while serving into the reply that names it."""
+    @functools.wraps(serve)
+    def wrapper(handler, *args):
+        try:
+            serve(handler, *args)
+        except _Refused as refused:
+            common.send_browser_api_error(handler, refused.status, refused.error, **refused.kwargs)
+    return wrapper
+
+
+def _client_for(state, peer_id: str):
+    """The PeerClient for *peer_id*, reachable and on this protocol; a refusal
+    otherwise. This appliance's own control setting is read first, then what
+    the id names."""
     if not common._effective_control_other_appliances(state):
-        _refuse(handler, 403, "control_disabled")
-        return None
+        _refuse(403, "control_disabled")
     resolution = resolve(peer_id)
-    refusal = _REFUSALS.get(resolution.kind)
-    if refusal is not None:
-        _refuse(handler, *refusal)
-        return None
+    if resolution.kind in _REFUSALS:
+        _refuse(*_REFUSALS[resolution.kind])
     snap = resolution.client.snapshot()
     if not snap.protocol_ok:
-        _refuse(handler, 409, "protocol_mismatch")
-        return None
+        _refuse(409, "protocol_mismatch")
     if not snap.reachable:
-        _refuse(handler, 503, "peer_unreachable", retryable=True)
-        return None
+        _refuse(503, "peer_unreachable", retryable=True)
     return resolution.client
 
 
 def _split(handler) -> tuple[str, str]:
     """(appliance id, what follows it) from the request path."""
-    tail = handler._normalized_path()[len(_PREFIX):]
-    peer_id, _, rest = tail.partition("/")
+    peer_id, _, rest = handler._normalized_path()[len(_PREFIX):].partition("/")
     return peer_id, rest
 
 
 # -----------------------------------------------------------------------------
-# GET /api/v1/peers/<id>/state
+# GET /api/v1/peers/<id>/state and /events
 # -----------------------------------------------------------------------------
 
 def _requested_parts(path: str) -> Optional[list]:
-    """The ``parts`` query as names: None when absent, [] when empty.
-    ValueError for a name that cannot be a part."""
+    """The ``parts`` query as names: None when absent, [] when empty. A name
+    that cannot be a part is refused."""
     values = parse_qs(urlsplit(path).query, keep_blank_values=True).get("parts")
     if not values:
         return None
     names = values[0].split(",") if values[0] else []
-    if any(not _PART_RE.fullmatch(n) for n in names):
-        raise ValueError("unknown part")
+    if not all(_PART_RE.fullmatch(n) for n in names):
+        _refuse(400, "unknown_part")
     return names
 
 
@@ -191,67 +204,50 @@ def state_body(snap) -> dict:
 def serve_peer_state(handler, state, peer_id: str) -> None:
     """GET /api/v1/peers/<id>/state: the appliance's held parts, or with
     ``?parts=`` those parts read live from it (what carries fast fields)."""
-    client = _client_for(handler, state, peer_id)
-    if client is None:
-        return
-    try:
-        names = _requested_parts(handler.path)
-    except ValueError:
-        _refuse(handler, 400, "unknown_part")
-        return
+    client = _client_for(state, peer_id)
+    names = _requested_parts(handler.path)
     snap = client.snapshot()
     if names is None and snap.boot is not None:
         common.send_json(handler, 200, state_body(snap))
         return
     reply = client.fetch(list(PART_NAMES) if names is None else names)
     if reply is None:
-        _refuse(handler, 503, "peer_unreachable", retryable=True)
-        return
-    status, body = reply
-    common.send_json(handler, status, body)
+        _refuse(503, "peer_unreachable", retryable=True)
+    common.send_json(handler, *reply)
 
-
-# -----------------------------------------------------------------------------
-# GET /api/v1/peers/<id>/events
-# -----------------------------------------------------------------------------
 
 def serve_peer_events(handler, state, peer_id: str) -> None:
     """GET /api/v1/peers/<id>/events: the appliance's change stream."""
-    client = _client_for(handler, state, peer_id)
-    if client is None:
-        return
+    client = _client_for(state, peer_id)
     hub = hub_module.current()
     if hub is None:
-        _refuse(handler, 404, "not_found")
-        return
+        _refuse(404, "not_found")
     if not _same_origin(handler.headers):
-        _refuse(handler, 403, "cross_origin")
-        return
+        _refuse(403, "cross_origin")
     if client.snapshot().boot is None:
-        _refuse(handler, 503, "peer_unreachable", retryable=True)
-        return
+        _refuse(503, "peer_unreachable", retryable=True)
     address = handler._get_client_ip()
     refusal = hub.enter(address)
     if refusal is not None:
-        _refuse(handler, 503, refusal, retryable=True)
-        return
+        _refuse(503, refusal, retryable=True)
     try:
         serve_events(handler, PeerSource(client), "peer:" + (rpi.get_appliance_id() or "0" * 20))
     finally:
         hub.exit(address)
 
 
+@_answering
 def serve_peer_get(handler, state) -> None:
     """GET /api/v1/peers/<id>/state and /events."""
     peer_id, rest = _split(handler)
     if not _ID_RE.fullmatch(peer_id):
-        _refuse(handler, 404, "unknown_appliance")
-    elif rest == "state":
+        _refuse(404, "unknown_appliance")
+    if rest == "state":
         serve_peer_state(handler, state, peer_id)
     elif rest == "events":
         serve_peer_events(handler, state, peer_id)
     else:
-        _refuse(handler, 404, "not_found")
+        _refuse(404, "not_found")
 
 
 # -----------------------------------------------------------------------------
@@ -261,13 +257,14 @@ def serve_peer_get(handler, state) -> None:
 def _reply(handler, error: Optional[str], reply=None) -> None:
     body = {"ok": False, "error": error, "version": None, "boot": None, "result": {}}
     if reply is not None:
-        body.update({"ok": reply.ok, "error": reply.error, "version": reply.version,
-                     "boot": reply.boot, "result": dict(reply.result)})
+        body.update(ok=reply.ok, error=reply.error, version=reply.version,
+                    boot=reply.boot, result=dict(reply.result))
         if reply.retry_after_s is not None:
             body["retry_after_s"] = reply.retry_after_s
     common.send_json(handler, 200, body)
 
 
+@_answering
 def serve_peer_intent(handler, state) -> None:
     """POST /api/v1/peers/<id>/intents/<name>: the intent goes to the
     appliance as a request from this one, on behalf of the browser."""
@@ -275,28 +272,19 @@ def serve_peer_intent(handler, state) -> None:
     if body is None:
         return
     if not _same_origin(handler.headers):
-        _refuse(handler, 403, "cross_origin")
-        return
+        _refuse(403, "cross_origin")
     if body.get("client") is not None:
-        _refuse(handler, 400, "invalid_client")
-        return
+        _refuse(400, "invalid_client")
     if not intents_module._configured(state):
-        _reply(handler, "unconfigured")
-        return
+        return _reply(handler, "unconfigured")
     who = identify(handler, body, write=True)
     if isinstance(who, Refusal):
-        _refuse(handler, who.status, who.error, extra=who.extra)
-        return
+        _refuse(who.status, who.error, extra=who.extra)
     peer_id, rest = _split(handler)
     name = rest[len("intents/"):] if rest.startswith("intents/") else ""
     args = body.get("args", {})
     if not _ID_RE.fullmatch(peer_id) or not intents_module._NAME_RE.fullmatch(name):
-        _refuse(handler, 404, "not_found")
-        return
+        _refuse(404, "not_found")
     if not isinstance(args, dict):
-        _reply(handler, "invalid_args")
-        return
-    client = _client_for(handler, state, peer_id)
-    if client is None:
-        return
-    _reply(handler, None, client.submit(name, args))
+        return _reply(handler, "invalid_args")
+    _reply(handler, None, _client_for(state, peer_id).submit(name, args))

@@ -83,6 +83,17 @@ def _refused(error: str, retry_after_s: Optional[float] = None) -> PeerReply:
     return PeerReply(False, error, None, None, {}, retry_after_s)
 
 
+def _parse_reply(reply: dict) -> PeerReply:
+    """The peer's intent reply, with a field of the wrong type read as absent."""
+    def typed(name, kind):
+        value = reply.get(name)
+        return value if isinstance(value, kind) else None
+    retry = typed("retry_after_s", (int, float))
+    return PeerReply(ok=bool(reply.get("ok")), error=typed("error", str), version=typed("version", int),
+                     boot=typed("boot", str), result=typed("result", dict) or {},
+                     retry_after_s=None if retry is None else float(retry))
+
+
 _EMPTY: Mapping = MappingProxyType({})
 
 
@@ -92,6 +103,34 @@ class _SessionEnd(Exception):
     def __init__(self, outcome: str) -> None:
         super().__init__(outcome)
         self.outcome = outcome
+
+
+class _Subscribers:
+    """Signal-only callbacks, called outside every lock of their owner."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._fns: dict[int, Callable] = {}
+        self._next = 1
+
+    def add(self, fn: Callable) -> int:
+        with self._lock:
+            handle, self._next = self._next, self._next + 1
+            self._fns[handle] = fn
+        return handle
+
+    def remove(self, handle: int) -> None:
+        with self._lock:
+            self._fns.pop(handle, None)
+
+    def call(self, *args) -> None:
+        with self._lock:
+            fns = list(self._fns.values())
+        for fn in fns:
+            try:
+                fn(*args)
+            except Exception:
+                logging.debug("peer client: a subscriber raised", exc_info=True)
 
 
 class PeerClient:
@@ -111,8 +150,7 @@ class PeerClient:
             peer_id=peer_id, boot=None, version=0, part_versions=_EMPTY, parts=_EMPTY,
             reachable=False, access=ACCESS_UNKNOWN, access_reason=None, protocol=None,
             protocol_ok=True, configured=None, heard_at=0.0, seq=0)
-        self._subs: dict[int, Callable] = {}
-        self._next_handle = 1
+        self._subs = _Subscribers()
         self._sighting: Optional[tuple[str, int, Optional[int]]] = None
         self._gen = 0                       # moves with every change of the sighting
         self._session_gen = 0
@@ -201,15 +239,10 @@ class PeerClient:
     def subscribe(self, fn: Callable[["PeerClient"], None]) -> int:
         """Call ``fn(client)`` after each change, outside the client's lock. It
         must return quickly and only signal."""
-        with self._cond:
-            handle = self._next_handle
-            self._next_handle += 1
-            self._subs[handle] = fn
-        return handle
+        return self._subs.add(fn)
 
     def unsubscribe(self, handle: int) -> None:
-        with self._cond:
-            self._subs.pop(handle, None)
+        self._subs.remove(handle)
 
     def wait_for_change(self, seen_seq: int, timeout: float) -> Optional[PeerSnapshot]:
         """The snapshot once its seq differs from *seen_seq*; None when
@@ -231,15 +264,7 @@ class PeerClient:
                 return
             self._snap = dataclasses.replace(old, seq=old.seq + 1, **changes)
             self._cond.notify_all()
-            subs = list(self._subs.values())
-        self._signal(subs)
-
-    def _signal(self, subs: Sequence[Callable]) -> None:
-        for fn in subs:
-            try:
-                fn(self)
-            except Exception:
-                logging.debug("peer client: a subscriber raised", exc_info=True)
+        self._subs.call(self)
 
     def _set(self, **changes) -> None:
         self._modify(lambda old: changes)
@@ -463,32 +488,16 @@ class PeerClient:
             body=body, read_s=read_s if read_s is not None else INTENT_READ_S)
         if err or reply is None:
             if backoff:
-                self._write_failed()
+                self._write_backoff(True)
             return _refused(err or autostream_peer_http.BAD_REPLY)
-        self._write_answered()
+        self._write_backoff(False)
         self._heard()
-        result = reply.get("result")
-        retry = reply.get("retry_after_s")
-        version = reply.get("version")
-        boot = reply.get("boot")
-        error = reply.get("error")
-        return PeerReply(
-            ok=bool(reply.get("ok")),
-            error=error if isinstance(error, str) else None,
-            version=version if isinstance(version, int) else None,
-            boot=boot if isinstance(boot, str) else None,
-            result=result if isinstance(result, dict) else {},
-            retry_after_s=float(retry) if isinstance(retry, (int, float)) else None)
+        return _parse_reply(reply)
 
-    def _write_failed(self) -> None:
+    def _write_backoff(self, failed: bool) -> None:
         with self._wb_lock:
-            self._wb_failures += 1
-            self._wb_until = self._clock() + backoff_delay(self._wb_failures)
-
-    def _write_answered(self) -> None:
-        with self._wb_lock:
-            self._wb_failures = 0
-            self._wb_until = 0.0
+            self._wb_failures = self._wb_failures + 1 if failed else 0
+            self._wb_until = self._clock() + backoff_delay(self._wb_failures) if failed else 0.0
 
     def fetch(self, parts: Sequence[str], *, merge: bool = False) -> Optional[tuple[int, dict]]:
         """GET the named parts live from the peer: ``(status, body)`` for any
@@ -532,24 +541,21 @@ class RosterEntry:
     playing: bool
 
 
-def _playing(snap: Optional[PeerSnapshot]) -> bool:
-    session = snap.parts.get("session") if snap is not None else None
-    return isinstance(session, Mapping) and session.get("active") is True
-
-
 def roster_view(sightings: Mapping[str, Sighting],
                 snapshots: Mapping[str, PeerSnapshot]) -> tuple[RosterEntry, ...]:
-    """One entry per sighting, ordered by hostname without regard to case."""
+    """One entry per sighting, ordered by hostname without regard to case. An
+    appliance with no snapshot yet is unreachable and unknown."""
     entries = []
     for peer_id, s in sightings.items():
         snap = snapshots.get(peer_id)
+        session = snap.parts.get("session") if snap is not None else None
         entries.append(RosterEntry(
             id=peer_id, hostname=s.hostname, version=s.version, control=s.control,
-            reachable=snap.reachable if snap is not None else False,
-            protocol_ok=snap.protocol_ok if snap is not None else True,
+            reachable=snap is not None and snap.reachable,
+            protocol_ok=snap is None or snap.protocol_ok,
             access=snap.access if snap is not None else ACCESS_UNKNOWN,
             configured=snap.configured if snap is not None else None,
-            playing=_playing(snap)))
+            playing=isinstance(session, Mapping) and session.get("active") is True))
     entries.sort(key=lambda e: (e.hostname.casefold(), e.id))
     return tuple(entries)
 
@@ -562,8 +568,7 @@ class PeerPool:
         self._make_client = make_client
         self._lock = threading.Lock()
         self._clients: Mapping[str, PeerClient] = {}
-        self._subs: dict[int, Callable] = {}
-        self._next_handle = 1
+        self._subs = _Subscribers()
         self._handle: Optional[int] = None
 
     def start(self) -> None:
@@ -595,15 +600,10 @@ class PeerPool:
     def subscribe(self, fn: Callable[[], None]) -> int:
         """Call ``fn()`` when a client is added or removed, a sighting changes
         or a client's snapshot changes. Signal-only."""
-        with self._lock:
-            handle = self._next_handle
-            self._next_handle += 1
-            self._subs[handle] = fn
-        return handle
+        return self._subs.add(fn)
 
     def unsubscribe(self, handle: int) -> None:
-        with self._lock:
-            self._subs.pop(handle, None)
+        self._subs.remove(handle)
 
     def _on_registry(self, kind: str, peer_id: str, sighting: Optional[Sighting]) -> None:
         stopped: Optional[PeerClient] = None
@@ -627,16 +627,7 @@ class PeerPool:
                     client.set_sighting(sighting.ip, sighting.port, sighting.proto)
         if stopped is not None:
             stopped.stop()
-        self._signal()
+        self._subs.call()
 
     def _on_client(self, _client: PeerClient) -> None:
-        self._signal()
-
-    def _signal(self) -> None:
-        with self._lock:
-            subs = list(self._subs.values())
-        for fn in subs:
-            try:
-                fn()
-            except Exception:
-                logging.debug("peer pool: a subscriber raised", exc_info=True)
+        self._subs.call()
