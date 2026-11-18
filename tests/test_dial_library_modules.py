@@ -29,6 +29,7 @@ ALLOWED = {
     "dial_layout_metrics": set(),
     "dial_display_views": {"dial_touch_layout"},
     "dial_display_state": {"dial_display_views", "dial_eq_model", "dial_info", "dial_touch_layout", "dial_values"},
+    "dial_display_controls": set(),
     "dial_appliance_warnings": {"dial_mdns", "dial_values"},
     "dial_hd_session": set(),
     "dial_recovery": {"dial_config"},
@@ -80,6 +81,7 @@ def test_a_display_data_module_imports_without_pillow(name):
 DISPLAY_LAYER_IMPORTS = {
     "dial_display_views": {"dial_display_palette"},
     "dial_display_state": {"dial_display_views"},
+    "dial_display_controls": set(),
     "dial_display_draw": {"dial_display_palette", "dial_display_views"},
     "dial_display_reveal": {"dial_display_views", "dial_display_draw"},
     "dial_display_render": {"dial_display_palette", "dial_display_views", "dial_display_draw"},
@@ -95,3 +97,18 @@ def test_the_display_layers_import_only_downwards(name):
     tree = ast.parse((DIAL / f"{name}.py").read_text(encoding="utf-8"))
     found = {m for m in _imports(tree, module_level=False) if m.startswith("dial_display_")}
     assert found <= DISPLAY_LAYER_IMPORTS[name], f"{name} imports {sorted(found - DISPLAY_LAYER_IMPORTS[name])}"
+
+
+# The display's collaborators hold fields and arithmetic only: the display
+# reads the clock, passes `now` in and takes its own lock around them.
+COLLABORATORS = ["dial_display_controls"]
+
+
+@pytest.mark.parametrize("name", COLLABORATORS)
+def test_a_collaborator_takes_no_lock_and_reads_no_clock(name):
+    tree = ast.parse((DIAL / f"{name}.py").read_text(encoding="utf-8"))
+    assert not {"threading", "time"} & _imports(tree, module_level=False), name
+    attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
+    assert not {a for a in attrs if a in ("acquire", "release") or a.endswith("_lock")}, name
+    assert not [n for n in ast.walk(tree) if isinstance(n, (ast.With, ast.AsyncWith))], name
+

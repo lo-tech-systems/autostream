@@ -575,6 +575,6 @@ class TestBellOnThePlayingScreen:
         display.enable()
         td._poll_with_artwork(display, fb)
         on_sd_health_view(display, _sd(15))
-        display._controls_hidden_until = 0.0
+        display._controls.hidden_until = 0.0
         surface = display.touch_surface()
         assert surface[4] is True
