@@ -198,6 +198,17 @@ class TestHomePinDialog:
         expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
         assert len(stub.POSTS) == 2
 
+    def test_the_pin_field_fits_inside_the_dialog_on_a_phone(self, page: "Page", home_url: str):
+        page.set_viewport_size({"width": 360, "height": 740})
+        _open(page, home_url, [_NEEDS_PIN])
+        _toggle_on(page)
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
+        field = page.locator("#pinModalInput").bounding_box()
+        body = page.locator("#pinModal .modal-bd").bounding_box()
+        assert field["x"] >= body["x"]
+        assert field["x"] + field["width"] <= body["x"] + body["width"]
+        assert field["x"] + field["width"] <= 360
+
     def test_escape_cancels_the_dialog(self, page: "Page", home_url: str):
         _open(page, home_url, [_NEEDS_PIN])
         _toggle_on(page)

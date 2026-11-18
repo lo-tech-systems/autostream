@@ -6,7 +6,7 @@
   .modal-hdr{padding:0.9rem 1rem;border-bottom:1px solid var(--color-border-nav);font-weight:700;color:var(--modal-title-color,var(--color-text-strong));}
   .modal-bd{padding:1rem;}
   .modal-bd p{margin:0 0 .75rem 0;}
-  .modal-bd input{width:100%;font-size:1.2rem;padding:.65rem .75rem;border:1px solid var(--color-border-code);border-radius:12px;outline:none;}
+  .modal-bd input{width:100%;max-width:100%;box-sizing:border-box;font-size:1.2rem;padding:.65rem .75rem;border:1px solid var(--color-border-code);border-radius:12px;outline:none;}
   .modal-ft{display:flex;gap:.75rem;padding:0.9rem 1rem;border-top:1px solid var(--color-border-nav);}
   .modal-btn{flex:1;border:none;border-radius:999px;padding:.8rem .9rem;font-weight:700;font-size:1rem;cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,0.05);}
   .modal-btn:disabled{opacity:0.65;cursor:not-allowed;box-shadow:none;}
