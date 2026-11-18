@@ -728,7 +728,7 @@ class TestOutcomes:
         w.a.step(now=w.t[0])
         assert snap().start_failure is None
 
-    def test_a_pending_start_that_never_shows_a_result_fails_at_120_seconds(self, w):
+    def test_a_pending_coordinator_start_that_never_shows_a_result_is_retried_at_120_seconds_without_a_notice(self, w):
         merge(w, [group_row(1)])
         w.fb.rows = [group_row(1)]
         w.fb.results = [error("timeout")]
@@ -737,11 +737,48 @@ class TestOutcomes:
         w.a.step(now=w.t[0] + START_PENDING_S - 1)
         assert snap().start_failure is None
         w.a.step(now=w.t[0] + START_PENDING_S + 1)
-        sf = snap().start_failure
-        assert sf is not None and sf.reason == "timed_out" and sf.seq == 1
-        # a coordinator-made select is kept and retried on a back-off
+        assert snap().start_failure is None
+        # a coordinator-made select is kept and retried
         u = snap().unit("1")
         assert u.selected is True and u.availability == "failed"
+        assert w.a._units["1"].retry_at is not None
+
+    def test_a_pending_user_start_that_never_shows_a_result_is_reverted_with_a_notice_at_120_seconds(self, w):
+        merge(w, [group_row(1)])
+        w.fb.rows = [group_row(1)]
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER, volume=30)
+        w.a.note_session(True)
+        w.a.step(now=w.t[0] + START_PENDING_S - 1)
+        assert snap().start_failure is None and snap().unit("1").selected is True
+        w.a.step(now=w.t[0] + START_PENDING_S + 1)
+        sf = snap().start_failure
+        assert sf is not None and sf.reason == "timed_out" and sf.seq == 1
+        assert snap().unit("1").selected is False
+
+    def test_a_user_select_that_timed_out_is_not_taken_for_the_players_own_change(self, w):
+        merge(w, [group_row(1, "stopped")])
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER, volume=30)
+        assert w.a._units["1"].own_write_at == w.t[0]
+
+    def test_a_user_select_that_timed_out_and_then_reads_failed_is_reverted_with_a_notice(self, w):
+        merge(w, [group_row(1, "stopped")])
+        w.a.note_session(True)
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER, volume=30)
+        assert snap().unit("1").selected is True and snap().start_failure is None
+        merge(w, [group_row(1, "failed", selected=False)])
+        assert snap().unit("1").selected is False
+        assert snap().start_failure.reason == "failed"
+
+    def test_a_user_select_that_timed_out_and_then_streams_is_not_reported(self, w):
+        merge(w, [group_row(1, "stopped")])
+        w.a.note_session(True)
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER, volume=30)
+        merge(w, [group_row(1, "streaming", selected=True)])
+        assert snap().unit("1").selected is True and snap().start_failure is None
 
     def test_a_disconnect_ends_every_pending_start(self, w):
         merge(w, [row(1)])
@@ -764,7 +801,7 @@ class TestOutcomes:
         assert out.ok is False
         u = snap().unit("1")
         assert u.selected is True and u.availability == "failed"
-        assert snap().start_failure.reason == "failed"
+        assert snap().start_failure is None
         assert w.a._units["1"].retry_at is not None
 
     def test_a_coordinator_start_that_fails_is_retried_and_is_not_a_pin_request(self, w):
@@ -821,7 +858,7 @@ class TestOutcomes:
         merge(w, [group_row(1, "failed", selected=False)])
         assert snap().start_failure.seq == 1
 
-    def test_a_later_failed_read_of_a_coordinator_select_is_published_once(self, w):
+    def test_a_later_failed_read_of_a_coordinator_select_is_not_published(self, w):
         merge(w, [group_row(1)])
         w.a.note_session(True)
         w.a.select("1", Origin.SESSION, volume=30)
@@ -829,7 +866,7 @@ class TestOutcomes:
             merge(w, [group_row(1, "failed", selected=True)])
         u = snap().unit("1")
         assert u.selected is True and u.availability == "failed"
-        assert snap().start_failure.seq == 1
+        assert snap().start_failure is None
 
     def test_reselect_required_is_logged_and_not_retried(self, w, caplog):
         merge(w, [group_row(1, "streaming", selected=True)])
@@ -1407,7 +1444,7 @@ class TestReconcile:
             at(w, seen[-1] + 0.01)
             assert len(selects(w)) == before + 1
         assert [round(x) for x in seen] == [10, 30, 60, 90, 120]
-        assert snap().start_failure.seq == 1                    # published once, not once per retry
+        assert snap().start_failure is None                     # a retry is not a notice
 
     def test_a_session_end_clears_the_back_off(self, w):
         put(w, [group_row(1, "stopped")])
@@ -1440,7 +1477,7 @@ class TestReconcile:
             put(w, [row(1)])
         assert [round(x) for x in seen] == [10, 30, 60]
         assert snap().unit("1").selected is True
-        assert snap().start_failure.seq == 1
+        assert snap().start_failure is None
 
     def test_a_retried_select_on_a_player_without_session_state_that_starts_ends_the_retries(self, w):
         put(w, [row(1)])
@@ -1487,17 +1524,27 @@ class TestReconcile:
         at(w, 5.1)
         assert snap().unit("1").selected is False
 
-    def test_a_user_select_that_timed_out_and_never_started_is_retried(self, w):
+    def test_a_coordinator_select_that_timed_out_and_never_started_is_retried_without_a_notice(self, w):
+        put(w, [group_row(1, "stopped")])
+        w.a.note_session(True)
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.SESSION, volume=30)
+        put(w, [group_row(1, "stopped", selected=False)])
+        at(w, 121)
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "failed"
+        assert snap().start_failure is None
+        assert w.a._units["1"].retry_at is not None
+
+    def test_a_user_select_that_timed_out_and_never_started_is_reverted_with_a_notice(self, w):
         put(w, [group_row(1, "stopped")])
         w.a.note_session(True)
         w.fb.results = [error("timeout")]
         w.a.select("1", Origin.USER, volume=30)
         put(w, [group_row(1, "stopped", selected=False)])
         at(w, 121)
-        u = snap().unit("1")
-        assert u.selected is True and u.availability == "failed"
+        assert snap().unit("1").selected is False
         assert snap().start_failure.reason == "timed_out"
-        assert w.a._units["1"].retry_at is not None
 
     def test_a_player_without_sessions_adopts_its_own_deselect(self, w):
         put(w, [row(1, selected=True, volume_percent=40)])

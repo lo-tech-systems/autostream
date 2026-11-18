@@ -1564,10 +1564,12 @@ class OutputAuthority:
         if sel and previous == "starting" and avail == "ok":
             fx.republish = True
         if sel and u.attempt and avail == "failed":
-            if not u.failure_reported:
-                u.failure_reported = True
-                self._start_failure_locked(u, "failed")
+            # Only a start the user asked for is reported; the ones the
+            # appliance keeps retrying are not.
             if not u.retry_allowed:
+                if not u.failure_reported:
+                    u.failure_reported = True
+                    self._start_failure_locked(u, "failed")
                 self._revert_locked(u, now)
             else:
                 self._failed_treatment_locked(u, now)
@@ -1598,8 +1600,9 @@ class OutputAuthority:
             for u in list(self._units.values()):
                 if u.start_pending_until > 0.0 and now >= u.start_pending_until:
                     u.start_pending_until = 0.0
-                    self._start_failure_locked(u, "timed_out")
-                    u.failure_reported = True
+                    if not u.retry_allowed:
+                        self._start_failure_locked(u, "timed_out")
+                        u.failure_reported = True
                     self._failed_treatment_locked(u, now)
                     changed = True
                 if u.absent_since is not None and now - u.absent_since >= ABSENT_KEEP_S:
@@ -1935,10 +1938,12 @@ class OutputAuthority:
             return WriteOutcome(ok=False, error_code=code, error=r.message)
         if code == "timeout":
             # The player is still starting it: its command queue is busy, not down.
+            # Whether it started is for the row to say; a read just after this
+            # is not taken as the player's own change.
             if u is not None and not stale:
+                u.own_write_at = now
                 u.availability = "starting"
                 u.start_pending_until = now + START_PENDING_S
-                u.retry_allowed = True
             return WriteOutcome(ok=True, error_code="timeout", pending=True)
         if code == "reselect_required":
             if w.params.get("reselect") and u is not None and not stale:
@@ -1957,9 +1962,6 @@ class OutputAuthority:
                 self._revert_locked(u, now)
                 self._start_failure_locked(u, "refused", w.requester)
             elif self._session_active:
-                if not u.failure_reported:
-                    u.failure_reported = True
-                    self._start_failure_locked(u, "failed")
                 self._failed_treatment_locked(u, now)
             else:
                 self._revert_locked(u, now)
