@@ -30,7 +30,8 @@ import dial_http_server as dhs
 import dial_screen_settings as dss
 import dial_touch_controllers
 from dial_config import DEFAULT_PROFILE_KEY, DEFAULT_TOUCH_KEY, DialConfig, DialDisplayConfig
-from dial_http_server import DialHTTPServer, RecoveryWindow
+from dial_http_server import DialHTTPServer
+from dial_recovery import RecoveryWindow
 from dial_screen_settings import NoOpDisplayStatusProvider
 
 

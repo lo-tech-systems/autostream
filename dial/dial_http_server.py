@@ -23,10 +23,10 @@ import subprocess
 import threading
 import time
 from pathlib import Path
-from typing import Callable
 
 from dial_config import PIN_RESET_PATH, effective_scope
 from dial_update_watch import UPDATE_RESULT_PATH, UpdateView, read_update_result
+from dial_recovery import RecoveryWindow
 from dial_screen_settings import NoOpDisplayStatusProvider, ScreenSettingsService, screen_report
 from dial_values import NotAnObject, NotJson, is_int, parse_json_object, read_env_file
 
@@ -104,79 +104,6 @@ def _read_update_fields() -> dict:
 def _announce_self(cfg) -> None:
     """Write/update the avahi service file for this dial via admin verb."""
     dial_admin.announce(cfg, VERSION)
-
-
-# ---- Recovery window --------------------------------------------------------
-
-class RecoveryWindow:
-    """10-minute PIN recovery window opened at startup when a PIN is set.
-
-    State machine:
-      open()          → _active=True,  _volume_confirmed=False, starts timer
-      confirm_volume()→ _volume_confirmed=True (only while active)
-      _expire()       → timer fires: _active=False, announce without pin_recovery
-      complete()      → PIN replaced: cancel timer, _active=False, announce
-    """
-
-    _WINDOW_S = 600
-
-    def __init__(self, on_announce: Callable[[bool], None]) -> None:
-        self._on_announce      = on_announce
-        self._lock             = threading.Lock()
-        self._active           = False
-        self._volume_confirmed = False
-        self._opened_monotonic: float | None = None
-        self._timer: threading.Timer | None = None
-
-    def open(self) -> None:
-        with self._lock:
-            self._volume_confirmed = False
-            self._active = True
-            self._opened_monotonic = time.monotonic()
-            timer = threading.Timer(self._WINDOW_S, self._expire)
-            timer.daemon = True
-            self._timer = timer
-        timer.start()
-        self._on_announce(True)   # outside lock — slow subprocess
-        logging.info("PIN recovery window opened (10 min)")
-
-    def _expire(self) -> None:
-        with self._lock:
-            self._active = False
-        self._on_announce(False)  # outside lock
-        logging.info("PIN recovery window expired")
-
-    def complete(self) -> None:
-        with self._lock:
-            timer = self._timer
-            self._timer = None
-            self._active = False
-        if timer:
-            timer.cancel()
-        self._on_announce(False)  # outside lock
-        logging.info("PIN recovery: PIN updated")
-
-    def confirm_volume(self) -> None:
-        with self._lock:
-            if not (self._active and not self._volume_confirmed):
-                return
-            self._volume_confirmed = True
-        logging.info("PIN recovery: volume confirmed")
-
-    def snapshot(self) -> dict:
-        """Return a thread-safe copy of current recovery window state,
-        including recovery_remaining_ms — milliseconds left in the 10-minute
-        window, clamped at 0 (0 whenever the window is not active)."""
-        with self._lock:
-            remaining_ms = 0
-            if self._active and self._opened_monotonic is not None:
-                elapsed_ms = int((time.monotonic() - self._opened_monotonic) * 1000)
-                remaining_ms = max(0, self._WINDOW_S * 1000 - elapsed_ms)
-            return {
-                "active": self._active,
-                "volume_confirmed": self._volume_confirmed,
-                "recovery_remaining_ms": remaining_ms,
-            }
 
 
 # ---- HTTP server ------------------------------------------------------------

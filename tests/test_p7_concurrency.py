@@ -446,13 +446,13 @@ class TestRecoveryWindowConcurrency:
 
     def test_confirm_volume_idempotent_under_concurrent_calls(self):
         sys.path.insert(0, str(REPO_ROOT / "dial"))
-        import dial_http_server as dhs
+        import dial_recovery
 
         announce_calls: list = []
         on_announce = lambda pin_recovery: announce_calls.append(pin_recovery)
 
         with patch("threading.Timer"):
-            window = dhs.RecoveryWindow(on_announce)
+            window = dial_recovery.RecoveryWindow(on_announce)
         window._active = True
 
         n_threads = 20
@@ -478,11 +478,11 @@ class TestRecoveryWindowConcurrency:
 
     def test_concurrent_confirm_and_expire_do_not_crash(self):
         sys.path.insert(0, str(REPO_ROOT / "dial"))
-        import dial_http_server as dhs
+        import dial_recovery
 
         on_announce = MagicMock()
         with patch("threading.Timer"):
-            window = dhs.RecoveryWindow(on_announce)
+            window = dial_recovery.RecoveryWindow(on_announce)
         window._active = True
         window._timer = MagicMock()
 

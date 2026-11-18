@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 import dial_http_server as dhs
+import dial_recovery
 from dial_config import DialConfig
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -73,7 +74,7 @@ def management_server(pin: str = "", **kwargs):
     cfg = DialConfig(uuid="test-uuid", port=0, pin=pin, **kwargs)
     server = dhs.DialHTTPServer(cfg)
     # The real window announces over mDNS with a subprocess.
-    server._recovery_window = dhs.RecoveryWindow(lambda add: None)
+    server._recovery_window = dial_recovery.RecoveryWindow(lambda add: None)
     return server
 
 

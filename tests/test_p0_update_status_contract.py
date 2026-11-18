@@ -31,7 +31,7 @@ sys.path.insert(0, str(REPO_ROOT / "tests"))
 
 import dial_http_server as dhs
 from dial_config import DialConfig
-from dial_http_server import RecoveryWindow
+from dial_recovery import RecoveryWindow
 from conftest import load_supervisor_script
 
 

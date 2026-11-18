@@ -2664,6 +2664,7 @@ class TestBootSplashWiring:
 class TestPresenceConfirmationWiring:
     def _real_server(self):
         import dial_http_server as dhs
+        import dial_recovery
         from dial_config import DialConfig
         from dial_screen_settings import NoOpDisplayStatusProvider, ScreenSettingsService
 
@@ -2671,7 +2672,7 @@ class TestPresenceConfirmationWiring:
         server = dhs.DialHTTPServer.__new__(dhs.DialHTTPServer)
         server._cfg = cfg
         server._cfg_lock = threading.Lock()
-        server._recovery_window = dhs.RecoveryWindow(lambda add: None)
+        server._recovery_window = dial_recovery.RecoveryWindow(lambda add: None)
         server._can_confirm_presence = False
         server._screen = ScreenSettingsService(
             config=server.config_snapshot, update_cfg=server.update_cfg,
@@ -2734,7 +2735,7 @@ class TestPresenceConfirmationWiring:
             patch("threading.Event", _QuickEvent),
             # RecoveryWindow.open() is real here (cfg.pin is set) — mock out
             # only the timer thread it schedules, not its state transitions.
-            patch("dial_http_server.threading.Timer"),
+            patch("dial_recovery.threading.Timer"),
             patch("builtins.__import__", side_effect=_fake_import),
             patch("dial_main.RUNNING_MARKER_PATH", running_marker),
             patch("dial_main.PIN_RESET_PATH", pin_reset),
