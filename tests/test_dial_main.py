@@ -1434,7 +1434,7 @@ class TestBuildTouchSourceWiring:
             return instance
 
         with patch("dial_touch_drivers.open_driver") as mock_open, \
-             patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source):
+             patch("dial_touch_source.TouchEventSource", side_effect=fake_touch_event_source):
             result = dm._build_touch_source(
                 cfg, display, confirm_presence=confirm_presence, step_percent=step_percent,
                 core=core,
@@ -1784,7 +1784,7 @@ class TestBuildTouchSourceLayoutWiring:
         with patch("dial_touch_drivers.open_driver"), \
              patch("dial_touch_filter.TouchFilter", side_effect=fake_touch_filter), \
              patch("dial_touch.TouchStateMachine", side_effect=fake_state_machine), \
-             patch("dial_touch.TouchEventSource"):
+             patch("dial_touch_source.TouchEventSource"):
             dm._build_touch_source(cfg, display, core=MagicMock())
         return captured
 
@@ -2390,7 +2390,7 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
              patch("dial_main.start_network_worker"), \
              patch("dial_main.DialControlServer"), \
              patch("dial_touch_drivers.open_driver"), \
-             patch("dial_touch.TouchEventSource", side_effect=fake_touch_event_source), \
+             patch("dial_touch_source.TouchEventSource", side_effect=fake_touch_event_source), \
              patch.object(dd, "create_dial_display", side_effect=spy_create_dial_display), \
              patch("threading.Event", _QuickEvent), \
              patch("builtins.__import__", side_effect=_fake_import):
@@ -2981,7 +2981,7 @@ class TestAsleepTouchWiring:
         cfg.display = DialDisplayConfig(fitted=True, touch_type="xpt2046")
         display = MagicMock()
         with patch("dial_touch_drivers.open_driver"), \
-             patch("dial_touch.TouchEventSource"), \
+             patch("dial_touch_source.TouchEventSource"), \
              patch("dial_touch.TouchStateMachine") as sm_cls:
             dm._build_touch_source(cfg, display, core=MagicMock())
         assert sm_cls.call_args.kwargs["is_asleep"] is display.is_sleeping

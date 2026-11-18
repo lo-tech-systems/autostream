@@ -27,14 +27,13 @@ from dial_touch import (  # noqa: E402
     DISMISS_S,
     PRESSED_FLASH_S,
     TouchAction,
-    TouchEventSource,
     TouchStateMachine,
     _GEOMETRY_FOR_SURFACE,
-    _REPEAT_SURFACES,
     _REPEATING_ZONES,
     _SINGLE_SHOT_ZONES,
     _ZONE_TAP_ZONES,
 )
+from dial_touch_source import _REPEAT_SURFACES, TouchEventSource  # noqa: E402
 from dial_touch_surfaces import (  # noqa: E402
     SURFACE_CARD1,
     SURFACE_CARD2,

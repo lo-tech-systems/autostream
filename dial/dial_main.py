@@ -405,7 +405,8 @@ def _build_touch_source(cfg, display, core, confirm_presence=None, step_percent=
     """
     from dial_display_compositor import OverlayState
     from dial_display_profiles import get_profile, layout_context_for
-    from dial_touch import TouchEventSource, TouchStateMachine
+    from dial_touch import TouchStateMachine
+    from dial_touch_source import TouchEventSource
     from dial_layout_metrics import metrics_for
     from dial_touch_controllers import get_controller
     from dial_touch_drivers import open_driver
@@ -610,7 +611,7 @@ def _build_touch_source(cfg, display, core, confirm_presence=None, step_percent=
         on_zone_tap=on_zone_tap,
         get_noncomposited_generation=display.noncomposited_generation,
         # get_touch_surface carries the surface and its flags — see
-        # dial_touch.TouchEventSource._poll_surface.
+        # dial_touch_source.TouchEventSource._poll_surface.
         get_touch_surface=getattr(display, "touch_surface", None),
         consume_repeat_close_reveal=getattr(display, "consume_repeat_close_reveal", None),
         axis_signs=(

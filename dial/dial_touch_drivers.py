@@ -43,7 +43,7 @@ import dial_spi_bus
 # can reach without doubling wires onto shared pins.
 #
 # T_IRQ is the controller's active-low interrupt line, polled/waited-on by
-# dial_touch.TouchEventSource.
+# dial_touch_source.TouchEventSource.
 _TOUCH_CS_GPIO = 16   # plain GPIO, driven by this driver (physical pin 36)
 TOUCH_IRQ_GPIO = 26  # T_IRQ, active-low
 
