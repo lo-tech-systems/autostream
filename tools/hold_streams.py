@@ -4,10 +4,18 @@
 Opens N streams to the appliance, holds them for a while, resumes each one
 with its last event id when the server ends it, and prints per client how
 many events and heartbeats arrived, how often it reconnected, the longest
-silence, and how each stream ended. It is the load for the memory check (eight
-streams is the server's cap) and for long soaks by hand.
+silence, and how each stream ended. It is the load for the memory check and for
+long soaks by hand. The server admits eight streams per client address and 64
+in all.
 
     python tools/hold_streams.py [--url URL] [--clients N] [--seconds S]
+                                 [--address-header N]
+
+With ``--address-header N`` the tool sends a different ``X-Real-IP`` for each
+group of N clients, so more than eight streams can be held from one host. The
+header is only believed by the web server itself, so point ``--url`` at its
+port directly (the default is then ``http://127.0.0.1:8080/api/v1/events``);
+nginx overwrites the header.
 
 The stream's body has no length and is not chunked: it ends when the server
 closes the connection. The tool therefore speaks HTTP over a raw socket and
@@ -30,6 +38,7 @@ from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 DEFAULT_URL = "http://localhost/api/v1/events"
+DIRECT_URL = "http://127.0.0.1:8080/api/v1/events"
 
 
 @dataclass
@@ -50,7 +59,8 @@ class Report:
                 f"longest_silence={self.longest_silence:.1f}s ended=[{ended}]")
 
 
-def _hold(host: str, port: int, path: str, deadline: float, report: Report) -> None:
+def _hold(host: str, port: int, path: str, deadline: float, report: Report,
+          address: str = "") -> None:
     last_id = ""
     first = True
     while time.monotonic() < deadline:
@@ -65,6 +75,8 @@ def _hold(host: str, port: int, path: str, deadline: float, report: Report) -> N
             return
         try:
             lines = [f"GET {path} HTTP/1.1", f"Host: {host}:{port}", "Accept: text/event-stream"]
+            if address:
+                lines.append(f"X-Real-IP: {address}")
             if last_id:
                 lines.append(f"Last-Event-ID: {last_id}")
             sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode("ascii"))
@@ -126,8 +138,19 @@ def _read(sock, deadline: float, report: Report):
                 report.resyncs += 1
 
 
-def run(url: str, clients: int, seconds: float) -> list:
-    """Hold *clients* streams to *url* for *seconds*; return one Report each."""
+def _address(index: int, group: int) -> str:
+    """The X-Real-IP for client *index* (from 0) when each address holds
+    *group* clients; "" for no header."""
+    if group <= 0:
+        return ""
+    n = index // group
+    return f"10.255.{n // 250}.{n % 250 + 1}"
+
+
+def run(url: str, clients: int, seconds: float, address_header: int = 0) -> list:
+    """Hold *clients* streams to *url* for *seconds*; return one Report each.
+    *address_header* is the number of clients that share an X-Real-IP, or 0
+    to send none."""
     parts = urlsplit(url)
     host = parts.hostname or "localhost"
     port = parts.port or 80
@@ -135,8 +158,9 @@ def run(url: str, clients: int, seconds: float) -> list:
     deadline = time.monotonic() + seconds
     reports = [Report(i + 1) for i in range(clients)]
     threads = [
-        threading.Thread(target=_hold, args=(host, port, path, deadline, r), daemon=True)
-        for r in reports
+        threading.Thread(target=_hold, args=(host, port, path, deadline, r,
+                                             _address(i, address_header)), daemon=True)
+        for i, r in enumerate(reports)
     ]
     for t in threads:
         t.start()
@@ -147,11 +171,14 @@ def run(url: str, clients: int, seconds: float) -> list:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Hold state change streams open and report.")
-    ap.add_argument("--url", default=DEFAULT_URL)
+    ap.add_argument("--url", default=None)
     ap.add_argument("--clients", type=int, default=8)
     ap.add_argument("--seconds", type=float, default=60.0)
+    ap.add_argument("--address-header", type=int, default=0, metavar="N",
+                    help="send a different X-Real-IP for each group of N clients")
     args = ap.parse_args(argv)
-    reports = run(args.url, args.clients, args.seconds)
+    url = args.url or (DIRECT_URL if args.address_header else DEFAULT_URL)
+    reports = run(url, args.clients, args.seconds, args.address_header)
     for r in reports:
         print(r.line())
     return 1 if any(r.failed for r in reports) else 0

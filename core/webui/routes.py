@@ -731,7 +731,7 @@ register(
         handler="webui.protocol.stream.send_events",
         auth=AuthRequirement.NONE,
         kind="api",
-        allow_unconfigured=False,
+        allow_unconfigured=True,
         poll_log=True,
     )
 )
@@ -741,9 +741,9 @@ register(
         path="/api/v1/state",
         methods=("GET",),
         handler="webui.protocol.state.send_state_json",
-        auth=AuthRequirement.FULL,
+        auth=AuthRequirement.NONE,
         kind="api",
-        allow_unconfigured=False,
+        allow_unconfigured=True,
         poll_log=True,
     )
 )

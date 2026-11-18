@@ -192,13 +192,13 @@ def test_the_general_location_still_gives_up_on_a_silent_backend_after_fifteen_s
 def test_the_refusal_reaches_the_client_as_the_tunnelled_reply(server, front):
     held = []
     try:
-        for _ in range(proto_hub.MAX_CLIENTS):
+        for _ in range(proto_hub.MAX_STREAMS_PER_ADDRESS):
             c = front.connect()
             held.append(c)
             assert c.pull_until(b"retry: 2000")
         ninth = front.connect()
         held.append(ninth)
-        assert ninth.pull_until(b"too_many_clients")
+        assert ninth.pull_until(b"too_many_from_address")
         assert ninth.head.startswith("HTTP/1.1 200")
         assert "application/json" in ninth.head
         assert json.loads(ninth.body)["error_status"] == 503

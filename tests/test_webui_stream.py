@@ -33,6 +33,8 @@ import webui.protocol.hub as proto_hub
 import webui.protocol.stream as proto_stream
 import webui.protocol.state as proto_state
 
+ADDRESS = "127.0.0.1"
+
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -59,6 +61,9 @@ class FakeHandler:
         self.path = path
         self.close_connection = False
         self._head: list = []
+
+    def _get_client_ip(self) -> str:
+        return self.headers.get("X-Real-IP", ADDRESS)
 
     def send_response(self, code: int, message=None) -> None:
         self._head = [f"HTTP/1.1 {code} X\r\n".encode()]
@@ -239,7 +244,7 @@ def test_event_bytes_is_one_compact_ascii_event(store, pub):
     assert lines[0] == f"id: {snap.boot}-{snap.version}"
     assert lines[1] == "event: change"
     assert lines[2] == (
-        'data: {"boot":"%s","version":%d,"parts":["session","outputs"],"resync":false}'
+        'data: {"boot":"%s","version":%d,"resync":false,"parts":["session","outputs"],"data":{}}'
         % (snap.boot, snap.version))
     assert lines[3:] == ["", ""]
     assert proto_stream.event_id(snap) == f"{snap.boot}-{snap.version}"
@@ -380,15 +385,39 @@ def test_publishing_is_not_slowed_by_parked_waiters_or_a_stalled_stream(
 # 6. The cap
 # -----------------------------------------------------------------------------
 
-def test_the_cap_admits_eight_and_refuses_the_ninth(hub):
-    assert [hub.enter() for _ in range(proto_hub.MAX_CLIENTS)] == [True] * 8
+def test_an_address_is_admitted_eight_and_refused_the_ninth(hub):
+    assert [hub.enter(ADDRESS) for _ in range(proto_hub.MAX_STREAMS_PER_ADDRESS)] == [None] * 8
     assert hub.client_count() == 8
-    assert hub.enter() is False
+    assert hub.enter(ADDRESS) == "too_many_from_address"
     assert hub.client_count() == 8
-    hub.exit()
+    hub.exit(ADDRESS)
     assert hub.client_count() == 7
-    assert hub.enter() is True
+    assert hub.enter(ADDRESS) is None
     assert hub.client_count() == 8
+
+
+def test_another_address_is_admitted_while_one_is_full(hub):
+    for _ in range(proto_hub.MAX_STREAMS_PER_ADDRESS):
+        assert hub.enter(ADDRESS) is None
+    assert hub.enter("10.0.0.2") is None
+    assert hub.client_count() == 9
+
+
+def test_the_hub_admits_sixty_four_streams_in_all(hub):
+    for n in range(proto_hub.MAX_STREAMS):
+        assert hub.enter(f"10.0.0.{n // 8}") is None
+    assert hub.client_count() == 64
+    assert hub.enter("10.0.9.9") == "too_many_clients"
+    assert hub.client_count() == 64
+
+
+def test_freeing_a_slot_of_an_unknown_address_changes_nothing(hub):
+    assert hub.enter(ADDRESS) is None
+    hub.exit("10.9.9.9")
+    assert hub.client_count() == 1
+    hub.exit(ADDRESS)
+    hub.exit(ADDRESS)
+    assert hub.client_count() == 0
 
 
 # -----------------------------------------------------------------------------
@@ -500,13 +529,13 @@ def test_a_peer_that_closes_is_noticed_without_a_write(monkeypatch, hub, install
     reasons = []
     t = threading.Thread(
         target=lambda: reasons.append(proto_stream.serve_events(handler, hub)), daemon=True)
-    hub.enter()
+    hub.enter(ADDRESS)
     t.start()
     c = Client(client)
     assert c.pull_until(b"retry: 2000")
     client.close()
     t.join(3.0)
-    hub.exit()
+    hub.exit(ADDRESS)
     assert not t.is_alive()
     assert reasons == ["ConnectionResetError"]
     server.close()
@@ -636,7 +665,7 @@ def test_a_peer_that_never_reads_is_dropped_by_the_write_timeout(
     except OSError:
         pass
     handler = FakeHandler(server)
-    hub.enter()
+    hub.enter(ADDRESS)
     reasons = []
     t = threading.Thread(
         target=lambda: reasons.append(proto_stream.serve_events(handler, hub)), daemon=True)
@@ -648,7 +677,7 @@ def test_a_peer_that_never_reads_is_dropped_by_the_write_timeout(
         i += 1
         time.sleep(0.05)
     t.join(1.0)
-    hub.exit()
+    hub.exit(ADDRESS)
     client.close()
     server.close()
     assert not t.is_alive()
@@ -678,15 +707,15 @@ def test_an_origin_naming_another_host_is_refused_and_takes_no_slot(hub, install
 
 
 def test_the_ninth_client_is_refused_with_the_tunnelled_503(hub, installed, run):
-    for _ in range(proto_hub.MAX_CLIENTS):
-        assert hub.enter()
+    for _ in range(proto_hub.MAX_STREAMS_PER_ADDRESS):
+        assert hub.enter(ADDRESS) is None
     r = run(via="send")
     assert wait_for(r.finished)
     r.client.pull(0.2)
     assert r.client.buf.startswith(b"HTTP/1.1 200")
     assert json.loads(r.client.body) == {
-        "ok": False, "error": "too_many_clients", "error_status": 503, "retryable": True}
-    assert hub.client_count() == proto_hub.MAX_CLIENTS
+        "ok": False, "error": "too_many_from_address", "error_status": 503, "retryable": True}
+    assert hub.client_count() == proto_hub.MAX_STREAMS_PER_ADDRESS
 
 
 def test_without_a_hub_the_events_route_answers_not_found(run):
@@ -771,7 +800,7 @@ def test_the_state_body_is_rebuilt_after_its_age_under_the_same_version(monkeypa
 def test_the_state_body_reports_the_current_client_count(pub, hub):
     pub("settings")
     assert json.loads(hub.state_body())["clients"] == 0
-    hub.enter()
+    hub.enter(ADDRESS)
     assert json.loads(hub.state_body())["clients"] == 1
 
 
@@ -805,3 +834,168 @@ def test_concurrent_callers_of_an_old_body_share_one_build(monkeypatch, store, p
     assert len(builds) == 1
     assert len(bodies) == 8
     assert len({id(b) for b in bodies}) == 1
+
+
+# -----------------------------------------------------------------------------
+# 10. Events carry data
+# -----------------------------------------------------------------------------
+
+def _part_data(snap, *names):
+    return {n: json.loads(proto_state.part_json(snap, n)) for n in names}
+
+
+def _events(r, count):
+    return wait_for(lambda: (r.client.pull(0.05), len(r.client.events()) == count)[1])
+
+
+def test_event_bytes_carries_the_listed_parts_as_given(store, pub):
+    snap = _scripted(store, pub)
+    blobs = {n: proto_state.part_json(snap, n) for n in ("session", "outputs")}
+    raw = proto_stream.event_bytes(snap, ("session", "outputs"), False, blobs)
+    raw.decode("ascii")
+    event = json.loads(raw.decode().split("data: ")[1])
+    assert event["data"] == _part_data(snap, "session", "outputs")
+    assert list(event["data"]) == ["session", "outputs"]
+
+
+def test_a_change_event_carries_the_data_of_the_parts_that_moved(hub, pub, run):
+    pub("settings")
+    r = run()
+    assert r.client.pull_until(b"event: change")
+    pub("session")
+    assert _events(r, 2)
+    first, second = r.client.events()
+    assert second["parts"] == ["session"]
+    assert second["data"] == _part_data(hub.store.snapshot(), "session")
+    assert first["resync"] is True and first["data"] == {}
+
+
+def test_a_resumed_stream_gets_data_for_the_parts_newer_than_its_version(hub, pub, run):
+    pub("settings")
+    snap = hub.store.snapshot()
+    pub("session")
+    pub("outputs")
+    r = run(headers={"Last-Event-ID": f"{snap.boot}-{snap.version}"})
+    assert r.client.pull_until(b"event: change")
+    (event,) = r.client.events()
+    assert event["resync"] is False
+    assert event["parts"] == ["session", "outputs"]
+    assert event["data"] == _part_data(hub.store.snapshot(), "session", "outputs")
+
+
+def test_a_resync_names_every_part_and_carries_no_data(hub, pub, run):
+    pub("settings")
+    r = run()
+    assert r.client.pull_until(b"event: change")
+    (event,) = r.client.events()
+    assert event["resync"] is True
+    assert event["parts"] == list(PART_NAMES)
+    assert event["data"] == {}
+
+
+def test_the_event_data_matches_the_state_body_on_the_digest_fields(hub, pub, run):
+    pub("outputs")
+    pub("session")
+    snap = hub.store.snapshot()
+    r = run(headers={"Last-Event-ID": f"{snap.boot}-0"})
+    pub("repeat")
+    assert r.client.pull_until(b"event: change")
+    body = json.loads(hub.state_body())
+    (event,) = r.client.events()
+    assert event["data"]
+    for name, value in event["data"].items():
+        assert value == body["parts"][name]
+
+
+def test_each_part_is_serialised_once_per_version_however_many_streams(monkeypatch, hub, pub, run):
+    pub("settings")
+    pub("session")
+    builds = []
+    real = proto_state.part_json
+    monkeypatch.setattr(proto_state, "part_json",
+                        lambda snap, name: builds.append(name) or real(snap, name))
+    snap = hub.store.snapshot()
+    ids = {"Last-Event-ID": f"{snap.boot}-{snap.version}"}
+    pub("session")
+    runs = [run(headers=ids) for _ in range(3)]
+    for r in runs:
+        assert r.client.pull_until(b"event: change")
+    assert builds == ["session"]
+    pub("session")
+    for r in runs:
+        assert _events(r, 2)
+    assert builds == ["session", "session"]
+
+
+def test_a_part_that_never_moves_is_never_serialised(monkeypatch, hub, pub, run):
+    builds = []
+    real = proto_state.part_json
+    monkeypatch.setattr(proto_state, "part_json",
+                        lambda snap, name: builds.append(name) or real(snap, name))
+    pub("session")
+    r = run()
+    assert r.client.pull_until(b"event: change")
+    pub("session")
+    assert _events(r, 2)
+    assert builds == ["session"]
+
+
+def test_the_part_cache_serves_the_bytes_it_built_until_the_part_moves(hub, pub):
+    pub("session")
+    first = hub.part_bytes(hub.store.snapshot(), "session")
+    assert hub.part_bytes(hub.store.snapshot(), "session") is first
+    pub("settings")
+    assert hub.part_bytes(hub.store.snapshot(), "session") is first
+    pub("session")
+    assert hub.part_bytes(hub.store.snapshot(), "session") is not first
+
+
+# -----------------------------------------------------------------------------
+# 11. Limits per address and the protocol number
+# -----------------------------------------------------------------------------
+
+def test_a_ninth_stream_from_one_address_is_refused_and_another_address_is_served(
+        hub, installed, run):
+    for _ in range(proto_hub.MAX_STREAMS_PER_ADDRESS):
+        assert hub.enter("10.0.0.1") is None
+    refused = run(headers={"X-Real-IP": "10.0.0.1"}, via="send")
+    assert wait_for(refused.finished)
+    refused.client.pull(0.2)
+    assert json.loads(refused.client.body)["error"] == "too_many_from_address"
+    served = run(headers={"X-Real-IP": "10.0.0.2"}, via="send")
+    assert served.client.pull_until(b"retry: 2000")
+    assert hub.client_count() == proto_hub.MAX_STREAMS_PER_ADDRESS + 1
+
+
+def test_a_stream_frees_its_address_slot_when_it_ends(hub, installed, run):
+    r = run(headers={"X-Real-IP": "10.0.0.3"}, via="send")
+    assert r.client.pull_until(b"retry: 2000")
+    assert hub.client_count() == 1
+    r.close()
+    assert wait_for(lambda: hub.client_count() == 0, 5.0)
+
+
+def test_the_sixty_fifth_stream_is_refused_whatever_its_address(hub, installed, run):
+    for n in range(proto_hub.MAX_STREAMS):
+        assert hub.enter(f"10.0.0.{n // 8}") is None
+    r = run(headers={"X-Real-IP": "10.0.1.1"}, via="send")
+    assert wait_for(r.finished)
+    r.client.pull(0.2)
+    assert json.loads(r.client.body)["error"] == "too_many_clients"
+    assert hub.client_count() == proto_hub.MAX_STREAMS
+
+
+@pytest.mark.parametrize("query", ["protocol=3", "protocol=5", "protocol=x"])
+def test_another_protocol_number_is_answered_without_a_stream(hub, installed, run, query):
+    r = run(path=f"/api/v1/events?{query}", via="send")
+    assert wait_for(r.finished)
+    r.client.pull(0.2)
+    assert r.client.buf.startswith(b"HTTP/1.1 200")
+    assert json.loads(r.client.body) == {"ok": False, "error": "protocol_mismatch", "protocol": 4}
+    assert hub.client_count() == 0
+
+
+@pytest.mark.parametrize("query", ["", "?protocol=4"])
+def test_no_protocol_number_or_this_one_is_served(hub, installed, run, query):
+    r = run(path=f"/api/v1/events{query}", via="send")
+    assert r.client.pull_until(b"retry: 2000")

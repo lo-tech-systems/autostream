@@ -55,7 +55,7 @@ def test_it_counts_events_and_resumes_a_stream_the_server_ended(server, monkeypa
 
 
 def test_a_refused_client_is_reported_and_fails_the_run(server, capsys):
-    held = [server.connect() for _ in range(proto_hub.MAX_CLIENTS)]
+    held = [server.connect() for _ in range(proto_hub.MAX_STREAMS_PER_ADDRESS)]
     try:
         for c in held:
             assert c.pull_until(b"retry: 2000")
@@ -67,3 +67,21 @@ def test_a_refused_client_is_reported_and_fails_the_run(server, capsys):
     finally:
         for c in held:
             c.close()
+
+
+def test_the_address_header_gives_each_group_its_own_address():
+    assert hold_streams._address(0, 0) == ""
+    assert hold_streams._address(0, 8) == hold_streams._address(7, 8)
+    assert hold_streams._address(7, 8) != hold_streams._address(8, 8)
+    assert len({hold_streams._address(i, 8) for i in range(64)}) == 8
+
+
+def test_streams_beyond_one_address_limit_are_held_with_the_address_header(server, capsys):
+    url = f"http://127.0.0.1:{server.port}/api/v1/events"
+    code = hold_streams.main(["--url", url, "--clients", "10", "--seconds", "1"])
+    assert code == 1
+    assert capsys.readouterr().out.count("refused") == 2
+    code = hold_streams.main(["--url", url, "--clients", "10", "--seconds", "1",
+                              "--address-header", "5"])
+    assert code == 0
+    assert "refused" not in capsys.readouterr().out

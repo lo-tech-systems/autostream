@@ -88,21 +88,21 @@ def test_a_publish_reaches_a_held_client_promptly(server, publish):
 
 def test_the_ninth_client_is_refused_and_a_freed_slot_is_taken(server, caplog):
     caplog.set_level(logging.INFO)
-    held = _held(server, proto_hub.MAX_CLIENTS)
+    held = _held(server, proto_hub.MAX_STREAMS_PER_ADDRESS)
     try:
         assert server.hub.client_count() == 8
         ninth = server.connect()
-        assert ninth.pull_until(b"too_many_clients")
+        assert ninth.pull_until(b"too_many_from_address")
         assert ninth.head.startswith("HTTP/1.1 200")
         assert "application/json" in ninth.head
         assert json.loads(ninth.body) == {
-            "ok": False, "error": "too_many_clients", "error_status": 503, "retryable": True}
+            "ok": False, "error": "too_many_from_address", "error_status": 503, "retryable": True}
         ninth.close()
         refusals = [r for r in caplog.records if "refused a client" in r.getMessage()]
         assert len(refusals) == 1
         assert refusals[0].levelno == logging.INFO
         again = server.connect()
-        assert again.pull_until(b"too_many_clients")
+        assert again.pull_until(b"too_many_from_address")
         again.close()
         assert len([r for r in caplog.records if "refused a client" in r.getMessage()]) == 1
         held.pop().close()
@@ -117,14 +117,13 @@ def test_the_ninth_client_is_refused_and_a_freed_slot_is_taken(server, caplog):
             c.close()
 
 
-def test_a_stream_request_is_sent_to_first_boot_while_commissioning(server):
+def test_a_stream_request_is_served_while_commissioning(server):
     server.commissioning_required = True
     c = server.connect()
     try:
-        assert c.pull_until(b"\r\n\r\n")
-        assert c.head.startswith("HTTP/1.1 302")
-        assert "Location: /first-boot/owntone" in c.head
-        assert server.hub.client_count() == 0
+        assert c.pull_until(b"retry: 2000")
+        assert c.head.startswith("HTTP/1.1 200")
+        assert server.hub.client_count() == 1
     finally:
         c.close()
 
@@ -155,21 +154,22 @@ def test_the_events_route_needs_no_sign_in(monkeypatch):
         s.close()
 
 
-def test_the_state_route_needs_the_pin_when_one_is_set(monkeypatch):
+def test_the_state_route_needs_no_pin_when_one_is_set(monkeypatch):
     s = RealServer(monkeypatch, pin="1234abcd")
     try:
         status, body = s.get("/api/v1/state")
-        assert status == 401
-        assert json.loads(body)["ok"] is False
-        token = secrets.token_hex(32)
-        s.auth._sessions[token] = Session(
-            token=token, expires_at=int(time.time()) + 3600,
-            csrf_token=secrets.token_hex(32), authenticated=True)
-        status, body = s.get("/api/v1/state", headers={"Cookie": f"{SESSION_COOKIE_NAME}={token}"})
         assert status == 200
         assert json.loads(body)["boot"] == s.store.snapshot().boot
     finally:
         s.close()
+
+
+def test_the_state_route_is_served_while_commissioning(server, publish):
+    server.commissioning_required = True
+    publish("settings")
+    status, body = server.get("/api/v1/state")
+    assert status == 200
+    assert json.loads(body)["version"] == server.store.snapshot().version
 
 
 def test_the_state_route_without_a_pin_returns_the_snapshot(server, publish):
@@ -205,7 +205,8 @@ def test_the_state_body_has_the_shape_of_the_snapshot(scenario_id, monkeypatch):
     hub = proto_hub.StreamHub(store)
     body = json.loads(hub.state_body(), parse_constant=_no_constant)
     snap = store.snapshot()
-    assert list(body) == ["boot", "version", "clients", "part_versions", "parts"]
+    assert list(body) == ["boot", "version", "protocol", "clients", "part_versions", "parts"]
+    assert body["protocol"] == 4
     assert set(body["parts"]) == set(state.PART_NAMES)
     assert set(body["part_versions"]) <= set(state.PART_NAMES)
     assert body["boot"] == snap.boot
@@ -221,7 +222,7 @@ def test_other_requests_are_served_while_streams_are_held(server, monkeypatch):
     import golden_scenarios
 
     golden_scenarios.apply(golden_scenarios.SCENARIOS["idle"], monkeypatch)
-    held = _held(server, proto_hub.MAX_CLIENTS)
+    held = _held(server, proto_hub.MAX_STREAMS_PER_ADDRESS)
     try:
         slowest = 0.0
         for _ in range(50):
@@ -230,6 +231,74 @@ def test_other_requests_are_served_while_streams_are_held(server, monkeypatch):
             slowest = max(slowest, time.monotonic() - t0)
             assert status == 200
         assert slowest < 0.5
+    finally:
+        for c in held:
+            c.close()
+
+
+def test_parts_returns_only_the_named_parts(server, publish):
+    publish("settings")
+    publish("session")
+    status, body = server.get("/api/v1/state?parts=session,settings")
+    assert status == 200
+    got = json.loads(body)
+    snap = server.store.snapshot()
+    full = proto_state.state_json(snap, clients=0)
+    assert list(got["parts"]) == ["session", "settings"]
+    assert got["parts"] == {n: full["parts"][n] for n in ("session", "settings")}
+    assert got["part_versions"] == full["part_versions"]
+    assert got["protocol"] == 4 and got["version"] == snap.version
+
+
+def test_an_empty_parts_returns_the_top_level_only(server, publish):
+    publish("session")
+    status, body = server.get("/api/v1/state?parts=")
+    assert status == 200
+    got = json.loads(body)
+    assert got["parts"] == {}
+    assert set(got) == {"boot", "version", "protocol", "clients", "part_versions", "parts"}
+
+
+@pytest.mark.parametrize("query", ["parts=nonsense", "parts=session,nonsense", "parts=session,,settings"])
+def test_an_unknown_part_is_refused(server, query):
+    status, body = server.get(f"/api/v1/state?{query}")
+    assert status == 400
+    assert json.loads(body) == {"ok": False, "error": "unknown_part"}
+
+
+def test_a_filtered_body_is_built_from_the_live_snapshot_on_each_request(server, publish, monkeypatch):
+    builds = []
+    real = proto_state.state_json
+    monkeypatch.setattr(proto_state, "state_json",
+                        lambda snap, **kw: builds.append(kw.get("parts")) or real(snap, **kw))
+    publish("session")
+    server.get("/api/v1/state?parts=session")
+    server.get("/api/v1/state?parts=session")
+    assert builds == [("session",), ("session",)]
+    builds.clear()
+    server.get("/api/v1/state")
+    server.get("/api/v1/state")
+    assert builds == [None]                              # the whole body is shared for a second
+
+
+def test_the_events_route_refuses_another_protocol_number(server):
+    status, body = server.get("/api/v1/events?protocol=3")
+    assert status == 200
+    assert json.loads(body) == {"ok": False, "error": "protocol_mismatch", "protocol": 4}
+    assert server.hub.client_count() == 0
+
+
+def test_a_request_header_address_gives_each_address_its_own_eight(server):
+    held = []
+    try:
+        for n in range(2 * proto_hub.MAX_STREAMS_PER_ADDRESS):
+            c = server.connect(headers={"X-Real-IP": f"10.0.0.{n // 8 + 1}"})
+            held.append(c)
+            assert c.pull_until(b"retry: 2000")
+        assert server.hub.client_count() == 16
+        ninth = server.connect(headers={"X-Real-IP": "10.0.0.1"})
+        held.append(ninth)
+        assert ninth.pull_until(b"too_many_from_address")
     finally:
         for c in held:
             c.close()

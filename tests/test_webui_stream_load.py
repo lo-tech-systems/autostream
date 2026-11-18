@@ -55,18 +55,18 @@ def test_eight_clients_one_stalled_three_publishers(monkeypatch, caplog):
     try:
         stalled = server.connect(rcvbuf=2048)
         assert stalled.pull_until(b"retry: 2000")        # then never read again
-        for _ in range(proto_hub.MAX_CLIENTS - 1):
+        for _ in range(proto_hub.MAX_STREAMS_PER_ADDRESS - 1):
             c = server.connect()
             assert c.pull_until(b"retry: 2000")
             readers.append(c)
-        assert server.hub.client_count() == proto_hub.MAX_CLIENTS
+        assert server.hub.client_count() == proto_hub.MAX_STREAMS_PER_ADDRESS
         for c in readers:
             t = threading.Thread(target=_read_forever, args=(c, stop_reading), daemon=True)
             t.start()
             reader_threads.append(t)
 
         ninth = server.connect()
-        assert ninth.pull_until(b"too_many_clients")
+        assert ninth.pull_until(b"too_many_from_address")
         ninth.close()
 
         def wait_for_a_slot():
@@ -155,7 +155,7 @@ def test_eight_clients_one_stalled_three_publishers(monkeypatch, caplog):
 
         ended = [r for r in caplog.records if "state stream: ended (timeout)" in r.getMessage()]
         assert len(ended) >= 1
-        assert server.hub.client_count() == proto_hub.MAX_CLIENTS
+        assert server.hub.client_count() == proto_hub.MAX_STREAMS_PER_ADDRESS
 
         lags.sort()
         assert lags[int(len(lags) * 0.99)] < 0.005

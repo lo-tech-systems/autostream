@@ -216,10 +216,11 @@ Home page should depend on them yet.
 ### `GET /api/v1/events`
 
 A Server-Sent Events stream that says **which parts of the appliance state
-moved**. It carries no state: a client that sees a part it cares about move
-fetches the route that shows it (the Home page fetches `/api/status` and
-`/api/owntone/outputs_state`). Like `GET /api/status` it needs no PIN. It
-carries only part names, versions and the boot id.
+moved**, and carries the new value of each. A client that sees a part it cares
+about move reads it from the event's `data`, or fetches the route that shows
+it (the Home page fetches `/api/status` and `/api/owntone/outputs_state`).
+Like `GET /api/status` it needs no PIN, and it works before the appliance is
+set up.
 
 Headers: `Content-Type: text/event-stream`, `Cache-Control: no-store`. There is
 no `Content-Length`; the response ends when the server closes the connection.
@@ -231,7 +232,7 @@ An event:
 ```
 id: 3f9a0c1d2e4b5a69-1234
 event: change
-data: {"boot":"3f9a0c1d2e4b5a69","version":1234,"parts":["outputs","session"],"resync":false}
+data: {"boot":"3f9a0c1d2e4b5a69","version":1234,"resync":false,"parts":["outputs","session"],"data":{"outputs":{...},"session":{...}}}
 
 ```
 
@@ -240,7 +241,8 @@ data: {"boot":"3f9a0c1d2e4b5a69","version":1234,"parts":["outputs","session"],"r
 | `id` | `<boot>-<version>`: the 16-hex boot id of the state store and the version the event describes. A browser sends it back as `Last-Event-ID` when it reconnects. |
 | `boot`, `version` | The same two values, so a client never parses the id. |
 | `parts` | The parts that moved since the version the client last had, in a fixed order, never empty. The part names are `session`, `repeat`, `track`, `inputs`, `monitor`, `playback`, `health`, `settings`, `outputs`, `eq` and `devices`. |
-| `resync` | `true` when the server cannot say what moved (a new client, a restart of the appliance's service, an id it does not know). `parts` is then every part and a client refetches everything it shows. |
+| `resync` | `true` when the server cannot say what moved (a new client, a restart of the appliance's service, an id it does not know). `parts` is then every part, `data` is empty, and a client fetches `GET /api/v1/state`. |
+| `data` | The value of each part listed in `parts`, as `GET /api/v1/state` shows it. Fields that change continuously (levels, last-seen times) are as they were when the part last moved; a client that shows them reads `GET /api/v1/state`. |
 
 There is one event name, `change`. When nothing has happened for ten seconds
 the server writes a comment line (`: ka`) to keep the connection alive; it is
@@ -263,11 +265,14 @@ id that does not parse gives a `resync` event. No event history is kept, so a
 client that was away for an hour gets the same exact answer as one that was
 away for a second.
 
-**Limits.** At most eight streams are served at once. A ninth request gets
-HTTP 200 with the JSON body `{"ok": false, "error": "too_many_clients",
-"error_status": 503, "retryable": true}` (an event source treats any reply
-that is not a stream as a failed connection, which is what a page needs to
-fall back to polling). A stream is ended by the server after about five
+**Limits.** At most 64 streams are served at once, and at most eight to one
+client address. A request over a limit gets HTTP 200 with the JSON body
+`{"ok": false, "error": "too_many_clients", "error_status": 503,
+"retryable": true}`, or `too_many_from_address` for the per-address limit (an
+event source treats any reply that is not a stream as a failed connection,
+which is what a page needs to fall back to polling). A request with a
+`protocol` query parameter other than the appliance's gets HTTP 200 with
+`{"ok": false, "error": "protocol_mismatch", "protocol": 4}`. A stream is ended by the server after about five
 minutes (each stream's limit varies by 10 percent) and the browser resumes it
 with its last id. A client that stops reading is dropped after two seconds of
 blocked writes. A request whose `Origin` header names another host is refused
@@ -279,14 +284,15 @@ front), trying the stream again after about 30 seconds.
 
 ### `GET /api/v1/state`
 
-The state snapshot as it is held: `boot`, `version`, `clients` (the number of
-open streams), `part_versions` (the version at which each part last moved) and
-`parts` (every part, serialised field by field with the internal field names).
-It is **behind the PIN** when one is set, unlike the stream, because it
-carries the paired Bluetooth device, the capture device list, health counters
-and equaliser settings. The body is internal and will change when the parts
-do; it is meant for diagnosis. It is built at most once a second however many
-clients ask.
+The state snapshot as it is held: `boot`, `version`, `protocol`, `clients`
+(the number of open streams), `part_versions` (the version at which each part
+last moved) and `parts` (every part, serialised field by field with the
+internal field names). Like the stream it needs no PIN and works before the
+appliance is set up. `?parts=a,b` returns only those parts, and `?parts=` none
+of them; an unknown name is refused with 400 `unknown_part`. The body is
+internal and will change when the parts do. Without `parts` it is built at most
+once a second however many clients ask; with `parts` it is built from the live
+snapshot on each request.
 
 ---
 

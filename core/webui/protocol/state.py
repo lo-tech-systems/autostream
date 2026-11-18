@@ -15,8 +15,12 @@ from __future__ import annotations
 
 import dataclasses
 import enum
+import json
 import math
+from typing import Optional
+from urllib.parse import parse_qs, urlsplit
 
+from autostream_protocol import PROTOCOL
 from autostream_state import PART_NAMES, OutputUnitView
 from webui import common
 from webui.protocol import hub as hub_module
@@ -49,25 +53,53 @@ def _jsonable(value):
     return str(value)
 
 
-def state_json(snap, *, clients: int) -> dict:
+def part_json(snap, name: str) -> bytes:
+    """The JSON of part *name* in *snap*, as it appears in the state body and
+    in an event."""
+    return json.dumps(_jsonable(getattr(snap, name)), allow_nan=False,
+                      separators=(",", ":")).encode("ascii")
+
+
+def state_json(snap, *, clients: int, parts=None) -> dict:
     """The snapshot's parts as they are, with the boot id, the version, the
-    version at which each part last moved, and the number of stream clients."""
+    protocol number, the version at which each part last moved, and the number
+    of stream clients. *parts* names the parts to include; None is all."""
+    names = PART_NAMES if parts is None else parts
     return {
         "boot": snap.boot,
         "version": snap.version,
+        "protocol": PROTOCOL,
         "clients": clients,
         "part_versions": {str(k): v for k, v in snap.part_versions.items()},
-        "parts": {name: _jsonable(getattr(snap, name)) for name in PART_NAMES},
+        "parts": {name: _jsonable(getattr(snap, name)) for name in names},
     }
 
 
+def _requested_parts(path: str) -> Optional[tuple]:
+    """The parts the ``parts`` query parameter names, in PART_NAMES order: None
+    when it is absent, () when it is empty. ValueError when it names a part
+    that does not exist."""
+    values = parse_qs(urlsplit(path).query, keep_blank_values=True).get("parts")
+    if not values:
+        return None
+    names = values[0].split(",") if values[0] else []
+    if any(n not in PART_NAMES for n in names):
+        raise ValueError("unknown part")
+    return tuple(n for n in PART_NAMES if n in names)
+
+
 def send_state_json(handler, state) -> None:
-    """GET /api/v1/state."""
+    """GET /api/v1/state, with ``?parts=a,b`` for only those parts."""
     hub = hub_module.current()
     if hub is None:
         common.send_browser_api_error(handler, 404, "not_found")
         return
-    body = hub.state_body()
+    try:
+        parts = _requested_parts(handler.path)
+    except ValueError:
+        common.send_browser_api_error(handler, 400, "unknown_part")
+        return
+    body = hub.state_body(parts)
     try:
         handler.send_response(200)
         handler.send_header("Content-Type", "application/json; charset=utf-8")

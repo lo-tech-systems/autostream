@@ -30,10 +30,10 @@ from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
 import autostream_logging as log_setup
+from autostream_protocol import PROTOCOL
 from autostream_state import PART_NAMES
 from webui import common
 from webui.protocol import hub as hub_module
-from webui.protocol.hub import MAX_CLIENTS
 
 HEARTBEAT_S = 10.0          # a comment when nothing was written for this long
 LIVENESS_S = 1.0            # how often a quiet stream checks that its client is still there
@@ -89,12 +89,22 @@ def changed_parts(snap, since: Optional[Since]) -> tuple[tuple[str, ...], bool]:
     return tuple(p for p in PART_NAMES if snap.part_versions.get(p, 0) > since.version), False
 
 
-def event_bytes(snap, parts, resync: bool) -> bytes:
-    data = json.dumps(
-        {"boot": snap.boot, "version": snap.version, "parts": list(parts), "resync": bool(resync)},
+def event_bytes(snap, parts, resync: bool, data=None) -> bytes:
+    """One change event. *data* maps a listed part's name to its JSON bytes as
+    the state route shows it; a resync carries none."""
+    head = json.dumps(
+        {"boot": snap.boot, "version": snap.version, "resync": bool(resync), "parts": list(parts)},
         separators=(",", ":"))
-    return f"id: {event_id(snap)}\nevent: change\ndata: {data}\n\n".encode("ascii")
+    blobs = b",".join(json.dumps(name).encode("ascii") + b":" + blob
+                      for name, blob in (data or {}).items())
+    payload = head[:-1].encode("ascii") + b',"data":{' + blobs + b"}}"
+    return b"id: %s\nevent: change\ndata: %s\n\n" % (event_id(snap).encode("ascii"), payload)
 
+
+def _event(hub, snap, parts, resync: bool) -> bytes:
+    """The event for *parts* of *snap*, with their data unless it is a resync."""
+    data = {} if resync else {name: hub.part_bytes(snap, name) for name in parts}
+    return event_bytes(snap, parts, resync, data)
 
 
 # -----------------------------------------------------------------------------
@@ -107,6 +117,12 @@ def _same_origin(headers) -> bool:
     if not origin:
         return True
     return urlsplit(origin).netloc.lower() == (headers.get("Host") or "").lower()
+
+
+def _protocol_param(path: str) -> Optional[str]:
+    """The ``protocol`` query parameter, or None when the request has none."""
+    values = parse_qs(urlsplit(path).query).get("protocol")
+    return values[0] if values else None
 
 
 def _peer_closed(sock) -> bool:
@@ -160,7 +176,7 @@ def _stream(handler, hub) -> str:
     parts, resync = changed_parts(snap, since)
     out = b"retry: %d\n\n" % RETRY_MS
     if parts:
-        out += event_bytes(snap, parts, resync)
+        out += _event(hub, snap, parts, resync)
     _write(handler, out)
     seen = snap.version if parts or since is None else since.version
     opened = last_write = time.monotonic()
@@ -182,7 +198,7 @@ def _stream(handler, hub) -> str:
         snap = hub.store.snapshot()
         parts = tuple(p for p in PART_NAMES if snap.part_versions.get(p, 0) > seen)
         if parts:
-            _write(handler, event_bytes(snap, parts, False))
+            _write(handler, _event(hub, snap, parts, False))
             seen = snap.version
             last_write = time.monotonic()
     return "server stopping"
@@ -208,13 +224,18 @@ def send_events(handler, state) -> None:
     if not _same_origin(handler.headers):
         common.send_browser_api_error(handler, 403, "cross_origin")
         return
-    if not hub.enter():
-        if log_setup.log_every(("stream", "refused"), 60.0):
-            logging.info("state stream: refused a client, %d already connected", MAX_CLIENTS)
-        common.send_browser_api_error(handler, 503, "too_many_clients", retryable=True)
+    if _protocol_param(handler.path) not in (None, str(PROTOCOL)):
+        common.send_json(handler, 200, {"ok": False, "error": "protocol_mismatch", "protocol": PROTOCOL})
+        return
+    address = handler._get_client_ip()
+    refusal = hub.enter(address)
+    if refusal is not None:
+        if log_setup.log_every(("stream", "refused", refusal), 60.0):
+            logging.info("state stream: refused a client from %s (%s)", address, refusal)
+        common.send_browser_api_error(handler, 503, refusal, retryable=True)
         return
     try:
         reason = serve_events(handler, hub)
     finally:
-        hub.exit()
+        hub.exit(address)
     logging.debug("state stream: ended (%s)", reason)
