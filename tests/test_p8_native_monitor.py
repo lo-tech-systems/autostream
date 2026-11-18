@@ -404,6 +404,56 @@ class TestActivityGateSourceInspection:
         n = io_src.count("_activity_gate.reset()")
         assert n == 3, f"expected 3 _activity_gate.reset() calls, found {n}"
 
+    @staticmethod
+    def _silence_state_body(io_src):
+        head = "bool InputChannel::update_silence_state("
+        begin = io_src.index(head)
+        end = io_src.index("\n// ──", begin)
+        return io_src[begin:end]
+
+    def test_start_after_applied_in_silence_state(self, io_src):
+        body = self._silence_state_body(io_src)
+        assert "_activity_gate.set_required_seconds(" in body, (
+            "the Start after setting is not handed to the gate"
+        )
+        assert "_gate_prev_start_after_ms" in body
+
+    def test_start_after_sentinel_reset_in_start(self, io_src):
+        start = io_src.index("bool InputChannel::start(")
+        stop = io_src.index("void InputChannel::stop()")
+        assert "_gate_prev_start_after_ms         = -1;" in io_src[start:stop], (
+            "start() must reset the Start after sentinel so the setting is "
+            "applied on the first block"
+        )
+
+    def test_gate_expiry_checked_on_the_gated_path(self, io_src):
+        body = self._silence_state_body(io_src)
+        assert "_activity_gate.expire(now, start_report.gate)" in body
+
+    def test_mean_square_only_for_gate_and_activation(self, io_src):
+        body = self._silence_state_body(io_src)
+        assert body.count("compute_mean_square(") == 2, (
+            "mean power is worked out for the gate's blocks and the ungated "
+            "activation block only"
+        )
+        loop_start = io_src.index("void InputChannel::process_thread_func(")
+        loop_end = io_src.index("\n// ──", loop_start)
+        assert "compute_mean_square(" not in io_src[loop_start:loop_end]
+
+    def test_activity_start_logged_by_the_caller(self, io_src):
+        flat = self._squash(io_src)
+        assert "log_activity_start(start_report, silence_threshold_sample);" in flat
+
+    def test_start_after_parsed_and_validated(self):
+        p = REPO_ROOT / "core" / "monitor" / "autostream_monitor.cpp"
+        if not p.exists():
+            pytest.skip(f"autostream_monitor.cpp not found at {p}")
+        src = _read_source(p)
+        assert 'json_get_int(json_command, "start_after_ms", -1)' in src, (
+            "start_after_ms is not read with the not-sent sentinel"
+        )
+        assert '"start_after_ms must be in the range [30, 250]"' in src
+
     def test_probation_feed_uses_raw_comparison(self, io_src):
         flat = self._squash(io_src)
         assert ("_repeat_controller.notify_probation_block( _index, "

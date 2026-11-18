@@ -707,13 +707,14 @@ bool InputChannel::configure(const InputConfig& cfg)
         std::memory_order_relaxed);
     _activity_gated.store(input_type_activity_gated(cfg.input_type),
                           std::memory_order_relaxed);
+    _start_after_ms.store(cfg.start_after_ms, std::memory_order_relaxed);
     // Stored for a stopped and a running input alike; the capture thread
     // acts on it at the next detector window, and start() reads it when it
     // resets the estimator.
     _rate_estimator.set_dynamic_rate_matching(cfg.dynamic_rate_matching);
-    LOG_INFO("[input%d] Configured device='%s', input_type='%s', silence_threshold=%.1f dBFS, silence_seconds=%d, dynamic_rate_matching=%s",
+    LOG_INFO("[input%d] Configured device='%s', input_type='%s', silence_threshold=%.1f dBFS, silence_seconds=%d, start_after_ms=%d, dynamic_rate_matching=%s",
              _index, cfg.alsa_device.c_str(), cfg.input_type.c_str(),
-             cfg.silence_threshold_dbfs, cfg.silence_seconds,
+             cfg.silence_threshold_dbfs, cfg.silence_seconds, cfg.start_after_ms,
              cfg.dynamic_rate_matching ? "true" : "false");
     return true;
 }
@@ -844,6 +845,7 @@ bool InputChannel::start(std::string* error_out)
     _activity_gate.reset();
     _gate_prev_enabled                = false;
     _gate_prev_threshold_sample       = -1.0f;
+    _gate_prev_start_after_ms         = -1;
     _last_above_threshold_time        = 0.0;
     _capture_start_time               = 0.0;
     _last_notify_capture_started_time = 0.0;
@@ -1089,6 +1091,60 @@ float InputChannel::compute_peak_sample(const int32_t* samples,
     return static_cast<float>(peak) / 2147483648.0f;  // 2^31, full int32 scale
 }
 
+double InputChannel::compute_mean_square(const int32_t* samples,
+                                          int            n_frames,
+                                          int            n_channels) const
+{
+    // A double accumulator: the squares of a block's int32 samples overflow
+    // int64_t. One divide at the end, against full scale squared (2^62).
+    const int n = n_frames * n_channels;
+    if (n <= 0)
+        return 0.0;
+    double sum = 0.0;
+    for (int i = 0; i < n; ++i)
+    {
+        double s = static_cast<double>(samples[i]);
+        sum += s * s;
+    }
+    return sum / (static_cast<double>(n) * 4611686018427387904.0);  // 2^62
+}
+
+void InputChannel::log_activity_start(const ActivityStartReport& report,
+                                      float silence_threshold_sample) const
+{
+    if (report.kind == ActivityStartReport::Kind::None)
+        return;
+
+    const ActivityGateReport& g = report.gate;
+    // Mean power in dB against full scale, floored as linear_to_dbfs() is.
+    double power_db = (g.mean_square > 0.0) ? 10.0 * std::log10(g.mean_square) : -90.0;
+    if (power_db < -90.0)
+        power_db = -90.0;
+    float peak_db      = linear_to_dbfs(g.peak);
+    float threshold_db = linear_to_dbfs(silence_threshold_sample);
+
+    switch (report.kind)
+    {
+    case ActivityStartReport::Kind::Fired:
+    case ActivityStartReport::Kind::Expired:
+        LOG_DEBUG("[input%d] %s: %.1f dB peak, %.1f dB mean power, above %.1f dB for %d ms in %d block%s within %d ms (start after %d ms)",
+                  _index,
+                  report.kind == ActivityStartReport::Kind::Fired ? "Became active" : "No start",
+                  peak_db, power_db, threshold_db,
+                  static_cast<int>(std::lround(g.above_seconds * 1000.0)),
+                  g.blocks, g.blocks == 1 ? "" : "s",
+                  static_cast<int>(std::lround(g.span_seconds * 1000.0)),
+                  _start_after_ms.load(std::memory_order_relaxed));
+        break;
+    case ActivityStartReport::Kind::Ungated:
+        LOG_DEBUG("[input%d] Became active: %.1f dB peak, %.1f dB mean power, on its first block above %.1f dB (no start delay)",
+                  _index, peak_db, power_db, threshold_db);
+        break;
+    case ActivityStartReport::Kind::None:
+        break;
+    }
+}
+
 unsigned InputChannel::get_id_snapshot(int16_t* out, unsigned max_frames) const
 {
     std::lock_guard<std::mutex> lock(_id_mutex);
@@ -1322,10 +1378,13 @@ void InputChannel::process_thread_func()
         float silence_threshold_sample = 0.0f;
         bool  is_above_threshold = false;
         float track_change_silence_seconds = 0.0f;
+        ActivityStartReport start_report;
         bool should_capture = update_silence_state(peak_sample, frames_in, now,
                                                      silence_threshold_sample,
                                                      is_above_threshold,
-                                                     track_change_silence_seconds);
+                                                     track_change_silence_seconds,
+                                                     start_report);
+        log_activity_start(start_report, silence_threshold_sample);
 
         // ── Capture session start/stop transitions + track-gap detection ─────
         handle_session_edges(should_capture, peak_sample, silence_threshold_sample,
@@ -1495,13 +1554,15 @@ float InputChannel::update_metering(int frames_in)
 // handle_session_edges() and the status-snapshot update need, read exactly
 // once per iteration as today.
 //
-bool InputChannel::update_silence_state(float   peak_sample,
-                                         int     frames_in,
-                                         double  now,
-                                         float&  silence_threshold_sample,
-                                         bool&   is_above_threshold,
-                                         float&  track_change_silence_seconds)
+bool InputChannel::update_silence_state(float                peak_sample,
+                                         int                  frames_in,
+                                         double               now,
+                                         float&               silence_threshold_sample,
+                                         bool&                is_above_threshold,
+                                         float&               track_change_silence_seconds,
+                                         ActivityStartReport& start_report)
 {
+    start_report = ActivityStartReport{};
     // _silence_threshold_sample is published atomically by configure(), so
     // we only need to lock here to read silence_seconds and track_change_silence_seconds.
     int silence_seconds;
@@ -1514,9 +1575,15 @@ bool InputChannel::update_silence_state(float   peak_sample,
     }
     silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
 
-    // The gate's running total is only meaningful against one threshold
-    // and one setting; discard it when either changes.
-    bool gated = _activity_gated.load(std::memory_order_relaxed);
+    // The gate's running total is only meaningful against one threshold,
+    // one type and one Start after; discard it when any of them changes.
+    bool gated          = _activity_gated.load(std::memory_order_relaxed);
+    int  start_after_ms = _start_after_ms.load(std::memory_order_relaxed);
+    if (start_after_ms != _gate_prev_start_after_ms)
+    {
+        _activity_gate.set_required_seconds(static_cast<double>(start_after_ms) / 1000.0);
+        _gate_prev_start_after_ms = start_after_ms;
+    }
     if (gated != _gate_prev_enabled
         || silence_threshold_sample != _gate_prev_threshold_sample)
     {
@@ -1529,22 +1596,41 @@ bool InputChannel::update_silence_state(float   peak_sample,
                    && ((now - _last_above_threshold_time)
                        < static_cast<double>(silence_seconds));
 
+    // A window that ran out without starting is reported a second after it
+    // opened, not whenever the next loud block arrives.
+    if (gated && !was_active && _activity_gate.expire(now, start_report.gate))
+        start_report.kind = ActivityStartReport::Kind::Expired;
+
     // Plain float comparison (still no log10/trig on this hot path). An
     // active input is refreshed by any single block at the threshold; a
     // gated input that is not yet active must first accumulate enough
-    // above-threshold time.
+    // above-threshold time. Mean power is worked out only for a block the
+    // gate counts and for the block that makes an ungated input active.
     if (peak_sample >= silence_threshold_sample)
     {
+        double block_seconds = (_capture_rate_hz > 0)
+            ? static_cast<double>(frames_in) / static_cast<double>(_capture_rate_hz)
+            : 0.0;
         if (!gated || was_active || _capture_rate_hz <= 0)
         {
+            if (!was_active)
+            {
+                start_report.kind               = ActivityStartReport::Kind::Ungated;
+                start_report.gate               = ActivityGateReport{};
+                start_report.gate.above_seconds = block_seconds;
+                start_report.gate.span_seconds  = block_seconds;
+                start_report.gate.peak          = peak_sample;
+                start_report.gate.mean_square   = compute_mean_square(_pcm_in.data(), frames_in, 2);
+                start_report.gate.blocks        = 1;
+            }
             _last_above_threshold_time = now;
         }
-        else
+        else if (_activity_gate.on_block(now, block_seconds, peak_sample,
+                                         compute_mean_square(_pcm_in.data(), frames_in, 2),
+                                         start_report.gate))
         {
-            double block_seconds =
-                static_cast<double>(frames_in) / static_cast<double>(_capture_rate_hz);
-            if (_activity_gate.on_block(now, block_seconds))
-                _last_above_threshold_time = now;
+            start_report.kind = ActivityStartReport::Kind::Fired;
+            _last_above_threshold_time = now;
         }
     }
 

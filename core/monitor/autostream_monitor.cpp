@@ -719,6 +719,11 @@ std::string ControlServer::dispatch_command(const std::string& json_command,
         int raw_mps = json_get_int(json_command, "minimum_playback_seconds", -1);
         if (raw_mps >= 0)
             cfg.minimum_playback_seconds = raw_mps;
+        // start_after_ms is optional; -1 sentinel means "not provided", which
+        // keeps the default.
+        int raw_sa = json_get_int(json_command, "start_after_ms", -1);
+        if (raw_sa >= 0)
+            cfg.start_after_ms = raw_sa;
         return _monitor.api_configure_input(idx, cfg);
     }
     else if (type == "set_fifo")
@@ -1431,6 +1436,9 @@ static std::string validate_input_config(const InputConfig& cfg,
 
     if (cfg.minimum_playback_seconds < 0 || cfg.minimum_playback_seconds > 300)
         return "minimum_playback_seconds must be in the range [0, 300]";
+
+    if (cfg.start_after_ms < kStartAfterMinMs || cfg.start_after_ms > kStartAfterMaxMs)
+        return "start_after_ms must be in the range [30, 250]";
 
     return "";
 }

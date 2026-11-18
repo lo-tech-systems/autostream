@@ -101,6 +101,7 @@ struct InputConfig
     int         minimum_playback_seconds     = 30;      // minimum playback hold, seconds; 0 disables [0, 300]
     std::string input_type;                 // "turntable", "cd" or "line"; empty when the coordinator sent none
     bool        dynamic_rate_matching        = false;  // follow the delivered rate (see RateEstimator); off = fixed-rate behaviour
+    int         start_after_ms               = kStartAfterDefaultMs;  // activity gate requirement [30, 250]; ignored when ungated
 };
 
 // Boundary for a coordinator that sends no input_type: a silence threshold
@@ -3461,13 +3462,20 @@ private:
     // handle_session_edges() need, read exactly once per iteration as today.
     // peak_sample/silence_threshold_sample are linear amplitudes in
     // [0.0, 1.0], not int16-scale sample counts -- see compute_peak_sample().
-    // frames_in sizes the block for the activity gate.
-    bool update_silence_state(float   peak_sample,
-                               int     frames_in,
-                               double  now,
-                               float&  silence_threshold_sample,
-                               bool&   is_above_threshold,
-                               float&  track_change_silence_seconds);
+    // frames_in sizes the block for the activity gate. start_report says
+    // why the input became active on this block, or that a gate window
+    // closed without it; the caller logs it, since this method must not.
+    bool update_silence_state(float                peak_sample,
+                               int                  frames_in,
+                               double               now,
+                               float&               silence_threshold_sample,
+                               bool&                is_above_threshold,
+                               float&               track_change_silence_seconds,
+                               ActivityStartReport& start_report);
+
+    // Debug lines for an ActivityStartReport (nothing for Kind::None).
+    void log_activity_start(const ActivityStartReport& report,
+                            float silence_threshold_sample) const;
 
     // Capture session start/stop transitions (SRC resets incl. the ID-tap
     // reset, RepeatController notifications, output-mixer source
@@ -3540,6 +3548,13 @@ private:
                                int            n_frames,
                                int            n_channels) const;
 
+    // Mean power of the same samples, linear against full scale (a
+    // full-scale square wave is 1.0). Only for blocks the activity gate
+    // counts, and the block that makes an ungated input active.
+    double compute_mean_square(const int32_t* samples,
+                                int            n_frames,
+                                int            n_channels) const;
+
     // ── Identity ─────────────────────────────────────────────────────────────
     int         _index;
 
@@ -3594,6 +3609,7 @@ private:
     std::atomic<float> _silence_threshold_sample{0.0f};
     std::atomic<bool> _immediate_interrupt{true};   // resolved from input_type in configure(); read lock-free per block
     std::atomic<bool> _activity_gated{false};       // resolved from input_type in configure(); read lock-free per block
+    std::atomic<int>  _start_after_ms{kStartAfterDefaultMs};  // set by configure(); read lock-free per block
 
     // ── ALSA capture ─────────────────────────────────────────────────────────
     AlsaCapture _alsa;
@@ -3674,6 +3690,7 @@ private:
     ActivityGate _activity_gate;
     bool  _gate_prev_enabled          = false;
     float _gate_prev_threshold_sample = -1.0f;
+    int   _gate_prev_start_after_ms   = -1;
     // Negotiated capture rate, copied from the ALSA handle in start() before
     // the threads exist, so the process thread can size a block in seconds
     // without calling into AlsaCapture, whose accessors lock.

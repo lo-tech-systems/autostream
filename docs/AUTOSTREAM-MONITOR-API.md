@@ -143,7 +143,8 @@ Request:
   "track_change_silence_seconds":1.25,
   "minimum_playback_seconds":30,
   "input_type":"turntable",
-  "dynamic_rate_matching":false
+  "dynamic_rate_matching":false,
+  "start_after_ms":60
 }
 ```
 
@@ -193,13 +194,22 @@ Request fields:
     form reads as `false`
   - send it on every `configure_input`, because the call replaces the whole
     stored configuration
+- `start_after_ms`
+  - how much time at or above the silence threshold, within one second, a
+    gated input needs before it becomes active (see "Activity gate" below)
+  - valid range: `[30, 250]`
+  - default if omitted: `60`
+  - validated for every input, but used only by gated inputs (any
+    `input_type` other than `cd`)
+  - send it on every `configure_input`, because the call replaces the whole
+    stored configuration
 
 Important behavior:
 
 - if the input is stopped, all fields are applied
 - if the input is already running, every field except `device` is
-  runtime-tunable, including `minimum_playback_seconds` and
-  `dynamic_rate_matching`
+  runtime-tunable, including `minimum_playback_seconds`,
+  `dynamic_rate_matching` and `start_after_ms`
 - changing `device` while running is rejected; the caller must stop the input
   first
 
@@ -218,6 +228,7 @@ Typical errors:
 - `silence_seconds must be in the range [1, 3600]`
 - `track_change_silence_seconds must be in the range [0.5, 5.0]`
 - `minimum_playback_seconds must be in the range [0, 300]`
+- `start_after_ms must be in the range [30, 250]`
 - `stop the input before changing device`
 
 #### Minimum playback hold
@@ -246,7 +257,7 @@ recording of the thump) well before real music arrives.
   1.25 s above it. Either way the window is bounded by a 5 s wall clock.
   On a gated input the capture-start edge that arms the probation is the
   activity gate's own firing, so the probation begins after the gate's
-  60 ms and the two sustain tests do not overlap; the probation itself
+  `start_after_ms` and the two sustain tests do not overlap; the probation itself
   keeps using the raw per-block flag.
   If the audio does not sustain within that window, the probation expires
   silently -- replay never stopped, nothing was freed, no status field
@@ -277,15 +288,32 @@ What the hold does **not** affect:
 
 For an input with an `input_type` other than `cd`, the input becomes active
 (its `silent` flag goes false and a capture session can start) only once
-blocks at or above the silence threshold have added up to 60 ms within one
-second. An unrecognised `input_type` is treated like `line`. The blocks need
-not be consecutive, and a below-threshold block does not reset the total.
-Once active, any single block at the threshold refreshes the activity as
-before. A `cd` input starts on the first block at the threshold, and so does
-an input with no `input_type`, which is not gated. The track-gap detector,
-the interrupt probation and the recorder's onset gate keep using the raw
-per-block flag. The running total is discarded when the threshold or the
-type changes and when the input stops.
+blocks at or above the silence threshold have added up to `start_after_ms`
+(default 60 ms) within one second. Blocks are about 21 ms long (1024 frames
+at 48 kHz), so the time is reached at the end of the block that passes it:
+60 ms needs three blocks. An unrecognised `input_type` is treated like
+`line`. The blocks need not be consecutive, and a below-threshold block does
+not reset the total. Once active, any single block at the threshold
+refreshes the activity as before. A `cd` input starts on the first block at
+the threshold, and so does an input with no `input_type`, which is not
+gated. The track-gap detector, the interrupt probation and the recorder's
+onset gate keep using the raw per-block flag. The running total is
+discarded when the threshold, the type or `start_after_ms` changes and when
+the input stops.
+
+At debug log level the monitor says why an input became active, and when a
+window closed without a start (levels in dB against full scale; mean power
+is the counted blocks' average power, so a full-scale sine reads -3 dB):
+
+```
+[input1] Became active: -32.0 dB peak, -41.3 dB mean power, above -30.0 dB for 64 ms in 3 blocks within 430 ms (start after 60 ms)
+[input1] No start: -27.0 dB peak, -44.0 dB mean power, above -30.0 dB for 21 ms in 1 block within 21 ms (start after 60 ms)
+[input1] Became active: -40.1 dB peak, -52.3 dB mean power, on its first block above -60.0 dB (no start delay)
+```
+
+The last form is for an input that is not gated. "Became active" means the
+input counts as playing; the capture session itself is logged at INFO level
+when it starts.
 
 ### Silence-timeout tail trim
 

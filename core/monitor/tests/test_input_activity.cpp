@@ -15,6 +15,7 @@
 // Header-only, no external dependencies.
 #include "autostream_input_activity.h"
 
+#include <cmath>
 #include <cstdio>
 
 // ---------------------------------------------------------------------------
@@ -34,6 +35,18 @@ static int g_failed = 0;
 } while (0)
 
 static const float kBoundary = -55.0f;
+
+// Feeds one block with a fixed level, for the tests that only count time.
+static bool feed(ActivityGate& gate, double now, double block_seconds)
+{
+    ActivityGateReport r;
+    return gate.on_block(now, block_seconds, 0.5f, 0.01, r);
+}
+
+static bool near(double a, double b)
+{
+    return std::fabs(a - b) < 1e-9;
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -80,58 +93,58 @@ static void test_empty_type_follows_boundary()
 static void test_one_block_does_not_fire()
 {
     ActivityGate gate;
-    CHECK(!gate.on_block(1.0, 0.021), "a single block is not enough");
+    CHECK(!feed(gate,1.0, 0.021), "a single block is not enough");
 }
 
 static void test_three_consecutive_blocks_fire_on_third()
 {
     ActivityGate gate;
-    CHECK(!gate.on_block(1.000, 0.021), "first block: 21 ms");
-    CHECK(!gate.on_block(1.021, 0.021), "second block: 42 ms");
-    CHECK(gate.on_block(1.042, 0.021), "third block: 63 ms completes it");
+    CHECK(!feed(gate,1.000, 0.021), "first block: 21 ms");
+    CHECK(!feed(gate,1.021, 0.021), "second block: 42 ms");
+    CHECK(feed(gate,1.042, 0.021), "third block: 63 ms completes it");
 }
 
 static void test_spread_blocks_within_a_second_fire()
 {
     ActivityGate gate;
-    CHECK(!gate.on_block(1.0, 0.021), "first block");
-    CHECK(!gate.on_block(1.4, 0.021), "second block, not consecutive");
-    CHECK(gate.on_block(1.9, 0.021), "third block, still inside one second");
+    CHECK(!feed(gate,1.0, 0.021), "first block");
+    CHECK(!feed(gate,1.4, 0.021), "second block, not consecutive");
+    CHECK(feed(gate,1.9, 0.021), "third block, still inside one second");
 }
 
 static void test_window_restarts_after_a_second()
 {
     ActivityGate gate;
-    CHECK(!gate.on_block(1.0, 0.021), "opens the window");
-    CHECK(!gate.on_block(1.6, 0.021), "second block");
-    CHECK(!gate.on_block(2.2, 0.021), "1.2 s after the anchor: window restarts");
-    CHECK(!gate.on_block(2.4, 0.021), "second block of the new window");
-    CHECK(gate.on_block(2.6, 0.021), "third block of the new window fires");
+    CHECK(!feed(gate,1.0, 0.021), "opens the window");
+    CHECK(!feed(gate,1.6, 0.021), "second block");
+    CHECK(!feed(gate,2.2, 0.021), "1.2 s after the anchor: window restarts");
+    CHECK(!feed(gate,2.4, 0.021), "second block of the new window");
+    CHECK(feed(gate,2.6, 0.021), "third block of the new window fires");
 }
 
 static void test_large_block_then_small_fires_on_second()
 {
     ActivityGate gate;
-    CHECK(!gate.on_block(1.0, 0.046), "a 46 ms block alone is short");
-    CHECK(gate.on_block(1.046, 0.021), "67 ms in total fires");
+    CHECK(!feed(gate,1.0, 0.046), "a 46 ms block alone is short");
+    CHECK(feed(gate,1.046, 0.021), "67 ms in total fires");
 }
 
 static void test_fires_then_starts_over()
 {
     ActivityGate gate;
-    gate.on_block(1.000, 0.021);
-    gate.on_block(1.021, 0.021);
-    CHECK(gate.on_block(1.042, 0.021), "fires on the third block");
-    CHECK(!gate.on_block(1.063, 0.021), "a single block after a fire starts over");
+    feed(gate,1.000, 0.021);
+    feed(gate,1.021, 0.021);
+    CHECK(feed(gate,1.042, 0.021), "fires on the third block");
+    CHECK(!feed(gate,1.063, 0.021), "a single block after a fire starts over");
 }
 
 static void test_reset_discards_partial_total()
 {
     ActivityGate gate;
-    gate.on_block(1.000, 0.021);
-    gate.on_block(1.021, 0.021);
+    feed(gate,1.000, 0.021);
+    feed(gate,1.021, 0.021);
     gate.reset();
-    CHECK(!gate.on_block(1.042, 0.021), "total was discarded by reset()");
+    CHECK(!feed(gate,1.042, 0.021), "total was discarded by reset()");
 }
 
 static void test_gating_by_type()
@@ -147,35 +160,123 @@ static void test_slow_click_train_never_fires()
 {
     ActivityGate gate;
     for (int i = 0; i < 6; ++i)
-        CHECK(!gate.on_block(1.0 + 1.5 * i, 0.021),
+        CHECK(!feed(gate,1.0 + 1.5 * i, 0.021),
               "one block every 1.5 s never fires");
 }
 
 static void test_exactly_required_seconds_fires()
 {
     ActivityGate gate;
-    CHECK(!gate.on_block(1.0, 0.030), "30 ms is short");
-    CHECK(gate.on_block(1.1, 0.030), "exactly 60 ms in total fires");
+    CHECK(!feed(gate,1.0, 0.030), "30 ms is short");
+    CHECK(feed(gate,1.1, 0.030), "exactly 60 ms in total fires");
 }
 
 static void test_block_exactly_one_second_later_counts()
 {
     ActivityGate gate;
-    CHECK(!gate.on_block(1.0, 0.030), "opens the window");
-    CHECK(gate.on_block(2.0, 0.030), "a block exactly one second on is still counted");
+    CHECK(!feed(gate,1.0, 0.030), "opens the window");
+    CHECK(feed(gate,2.0, 0.030), "a block exactly one second on is still counted");
 }
 
 static void test_block_just_past_one_second_restarts()
 {
     ActivityGate gate;
-    CHECK(!gate.on_block(1.0, 0.030), "opens the window");
-    CHECK(!gate.on_block(2.0001, 0.030), "a block just past one second restarts the count");
+    CHECK(!feed(gate,1.0, 0.030), "opens the window");
+    CHECK(!feed(gate,2.0001, 0.030), "a block just past one second restarts the count");
 }
 
 static void test_single_long_block_fires_alone()
 {
     ActivityGate gate;
-    CHECK(gate.on_block(1.0, 0.064), "one block of 60 ms or more fires by itself");
+    CHECK(feed(gate,1.0, 0.064), "one block of 60 ms or more fires by itself");
+}
+
+static void test_start_after_constants()
+{
+    CHECK(kStartAfterMinMs == 30, "the shortest Start after is 30 ms");
+    CHECK(kStartAfterMaxMs == 250, "the longest Start after is 250 ms");
+    CHECK(kStartAfterDefaultMs == 60, "the default Start after is 60 ms");
+    ActivityGate gate;
+    CHECK(near(gate.required_seconds(), 0.060), "a new gate needs the default 60 ms");
+}
+
+static void test_shortest_setting_fires_on_second_block()
+{
+    ActivityGate gate;
+    gate.set_required_seconds(0.030);
+    CHECK(!feed(gate, 1.000, 0.021), "21 ms is short of 30 ms");
+    CHECK(feed(gate, 1.021, 0.021), "42 ms reaches 30 ms");
+}
+
+static void test_longest_setting_fires_on_twelfth_block()
+{
+    ActivityGate gate;
+    gate.set_required_seconds(0.250);
+    for (int i = 0; i < 11; ++i)
+        CHECK(!feed(gate, 1.0 + 0.021 * i, 0.021), "under 250 ms does not fire");
+    CHECK(feed(gate, 1.0 + 0.021 * 11, 0.021), "the twelfth block (252 ms) fires");
+}
+
+static void test_setting_change_discards_partial_total()
+{
+    ActivityGate gate;
+    feed(gate, 1.000, 0.021);
+    feed(gate, 1.021, 0.021);
+    gate.set_required_seconds(0.060);
+    CHECK(!feed(gate, 1.042, 0.021), "a new requirement starts the count again");
+}
+
+static void test_fire_reports_what_it_counted()
+{
+    ActivityGate gate;
+    ActivityGateReport r;
+    CHECK(!gate.on_block(1.000, 0.021, 0.25f, 0.010, r), "first block");
+    CHECK(!gate.on_block(1.021, 0.021, 0.50f, 0.040, r), "second block");
+    CHECK(gate.on_block(1.100, 0.021, 0.10f, 0.004, r), "third block fires");
+    CHECK(r.blocks == 3, "three blocks counted");
+    CHECK(near(r.above_seconds, 0.063), "63 ms above the threshold");
+    CHECK(near(r.span_seconds, 0.121), "the window spans from the start of its first block");
+    CHECK(r.peak == 0.50f, "the highest block peak");
+    CHECK(near(r.mean_square, 0.018), "mean power weighted by block time");
+}
+
+static void test_expire_waits_for_the_window()
+{
+    ActivityGate gate;
+    ActivityGateReport r;
+    CHECK(!gate.expire(1.0, r), "nothing open, nothing to report");
+    gate.on_block(1.000, 0.021, 0.30f, 0.020, r);
+    CHECK(!gate.expire(1.5, r), "the window is still open half a second on");
+    CHECK(!gate.expire(2.0, r), "exactly one second on is still inside the window");
+}
+
+static void test_expire_reports_an_unfinished_window_once()
+{
+    ActivityGate gate;
+    ActivityGateReport r;
+    gate.on_block(1.000, 0.021, 0.30f, 0.020, r);
+    gate.on_block(1.400, 0.021, 0.40f, 0.040, r);
+    CHECK(gate.expire(2.01, r), "an unfinished window is reported after a second");
+    CHECK(r.blocks == 2, "two blocks counted");
+    CHECK(near(r.above_seconds, 0.042), "42 ms above the threshold");
+    CHECK(near(r.span_seconds, 0.421), "span to the end of the last counted block");
+    CHECK(r.peak == 0.40f, "the highest block peak");
+    CHECK(near(r.mean_square, 0.030), "mean power of the counted blocks");
+    CHECK(!gate.expire(3.5, r), "it is reported only once");
+    CHECK(!feed(gate, 3.6, 0.021), "the next block starts a fresh count");
+}
+
+static void test_expire_after_a_fire_or_reset_reports_nothing()
+{
+    ActivityGate gate;
+    ActivityGateReport r;
+    feed(gate, 1.000, 0.021);
+    feed(gate, 1.021, 0.021);
+    CHECK(feed(gate, 1.042, 0.021), "fires");
+    CHECK(!gate.expire(5.0, r), "a window that fired is not reported again");
+    feed(gate, 6.0, 0.021);
+    gate.reset();
+    CHECK(!gate.expire(8.0, r), "a reset window is not reported");
 }
 
 int main()
@@ -197,6 +298,14 @@ int main()
     test_block_exactly_one_second_later_counts();
     test_block_just_past_one_second_restarts();
     test_single_long_block_fires_alone();
+    test_start_after_constants();
+    test_shortest_setting_fires_on_second_block();
+    test_longest_setting_fires_on_twelfth_block();
+    test_setting_change_discards_partial_total();
+    test_fire_reports_what_it_counted();
+    test_expire_waits_for_the_window();
+    test_expire_reports_an_unfinished_window_once();
+    test_expire_after_a_fire_or_reset_reports_nothing();
 
     std::fprintf(stdout, "%s — %d/%d tests passed\n",
                  g_failed ? "FAIL" : "PASS",
