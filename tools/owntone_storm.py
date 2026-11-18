@@ -12,8 +12,10 @@ so it can be copied to a host on its own.
         [--repeat N] [--seed N] [--poll-hz 5]
         [--fifo PATH] [--rate HZ] [--bits 16|32] [--no-tone]
         [--firewall NAME=IP ...] [--firewall-tool auto|iptables|nft]
-        [--pin-speaker NAME] [--pair NAME] [--pair-members 2]
-        [--duration-s 600] [--settle-s 3] [--teardown-drop]
+        [--pin-speaker NAME] [--pin-group NAME] [--wrong-pin 0000] [--interactive-pin]
+        [--pair NAME] [--pair-members 2]
+        [--mode-speaker NAME] [--modes raop,airplay2] [--mode-every-s 3]
+        [--duration-s 600] [--minutes 60] [--settle-s 3] [--teardown-drop] [--allow-restart]
         [--put-p99-ms 200] [--put-max-ms 1000] [--get-p99-ms 200]
         [--stop-bound-s 2.0] [--start-bound-s 90] [--rss-growth-mib 10]
         [--log journal|PATH] [--unit owntone] [--asan-glob GLOB]
@@ -80,6 +82,48 @@ Scenarios:
   S20 Hold --pair, then select the first --speakers speaker on the same
       line. It must stream and log its anchor point reached, while the
       pair stays held and logs no resume flush. --repeat times.
+  S5  --mode-speaker streaming; every --mode-every-s its mode is switched
+      to the next of --modes, and the first --speakers speaker is switched
+      on or off in between, --repeat switches. Each switch must end
+      streaming in the new mode, and a switch to raop must log the old
+      session's TEARDOWN before the RAOP session's ANNOUNCE (the AirPlay
+      log at debug level).
+  S8  The --speakers streaming; the speakers' "update" request is sent
+      twice a second and the speaker list read five times a second while
+      the tone stops and starts every 1 to 3 s, --repeat times. No reply
+      may take longer than a second.
+  S10 S1's select burst, and 0.5 to 5 s into it the daemon is sent SIGTERM
+      (systemctl kill -s TERM --unit) and started again, --repeat times.
+      It must exit within 10 s and come back. Only with --allow-restart.
+  S11 S1, S2, S3, S4 and S9 in turn, with S5, S6, S7 and S8 too when their
+      options are given, for --minutes. The daemon's peak memory is
+      sampled after each loop and must not grow past --rss-growth-mib.
+  S12 Select bursts while the tone stops and starts every 0.5 to 3 s:
+      after each start of the tone every speaker that was selected must
+      stream again. Two readers read the list throughout, --repeat times.
+  S13 avahi-daemon restarted, or (with --firewall, every other time) the
+      speaker's mDNS traffic blocked for --settle-s, in the middle of a
+      select burst and again of a deselect burst, --repeat times. Every
+      start and stop must end and every speaker (and --pair) must be
+      listed again.
+  S14 The PIN storm on --pin-speaker: two selects at once must give one
+      connecting and one password; selects while it waits for a PIN; a
+      wrong PIN (--wrong-pin) sent with a select must give password with
+      pin_invalid, connecting, then password with pin_required; a wrong
+      PIN while the --speakers start; --pin-group, an Apple TV group whose
+      leader wants a PIN, must start no follower; with --interactive-pin
+      the PIN on the screen is asked for and must make the speaker stream
+      without another select. No connecting may follow a password unless
+      the script's own select or PIN came after that password, or the
+      password was a wrong PIN's.
+
+When the daemon sends output_state events, every scenario also checks the
+event stream: each speaker's own phases (member_state) must not go from
+stopped to connected or streaming without connecting between, nor from
+stopping to connecting or failed without stopped between; every event
+carries member_state; each member of --pair sends its own events; and each
+accepted select of a speaker that was not already live shows connecting
+within a second of its answer.
 
 Log lines are counted with these patterns (NAME: what it matches), which
 --log-pattern NAME=REGEX replaces or adds to; a group named "name" in a
@@ -91,6 +135,8 @@ pattern captures the speaker's name:
   resume_flush     ...: Sending FLUSHBUFFERED (resume) to '...'
   anchor           SETRATEANCHORTIME accepted by '...' after N ms
   anchor_reached   Anchor point reached for '...'
+  teardown_sent    Stopping '...' with a TEARDOWN, or ...: Sending TEARDOWN to '...'
+  raop_start       ...: Sending ANNOUNCE to '...'
 
 The resume flush is a debug line, so S19 needs the daemon's AirPlay log at
 debug level. --expect-log NAME=COUNT checks a pattern's count over the whole
@@ -162,9 +208,13 @@ from dataclasses import field as dc_field
 DEFAULT_BASE = "http://localhost:3689"
 DEFAULT_FIFO = "/run/autostream-pipes/autostream.fifo"
 DEFAULT_ASAN_GLOB = "/var/log/owntone-asan*"
-SCENARIOS = ("S1", "S2", "S3", "S4", "S6", "S7", "S9", "S15", "S16", "S17", "S18", "S19", "S20")
+SCENARIOS = ("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9", "S10", "S11", "S12", "S13", "S14",
+             "S15", "S16", "S17", "S18", "S19", "S20")
 PAIR_SCENARIOS = ("S15", "S16", "S17", "S19", "S20")
 ROUND_SCENARIOS = ("S1", "S2", "S6", "S7", "S9")
+TONE_SCENARIOS = ("S8", "S12")
+# What S11 runs in each loop, each one only when its options are given
+SOAK_PASSES = ("S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8", "S9")
 
 EXIT_OK = 0
 EXIT_FAIL = 1
@@ -183,6 +233,14 @@ REHOLD_DELAYS_MS = (0, 20, 100)
 RESELECT_AFTER_S = (1.0, 5.0)
 FIELD_DELAY_S = 0.1
 HOLD_EVERY_S = (1.0, 4.0)
+TONE_GAP_S = (1.0, 3.0)
+TONE_GAP_SHORT_S = (0.5, 3.0)
+SIGTERM_AFTER_S = (0.5, 5.0)
+DAEMON_EXIT_S = 10.0
+CONNECTING_WITHIN_S = 1.0
+UPDATE_HZ = 2.0
+REPLY_STALL_MS = 1000.0
+MDNS_GROUP = "224.0.0.251"
 
 LOG_PATTERNS = {
     "pause": r"Paused '(?P<name>.+?)' in place after",
@@ -191,6 +249,8 @@ LOG_PATTERNS = {
     "resume_flush": r"Sending FLUSHBUFFERED \(resume\) to '(?P<name>.+)'\s*$",
     "anchor": r"SETRATEANCHORTIME accepted by '(?P<name>.+?)' after \d+ ms",
     "anchor_reached": r"Anchor point reached for '(?P<name>.+?)':",
+    "teardown_sent": r"(?:Stopping '(?=.+?' with a TEARDOWN)|: Sending TEARDOWN to ')(?P<name>[^']+)'",
+    "raop_start": r": Sending ANNOUNCE to '(?P<name>[^']+)'",
 }
 
 FIREWALLED_REASONS = ("unreachable", "timeout")
@@ -333,6 +393,110 @@ def pause_after_anchor(sequence, members: int) -> tuple:
     if not once_per_member(paused, members):
         return False, f"pause lines per member: {paused or 'none'}"
     return True, ""
+
+
+# --- the event stream ------------------------------------------------------------
+
+def illegal_transitions(states) -> list:
+    """What is wrong with one speaker's own phases, in the order reported:
+    connected or streaming straight after stopped (a start always shows
+    connecting first), and a stop that ends otherwise than stopped (no
+    connecting or failed while stopping)."""
+    problems = []
+    stopped = stopping = False
+    for state in states:
+        if state in ("connected", "streaming") and stopped:
+            problems.append(f"{state} after stopped without connecting")
+        if stopping and state in ("connecting", "failed"):
+            problems.append(f"{state} while stopping, before stopped")
+        if state == "stopped":
+            stopped, stopping = True, False
+        elif state == "connecting":
+            stopped = False
+        elif state == "stopping":
+            stopping = True
+        elif state == "failed":
+            stopped = stopping = False
+    return problems
+
+
+def member_phases(events) -> dict:
+    """(row id, member id) -> that speaker's own phases in order, from
+    output_state messages; a message without member_state counts its row
+    state."""
+    out: dict = {}
+    for _, msg in events:
+        speaker = msg.get("speaker") or {}
+        row_id = str(speaker.get("id", ""))
+        member = str(speaker.get("member_id") or row_id)
+        state = msg.get("member_state") or msg.get("state")
+        out.setdefault((row_id, member), []).append(normalise_state(state))
+    return out
+
+
+def row_events(events, row_id: str, since: float = -math.inf) -> list:
+    """(time, row state, reason, member id, member state) of one row's
+    output_state messages from *since*."""
+    out = []
+    for t, msg in events:
+        speaker = msg.get("speaker") or {}
+        if str(speaker.get("id", "")) != str(row_id) or t < since:
+            continue
+        out.append((t, normalise_state(msg.get("state")), msg.get("reason") or "none",
+                    str(speaker.get("member_id") or row_id), normalise_state(msg.get("member_state")
+                                                                         or msg.get("state"))))
+    return out
+
+
+def connecting_seen(row_evs, sent: float, replied: float, within_s: float = CONNECTING_WITHIN_S):
+    """When the row's first connecting after *sent* came, and whether that
+    was within *within_s* of the answer at *replied*: (ok, time or None)."""
+    for t, state, _, _, member_state in row_evs:
+        if t >= sent and "connecting" in (state, member_state):
+            return t <= replied + within_s, t
+    return False, None
+
+
+def wrong_pin_sequence(row_evs) -> bool:
+    """A wrong PIN sent with a select: password with pin_invalid, then
+    connecting, then password with pin_required, in that order."""
+    step = 0
+    for _, state, reason, _, _ in row_evs:
+        if step == 0 and state == "password" and reason == "pin_invalid":
+            step = 1
+        elif step == 1 and state == "connecting":
+            step = 2
+        elif step == 2 and state == "password" and reason == "pin_required":
+            return True
+    return False
+
+
+def automatic_connects(row_evs, actions) -> list:
+    """The times of connecting events that follow a password the script did
+    not answer: no select or PIN of the script was being answered after that
+    password and sent before the connecting. *actions* are (sent, replied)
+    pairs. A password for a wrong PIN is followed by the start the PIN's
+    select asked for, which is not automatic."""
+    out = []
+    last_password = None
+    previous = None
+    for t, state, reason, _, _ in row_evs:
+        if state == "password":
+            last_password = (t, reason)
+        elif state == "connecting" and previous == "password" and last_password is not None:
+            since, why = last_password
+            answered = any(sent <= t and (replied is None or replied >= since) for sent, replied in actions)
+            if why != "pin_invalid" and not answered:
+                out.append(t)
+        previous = state
+    return out
+
+
+def follower_connects(row_evs, row_id: str, until: float = math.inf) -> list:
+    """The times a member other than the row's own device read connecting
+    before *until*."""
+    return [t for t, _, _, member, member_state in row_evs
+            if member != str(row_id) and member_state == "connecting" and t < until]
 
 
 # --- log lines -----------------------------------------------------------------
@@ -580,6 +744,11 @@ class Events:
 
     def has(self, capability: str) -> bool:
         return capability in self.capabilities
+
+    def output_events(self) -> list:
+        """(time, message) of every output_state event so far."""
+        return [(t, m) for t, m in list(self.messages)
+                if m.get("type") == "event" and m.get("kind") == "output_state"]
 
     def _open(self) -> None:
         self._sock = self._connect()
@@ -874,6 +1043,8 @@ class Tone:
         self.short_writes = 0
 
     def start(self) -> None:
+        """Open the pipe and start writing; also after a stop."""
+        self._stop.clear()
         end = time.monotonic() + self.open_wait_s
         while True:
             try:
@@ -917,14 +1088,16 @@ class Tone:
 
 
 class Firewall:
-    """Drops all traffic to and from the given addresses while in use.
-    Rules are added in order and removed in reverse, also when the block
-    is left by an exception or Ctrl-C."""
+    """Drops all traffic to and from the given addresses while in use, or
+    with *mdns_only* only the mDNS announcements they send. Rules are added
+    in order and removed in reverse, also when the block is left by an
+    exception or Ctrl-C."""
 
     def __init__(self, addresses, tool: str = "auto", dry_run: bool = False,
-                 run=subprocess.run, which=None, euid=None, out=print):
+                 run=subprocess.run, which=None, euid=None, out=print, mdns_only: bool = False):
         self.addresses = list(addresses)
         self.dry_run = dry_run
+        self.mdns_only = mdns_only
         self._run = run
         self._out = out
         euid = os.geteuid() if euid is None else euid
@@ -942,6 +1115,9 @@ class Firewall:
         if self.tool == "iptables":
             for ip in self.addresses:
                 exe = "ip6tables" if ":" in ip else "iptables"
+                if self.mdns_only:
+                    cmds.append([exe, "-I", "INPUT", "-s", ip, "-d", MDNS_GROUP, "-j", "DROP"])
+                    continue
                 cmds.append([exe, "-I", "OUTPUT", "-d", ip, "-j", "DROP"])
                 cmds.append([exe, "-I", "INPUT", "-s", ip, "-j", "DROP"])
         else:
@@ -952,6 +1128,10 @@ class Firewall:
                          "{ type filter hook input priority 0 ; }"])
             for ip in self.addresses:
                 family = "ip6" if ":" in ip else "ip"
+                if self.mdns_only:
+                    cmds.append(["nft", "add", "rule", "inet", NFT_TABLE, "in", family, "saddr", ip,
+                                 family, "daddr", MDNS_GROUP, "drop"])
+                    continue
                 cmds.append(["nft", "add", "rule", "inet", NFT_TABLE, "out", family, "daddr", ip, "drop"])
                 cmds.append(["nft", "add", "rule", "inet", NFT_TABLE, "in", family, "saddr", ip, "drop"])
         return [self._prefix + c for c in cmds]
@@ -1019,6 +1199,33 @@ class Busy:
             self.api.put_output(self.row_id, {"selected": True}, kind="busy")
             if time.monotonic() - began < 0.2:
                 self._stop.wait(0.2)
+
+
+class Updater:
+    """Sends the daemon's "update" request at *hz* on a thread."""
+
+    def __init__(self, api: Api, hz: float = UPDATE_HZ):
+        self.api = api
+        self.hz = hz
+        self._stop = threading.Event()
+        self._thread = None
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name="storm-update", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread:
+            self._thread.join(self.api.timeout + 2.0)
+
+    def _loop(self) -> None:
+        period = 1.0 / self.hz
+        while not self._stop.is_set():
+            began = time.monotonic()
+            self.api.put_update()
+            self._stop.wait(max(0.0, period - (time.monotonic() - began)))
 
 
 class Readers:
@@ -1290,8 +1497,16 @@ def requirement_error(args, firewall) -> str | None:
     scenario = args.scenario
     if scenario in ("S6", "S7", "S18") and not firewall:
         return f"{scenario} needs --firewall NAME=IP"
-    if scenario == "S6" and not args.pin_speaker:
-        return "S6 needs --pin-speaker NAME"
+    if scenario in ("S6", "S14") and not args.pin_speaker:
+        return f"{scenario} needs --pin-speaker NAME"
+    if scenario == "S5" and not args.mode_speaker:
+        return "S5 needs --mode-speaker NAME"
+    if scenario == "S10" and not args.allow_restart:
+        return "S10 restarts the daemon and runs only with --allow-restart"
+    if scenario in TONE_SCENARIOS and args.no_tone:
+        return f"{scenario} starts and stops the tone, so it cannot run with --no-tone"
+    if scenario in ("S10", "S12") and not [n for n in (args.speakers or "").split(",") if n.strip()]:
+        return f"{scenario} needs --speakers"
     if scenario in PAIR_SCENARIOS and not args.pair:
         return f"{scenario} needs --pair NAME"
     if scenario in ("S15", "S20") and not [n for n in (args.speakers or "").split(",") if n.strip()]:
@@ -1301,13 +1516,29 @@ def requirement_error(args, firewall) -> str | None:
     return None
 
 
+def soak_passes(args, firewall) -> list:
+    """The scenarios S11 runs in each loop: those whose options were given."""
+    out = []
+    for name in SOAK_PASSES:
+        probe = argparse.Namespace(**{**vars(args), "scenario": name})
+        if requirement_error(probe, firewall) is None:
+            out.append(name)
+    return out
+
+
 class Storm:
     """Runs one scenario and judges it. The parts are passed in so a test
     can replace the daemon, the pipe and the firewall."""
 
     def __init__(self, args, api: Api, events: Events | None, poller: Poller, probe: Probe,
-                 tone: Tone | None, firewall: Firewall | None, out=print):
+                 tone: Tone | None, firewall: Firewall | None, out=print, run=subprocess.run, ask=input):
         self.args = args
+        self._run_cmd = run
+        self.ask = ask
+        # The scenario whose step is running: S11 runs others in turn
+        self._current = args.scenario
+        self._exits: list = []          # S10: (pid known, exited in time, detail) per SIGTERM
+        self._restarts = 0
         self.api = api
         self.events = events
         self.poller = poller
@@ -1380,10 +1611,15 @@ class Storm:
         self.patterns = LogPatterns(self.args.log_pattern)
         self.expectations = parse_expectations(self.args.expect_log)
         wanted = [(n, "burst", None) for n in names]
-        fw_role = "busy" if self.args.scenario == "S7" else "firewalled"
+        # S13 blocks only the mDNS of its --firewall speaker, which plays as the others do
+        fw_role = {"S7": "busy", "S13": "burst"}.get(self.args.scenario, "firewalled")
         wanted += [(n, fw_role, ip) for n, ip in firewall]
-        if self.args.scenario == "S6":
+        if self.args.scenario in ("S6", "S14") or (self.args.scenario == "S11" and "S6" in self._passes(firewall)):
             wanted.append((self.args.pin_speaker, "pin", None))
+        if self.args.scenario == "S14" and self.args.pin_group:
+            wanted.append((self.args.pin_group, "pin_group", None))
+        if self.args.mode_speaker and self.args.scenario in ("S5", "S11"):
+            wanted.append((self.args.mode_speaker, "mode", None))
         if self.args.pair:
             wanted.append((self.args.pair, "pair", None))
         # A speaker named twice takes its last role: a firewalled or PIN
@@ -1410,8 +1646,8 @@ class Storm:
         stack.append(self.poller.stop)
         stack.append(self._deselect_all)
         self._settle_selected(outputs)
-        # S18 raises its firewall only while it means to, once per cycle
-        if self.firewall is not None and self.args.scenario != "S18":
+        # S13 and S18 raise their firewall only while they mean to
+        if self.firewall is not None and self.args.scenario not in ("S13", "S18"):
             self.firewall.__enter__()
             stack.append(lambda: self.firewall.__exit__(None, None, None))
         if self.tone is not None:
@@ -1428,6 +1664,11 @@ class Storm:
             self._busy.start()
             stack.append(self._busy.stop)
             time.sleep(1.0)
+
+    def _passes(self, firewall=None) -> list:
+        if firewall is None:
+            firewall = parse_firewall(self.args.firewall)
+        return soak_passes(self.args, firewall)
 
     def _settle_selected(self, outputs) -> None:
         """Deselect any of our speakers that is already selected, so every
@@ -1476,7 +1717,7 @@ class Storm:
         self.rng.shuffle(ops)
         # S9's hold and mute requests are ordered here, so the seed fixes them
         orders = {}
-        if selected and self.args.scenario == "S9":
+        if selected and self._current == "S9":
             orders = {id(op): self._field_order() for op in ops}
         barrier = threading.Barrier(len(ops))
         extra: list = []
@@ -1796,6 +2037,333 @@ class Storm:
             self._wait_row(pair, lambda r: not row_held(r), settle)
             time.sleep(settle)
 
+    # --- the concurrency scenarios ---
+
+    def _privileged(self, cmd: list):
+        """Run a system command, through sudo when not root; a failure is a
+        setup error."""
+        euid = os.geteuid() if hasattr(os, "geteuid") else 0
+        full = cmd if euid == 0 else ["sudo", "-n", *cmd]
+        result = self._run_cmd(full, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise SetupError(f"{' '.join(full)} failed: {(result.stderr or '').strip()}")
+        return result
+
+    def _wait_events(self, row_id: str, since: float, test, timeout: float) -> bool:
+        """Whether *test* held for the row's output_state events from *since*
+        within *timeout*."""
+        end = time.monotonic() + timeout
+        while True:
+            if test(row_events(self.events.output_events(), row_id, since)):
+                return True
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.05)
+
+    def _wait_password(self, row_id: str, since: float, timeout: float):
+        """The time of the row's first password event from *since*, or None."""
+        found = []
+
+        def seen(evs):
+            found[:] = [t for t, state, *_ in evs if state == "password"][:1]
+            return bool(found)
+
+        return found[0] if self._wait_events(row_id, since, seen, timeout) else None
+
+    def _wait_listed(self, speakers, timeout: float) -> set:
+        """The speakers still missing from the list after waiting up to
+        *timeout* for a read that lists them all."""
+        end = time.monotonic() + timeout
+        missing = {s.row_id for s in speakers}
+        while True:
+            outputs = self.api.get_outputs(kind="check")
+            if outputs is not None:
+                listed = {str(r.get("id")) for r in outputs}
+                missing = {s.row_id for s in speakers} - listed
+                if not missing:
+                    return missing
+            if time.monotonic() >= end:
+                return missing
+            time.sleep(0.2)
+
+    def _burst_in_background(self, speakers, selected: bool):
+        """A burst on a thread of its own: (thread, list its ops land in)."""
+        ops: list = []
+        t = threading.Thread(target=lambda: ops.extend(self._burst(speakers, selected)), daemon=True)
+        t.start()
+        return t, ops
+
+    def _run_s5(self) -> None:
+        s = next(sp for sp in self.speakers if sp.role == "mode")
+        other = next(iter(self._plain()), None)
+        modes = [m.strip() for m in self.args.modes.split(",") if m.strip()]
+        self._start_wait(s)
+        other_on = False
+        for i in range(self.args.repeat):
+            mode = modes[i % len(modes)]
+            began = time.monotonic()
+            self._new_lines()
+            status, _ = self._put_field(s, {"mode": mode})
+            row = self._wait_row(s, lambda r, m=mode: str(r.get("mode") or "") == m and row_state(r) == "streaming",
+                                 self.args.start_bound_s)
+            last = row or self.api.get_row(s.row_id) or {}
+            self.tally.add("each switch ended streaming in the new mode", status == 204 and row is not None,
+                           f"to {mode}: reply {status}, read {last.get('mode')} {row_state(last)}")
+            if mode == "raop" and row is not None:
+                seq = [kind for kind, who in self.patterns.sequence(self._new_lines(), ("teardown_sent", "raop_start"))
+                       if who in (s.name, "")]
+                ok = "raop_start" in seq and "teardown_sent" in seq[:seq.index("raop_start")]
+                self.tally.add("a TEARDOWN came before each RAOP start", ok, f"lines in order: {seq or 'none'}")
+            if other is not None:
+                if other_on:
+                    self._stop_wait(other)
+                else:
+                    self._start_wait(other)
+                other_on = not other_on
+            _sleep_until(began + self.args.mode_every_s)
+
+    def _run_s8(self) -> None:
+        first = self._burst(self._plain(), True)
+        self._wait(first)
+        self._record(starts=first)
+        rng = self._rng_for("tone")
+        updater, readers = Updater(self.api), Readers(self.api, count=1, hz=5.0)
+        began = len(self.api.samples)
+        updater.start()
+        readers.start()
+        try:
+            for _ in range(self.args.repeat):
+                time.sleep(rng.uniform(*TONE_GAP_S))
+                self.tone.stop()
+                time.sleep(rng.uniform(*TONE_GAP_S))
+                self.tone.start()
+        finally:
+            updater.stop()
+            readers.stop()
+        replies = [ms for kind, _, ms in self.api.samples[began:] if kind in ("update", "get")]
+        top = max(replies) if replies else None
+        self.tally.add("no reply took over a second while the tone stopped and started",
+                       top is not None and top <= REPLY_STALL_MS,
+                       "no replies" if top is None else f"longest {top:.0f} ms over {len(replies)} replies")
+
+    def _wait_gone(self, pid, timeout: float):
+        """Whether process *pid* ended within *timeout*; None when unknown."""
+        if pid is None:
+            return None
+        end = time.monotonic() + timeout
+        path = os.path.join(self.probe.proc, str(pid))
+        while os.path.exists(path):
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.1)
+        return True
+
+    def _wait_answering(self, timeout: float) -> bool:
+        end = time.monotonic() + timeout
+        while self.api.get_outputs(kind="check") is None:
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.5)
+        return True
+
+    def _run_s10(self) -> None:
+        rng = self._rng_for("sigterm")
+        speakers = self._plain()
+        for i in range(self.args.repeat):
+            pid = find_pid(self.probe.process, self.probe.proc)
+            burst, _ = self._burst_in_background(speakers, True)
+            time.sleep(rng.uniform(*SIGTERM_AFTER_S))
+            sent = time.monotonic()
+            self._privileged(["systemctl", "kill", "-s", "TERM", self.args.unit])
+            gone = self._wait_gone(pid, DAEMON_EXIT_S)
+            self._exits.append((gone, f"round {i + 1}: {time.monotonic() - sent:.1f} s"))
+            burst.join(self.api.timeout + 2.0)
+            self._privileged(["systemctl", "start", self.args.unit])
+            self._restarts += 1
+            back = self._wait_answering(self.args.start_bound_s)
+            self.tally.add("the daemon came back after each SIGTERM", back, f"round {i + 1}")
+            self.probe.pid = find_pid(self.probe.process, self.probe.proc)
+            if back:
+                self._deselect_all()
+                for s in speakers:
+                    self._wait_row(s, row_idle, self.args.start_bound_s)
+
+    def _run_s11(self) -> None:
+        passes = self._passes()
+        self.out(f"S11 runs {', '.join(passes)} in each loop")
+        end = time.monotonic() + self.args.minutes * 60.0
+        loop = 0
+        while True:
+            for name in passes:
+                self._soak_pass(name)
+            loop += 1
+            self.probe.sample(f"loop {loop}")
+            if time.monotonic() >= end:
+                break
+        self.tally.add("S11 loops ran", loop > 0, f"{loop} loop(s)")
+
+    def _soak_pass(self, name: str) -> None:
+        load = None
+        if name == "S2":
+            load = Readers(self.api)
+        elif name == "S7":
+            load = Busy(self.api, next(s for s in self.speakers if s.role == "firewalled").row_id)
+        self._current = name
+        if load is not None:
+            load.start()
+        try:
+            if name in ROUND_SCENARIOS:
+                roles = ("burst", "firewalled", "pin") if name == "S6" else ("burst",)
+                self._round([s for s in self.speakers if s.role in roles])
+            else:
+                getattr(self, f"_run_{name.lower()}")()
+        finally:
+            if load is not None:
+                load.stop()
+            self._current = self.args.scenario
+
+    def _run_s12(self) -> None:
+        rng = self._rng_for("tone")
+        speakers = self._plain()
+        readers = Readers(self.api, count=2, hz=10.0)
+        readers.start()
+        try:
+            for _ in range(self.args.repeat):
+                burst, ops = self._burst_in_background(speakers, True)
+                time.sleep(rng.uniform(*TONE_GAP_SHORT_S))
+                self.tone.stop()
+                time.sleep(rng.uniform(*TONE_GAP_SHORT_S))
+                self.tone.start()
+                burst.join(self.api.timeout + 2.0)
+                self._wait(ops)
+                self._record(starts=ops)
+                for op in ops:
+                    if op.status != 204:
+                        continue
+                    row = self._wait_row(op.speaker, lambda r: row_state(r) == "streaming", self.args.start_bound_s)
+                    last = row or self.api.get_row(op.speaker.row_id) or {}
+                    self.tally.add("after each start of the tone every selected speaker streamed", row is not None,
+                                   f"{op.speaker.name} reads {row_state(last)}")
+                stops = self._burst(speakers, False)
+                self._wait(stops)
+                self._record(stops=stops)
+        finally:
+            readers.stop()
+
+    def _disturb(self, how: str) -> None:
+        if how == "multicast":
+            with self.firewall:
+                time.sleep(self.args.settle_s)
+        else:
+            self._privileged(["systemctl", "restart", "avahi-daemon"])
+
+    def _run_s13(self) -> None:
+        rng = self._rng_for("mdns")
+        speakers = self._plain() + ([self.pair] if self.pair else [])
+        for i in range(self.args.repeat):
+            how = "multicast" if self.firewall is not None and i % 2 == 1 else "avahi"
+            for selected in (True, False):
+                burst, ops = self._burst_in_background(speakers, selected)
+                time.sleep(rng.uniform(0.0, 0.5))
+                self._disturb(how)
+                burst.join(self.api.timeout + 2.0)
+                self._wait(ops)
+                self._record(**({"starts": ops} if selected else {"stops": ops}))
+            missing = self._wait_listed(speakers, self.args.start_bound_s)
+            self.tally.add("every speaker was listed again", not missing,
+                           f"after {how}: missing {', '.join(self._name(m) for m in sorted(missing))}")
+            if self.pair is not None:
+                self.tally.add("the pair row was listed again", self.pair.row_id not in missing, f"after {how}")
+
+    def _run_s14(self) -> None:
+        if not self._event_driven():
+            self.verdict.add("the PIN storm", None, "needs output_state events")
+            return
+        pin = next(s for s in self.speakers if s.role == "pin")
+        group = next((s for s in self.speakers if s.role == "pin_group"), None)
+        bound, settle = self.args.start_bound_s, self.args.settle_s
+        actions: list = []      # (sent, replied) of the script's own selects and PINs of the PIN speaker
+        began = time.monotonic()
+
+        def act(fields) -> None:
+            sent = time.monotonic()
+            status, _ = self.api.put_fields(pin.row_id, fields, kind="pin")
+            actions.append((sent, time.monotonic() if isinstance(status, int) else None))
+
+        # Two clients select it at once: one start, one PIN on the screen
+        barrier = threading.Barrier(2)
+        pair = [threading.Thread(target=lambda: (barrier.wait(), act({"selected": True})), daemon=True)
+                for _ in range(2)]
+        for t in pair:
+            t.start()
+        for t in pair:
+            t.join(self.api.timeout + 2.0)
+        first = self._wait_password(pin.row_id, began, bound)
+        time.sleep(settle)
+        evs = row_events(self.events.output_events(), pin.row_id, began)
+        connects = sum(1 for e in evs if e[1] == "connecting")
+        passwords = sum(1 for e in evs if e[1] == "password")
+        if first is not None and any(r is not None and r > first for _, r in actions[-2:]):
+            self.out("S14: a select was answered after the PIN prompt; the double select is not judged this time")
+        else:
+            self.tally.add("two selects at once gave one connecting and one password",
+                           first is not None and connects == 1 and passwords == 1,
+                           f"{connects} connecting, {passwords} password")
+
+        # Selects while it waits for a PIN
+        for _ in range(2):
+            since = time.monotonic()
+            act({"selected": True})
+            self._wait_password(pin.row_id, since, bound)
+
+        # A wrong PIN with its select: a new PIN is showing after it
+        since = time.monotonic()
+        act({"pin": self.args.wrong_pin, "selected": True})
+        self.tally.add("a wrong PIN showed a new PIN", self._wait_events(pin.row_id, since, wrong_pin_sequence, bound),
+                       "password with pin_invalid, connecting, password with pin_required")
+
+        plain = self._plain()
+        if plain:
+            burst, ops = self._burst_in_background(plain, True)
+            since = time.monotonic()
+            act({"pin": self.args.wrong_pin, "selected": True})
+            ok = self._wait_events(pin.row_id, since, wrong_pin_sequence, bound)
+            burst.join(self.api.timeout + 2.0)
+            self._wait(ops)
+            self._record(starts=ops)
+            self.tally.add("a wrong PIN while the others started showed a new PIN", ok)
+            stops = self._burst(plain, False)
+            self._wait(stops)
+            self._record(stops=stops)
+
+        group_since = time.monotonic()
+        group_until = math.inf
+        if group is not None:
+            self.api.put_output(group.row_id, {"selected": True}, kind="pin")
+            self._wait_password(group.row_id, group_since, bound)
+            time.sleep(settle)
+
+        if self.args.interactive_pin:
+            text = str(self.ask(f"PIN on the screen for {pin.name}: ")).strip()
+            act({"pin": text, "selected": True})
+            row = self._wait_row(pin, lambda r: row_state(r) == "streaming", bound)
+            self.tally.add("the right PIN made the speaker stream without another select", row is not None)
+            if group is not None:
+                text = str(self.ask(f"PIN on the screen for {group.name}: ")).strip()
+                group_until = time.monotonic()
+                self.api.put_fields(group.row_id, {"pin": text, "selected": True}, kind="pin")
+                row = self._wait_row(group, lambda r: row_state(r) == "streaming", bound)
+                self.tally.add("the group streamed after its right PIN", row is not None)
+
+        if group is not None:
+            early = follower_connects(row_events(self.events.output_events(), group.row_id, group_since),
+                                      group.row_id, group_until)
+            self.tally.add("no follower started before the group's right PIN", not early, f"{len(early)} connecting")
+
+        auto = automatic_connects(row_events(self.events.output_events(), pin.row_id, began), actions)
+        self.tally.add("no connecting followed a PIN prompt but the script's own", not auto,
+                       f"{len(auto)} automatic connecting")
+
     def _judge_op(self, op: Op) -> Outcome:
         transitions = self._timeline().transitions(op.speaker.row_id)
         if op.selected:
@@ -1833,7 +2401,7 @@ class Storm:
         starts = self._burst(speakers, True)
         self._wait(starts)
         self.starts.extend(starts)
-        if self.args.scenario == "S9":
+        if self._current == "S9":
             for op in starts:
                 if op.outcome.state == "streaming":
                     self._check_flags(op)
@@ -1845,10 +2413,15 @@ class Storm:
         a, v = self.args, self.verdict
         put = self.api.latencies("put", "field")
         p99, top = percentile(put, 99), (max(put) if put else None)
-        v.add("PUT p99", None if p99 is None else p99 <= a.put_p99_ms,
-              "" if p99 is None else f"{p99:.0f} ms (limit {a.put_p99_ms:.0f})")
-        v.add("PUT max", None if top is None else top <= a.put_max_ms,
-              "" if top is None else f"{top:.0f} ms (limit {a.put_max_ms:.0f})")
+        if a.scenario == "S10":
+            # Requests meet a daemon that is going or gone
+            v.add("PUT p99", None, "the daemon is stopped under the requests")
+            v.add("PUT max", None, "the daemon is stopped under the requests")
+        else:
+            v.add("PUT p99", None if p99 is None else p99 <= a.put_p99_ms,
+                  "" if p99 is None else f"{p99:.0f} ms (limit {a.put_p99_ms:.0f})")
+            v.add("PUT max", None if top is None else top <= a.put_max_ms,
+                  "" if top is None else f"{top:.0f} ms (limit {a.put_max_ms:.0f})")
         get = self.api.latencies("get")
         g99 = percentile(get, 99)
         v.add("GET p99", None if g99 is None else g99 <= a.get_p99_ms,
@@ -1868,17 +2441,31 @@ class Storm:
         if a.scenario == "S4" and not self._event_driven():
             v.add("stopped came before the next connecting", None, "needs output_state events")
 
+        if a.scenario == "S10":
+            known = [ok for ok, _ in self._exits if ok is not None]
+            slow = [d for ok, d in self._exits if ok is False]
+            v.add("the daemon exited within 10 s of each SIGTERM", (not slow) if known else None,
+                  "; ".join(slow[:3]) or ("daemon not found on this host" if not known else f"{len(known)} exits"))
+
         missing = {sid: n for sid, n in self.poller.missing.items() if n}
-        v.add("every speaker listed in every read", not missing,
-              ", ".join(f"{self._name(sid)} missing {n}x" for sid, n in missing.items()))
+        if a.scenario in ("S10", "S13"):
+            v.add("every speaker listed in every read", None, "rows go while the daemon or mDNS is disturbed")
+        else:
+            v.add("every speaker listed in every read", not missing,
+                  ", ".join(f"{self._name(sid)} missing {n}x" for sid, n in missing.items()))
 
         if self.events is None:
             v.add("event channel message numbers", None, "no event channel")
         else:
             gaps = self.events.seq.gaps
             v.add("event channel message numbers", not gaps, "; ".join(gaps[:3]))
-            v.add("event channel stayed connected", self.events.drops == 0 and not self.events.errors,
-                  "; ".join(self.events.errors[:3]) or (f"{self.events.drops} drops" if self.events.drops else ""))
+            if a.scenario == "S10":
+                v.add("event channel stayed connected", None, f"the daemon was restarted {self._restarts}x")
+            else:
+                v.add("event channel stayed connected", self.events.drops == 0 and not self.events.errors,
+                      "; ".join(self.events.errors[:3])
+                      or (f"{self.events.drops} drops" if self.events.drops else ""))
+            self._judge_events()
 
         lines, err = self.probe.log_lines()
         bugs = [ln for ln in lines if BUG_MARK in ln]
@@ -1890,9 +2477,42 @@ class Storm:
         for name, ok, detail in check_log_counts(self.log_counts, self.expectations):
             v.add(name, False if err else ok, err or detail)
         growth = self.probe.hwm_growth_mib()
-        v.add("VmHWM growth", None if growth is None else growth <= a.rss_growth_mib,
-              "daemon not found on this host" if growth is None
-              else f"{growth:.1f} MiB (limit {a.rss_growth_mib:.0f})")
+        if a.scenario == "S10":
+            v.add("VmHWM growth", None, "the daemon was restarted")
+        else:
+            v.add("VmHWM growth", None if growth is None else growth <= a.rss_growth_mib,
+                  "daemon not found on this host" if growth is None
+                  else f"{growth:.1f} MiB (limit {a.rss_growth_mib:.0f})")
+
+    def _judge_events(self) -> None:
+        """The checks on the output_state event stream, when the daemon sends it."""
+        if not self._event_driven():
+            return
+        v = self.verdict
+        evs = self.events.output_events()
+        bare = sum(1 for _, m in evs if not isinstance(m.get("member_state"), str))
+        v.add("every output_state event carried member_state", not bare,
+              f"{bare} of {len(evs)} without" if bare else f"{len(evs)} events")
+        phases = member_phases(evs)
+        bad = [f"{self._name(row_id)} member {member}: {problem}"
+               for (row_id, member), states in phases.items() for problem in illegal_transitions(states)]
+        v.add("each speaker's phases followed the transition table", not bad, "; ".join(bad[:5]))
+        if self.pair is not None:
+            members = {m for (r, m) in phases if r == self.pair.row_id}
+            v.add("each pair member sent its own events",
+                  (len(members) >= self.args.pair_members) if members else None, f"{len(members)} member(s)")
+        late = []
+        judged = 0
+        for op in self.starts:
+            if op.status != 204 or op.replied is None or op.prior in LIVE_STATES:
+                continue
+            judged += 1
+            ok, t = connecting_seen(row_events(evs, op.speaker.row_id, op.sent), op.sent, op.replied)
+            if not ok:
+                late.append(f"{op.speaker.name}: " + ("no connecting" if t is None
+                                                      else f"connecting {t - op.replied:.1f} s after the answer"))
+        v.add("each accepted start showed connecting within a second", not late,
+              "; ".join(late[:5]) or f"{judged} starts")
 
     def _expect(self, role: str, state: str, reasons, name: str) -> None:
         wrong = []
@@ -1945,9 +2565,18 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--firewall", action="append", default=[], metavar="NAME=IP")
     ap.add_argument("--firewall-tool", choices=("auto", "iptables", "nft"), default="auto")
     ap.add_argument("--pin-speaker", default=None)
+    ap.add_argument("--pin-group", default=None, help="S14: an Apple TV group whose leader wants a PIN")
+    ap.add_argument("--wrong-pin", default="0000", help="S14: a PIN the speaker will refuse")
+    ap.add_argument("--interactive-pin", action="store_true",
+                    help="S14: ask for the PIN on the screen and send it")
     ap.add_argument("--pair", default=None, help="a stereo pair's row name or id")
     ap.add_argument("--pair-members", type=int, default=2)
+    ap.add_argument("--mode-speaker", default=None, help="S5: a speaker that plays both AirPlay versions")
+    ap.add_argument("--modes", default="raop,airplay2", help="S5: the modes switched between, in turn")
+    ap.add_argument("--mode-every-s", type=float, default=3.0, help="S5: the time from one switch to the next")
     ap.add_argument("--duration-s", type=float, default=600.0, help="how long S15 runs")
+    ap.add_argument("--minutes", type=float, default=60.0, help="how long S11 runs")
+    ap.add_argument("--allow-restart", action="store_true", help="S10: the daemon may be killed and started")
     ap.add_argument("--settle-s", type=float, default=3.0,
                     help="how long a hold, resume or join is given before its log lines are counted")
     ap.add_argument("--teardown-drop", action="store_true",
@@ -1985,6 +2614,9 @@ def dry_run(args, out=print) -> int:
         return EXIT_SETUP
     if args.scenario == "S15":
         out(f"scenario S15 for {args.duration_s:.0f} s against {args.base}")
+    elif args.scenario == "S11":
+        out(f"scenario S11 for {args.minutes:g} min against {args.base}, "
+            f"running {', '.join(soak_passes(args, firewall))} in each loop")
     else:
         out(f"scenario {args.scenario}, {args.repeat} round(s) against {args.base}")
     out(f"speakers: {args.speakers or '(none given)'}")
@@ -1992,18 +2624,28 @@ def dry_run(args, out=print) -> int:
         out(f"pair: {args.pair} ({args.pair_members} members)")
     if args.pin_speaker:
         out(f"PIN speaker: {args.pin_speaker}")
+    if args.scenario == "S14":
+        out(f"wrong PIN: {args.wrong_pin}; right PIN: " + ("asked for" if args.interactive_pin else "not tried"))
+        if args.pin_group:
+            out(f"PIN group: {args.pin_group}")
+    if args.scenario == "S5":
+        out(f"mode speaker: {args.mode_speaker}, modes {args.modes} every {args.mode_every_s:g} s")
+    if args.scenario == "S10":
+        out(f"the daemon ({args.unit}) is sent SIGTERM and started again in each round")
     if args.scenario == "S17":
         out("TEARDOWN answers: " + ("dropped by the daemon" if args.teardown_drop else "as the daemon gets them"))
     for name, op, n in expectations:
         out(f"expect log {name} {op} {n}: {patterns.compiled[name].pattern if name in patterns.compiled else '(no such pattern)'}")
     for name, ip in firewall:
-        out(f"firewalled: {name} at {ip}" + (" (kept busy by four selects)" if args.scenario == "S7" else ""))
+        what = "mDNS blocked" if args.scenario == "S13" else "firewalled"
+        out(f"{what}: {name} at {ip}" + (" (kept busy by four selects)" if args.scenario == "S7" else ""))
     out("tone: off" if args.no_tone else
         f"tone: {args.fifo} at {args.rate or 'the daemon'}'s rate, {args.bits or 'the daemon'}'s sample size")
     if args.scenario == "S2":
         out(f"readers: {READERS} at {READER_HZ:.0f} Hz")
     if firewall:
-        with Firewall([ip for _, ip in firewall], args.firewall_tool, dry_run=True, out=out):
+        with Firewall([ip for _, ip in firewall], args.firewall_tool, dry_run=True, out=out,
+                      mdns_only=args.scenario == "S13"):
             pass
     return EXIT_OK
 
@@ -2039,7 +2681,8 @@ def main(argv=None) -> int:
     except SetupError as exc:
         print(f"setup: {exc}")
         return EXIT_SETUP
-    fw = Firewall([ip for _, ip in firewall], args.firewall_tool) if firewall else None
+    fw = Firewall([ip for _, ip in firewall], args.firewall_tool,
+                  mdns_only=args.scenario == "S13") if firewall else None
     storm = Storm(args, api, events, Poller(api, args.poll_hz),
                   Probe(args.log, args.unit, args.asan_glob), tone, fw)
     return storm.run()

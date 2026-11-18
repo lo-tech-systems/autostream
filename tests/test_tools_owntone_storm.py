@@ -185,6 +185,15 @@ class HoldingDaemon(FakeDaemon):
     def _fields(self, row_id, body):
         row = self.rows[row_id]
         session = row["session"]
+        if "mode" in body and body["mode"] != row.get("mode"):
+            # A switch restarts a streaming speaker in the new mode
+            row["mode"] = body["mode"]
+            if session["state"] == "streaming":
+                self.write(row_id, "Stopping '{}' with a TEARDOWN")
+                if body["mode"] == "raop":
+                    self.write(row_id, "rtsp: Sending ANNOUNCE to '{}'")
+                session["state"] = "startup"
+                self._later(row_id, "streaming")
         if "muted" in body:
             row["muted"] = bool(body["muted"])
         if "volume" in body:
@@ -270,11 +279,12 @@ def _args(tmp_path, base, *extra):
     return storm.build_parser().parse_args(argv)
 
 
-def _storm(args, tone=None, firewall=None, out=None):
+def _storm(args, tone=None, firewall=None, out=None, run=None, events=None):
     api = storm.Api(args.base, timeout=2.0)
     probe = storm.Probe(args.log, args.unit, args.asan_glob, process="no-such-process-for-storm")
-    return storm.Storm(args, api, None, storm.Poller(api, args.poll_hz), probe, tone, firewall,
-                       out=out or (lambda *_: None))
+    extra = {"run": run} if run is not None else {}
+    return storm.Storm(args, api, events, storm.Poller(api, args.poll_hz), probe, tone, firewall,
+                       out=out or (lambda *_: None), **extra)
 
 
 # --- pure parts ------------------------------------------------------------------
@@ -647,7 +657,7 @@ def test_log_counts_are_matched_per_pattern(daemon_factory, tmp_path):
     ]
     counts = patterns.count(lines)
     assert counts == {"pause": 2, "teardown_timeout": 1, "leader_kept": 1, "resume_flush": 1,
-                      "anchor": 2, "anchor_reached": 1}
+                      "anchor": 2, "anchor_reached": 1, "teardown_sent": 0, "raop_start": 0}
     assert patterns.per_speaker(lines, "anchor") == {"Study": 1, "Study (2)": 1}
     assert patterns.per_speaker(lines, "resume_flush") == {"Jo's HomePod": 1}
     assert patterns.sequence(lines, ("anchor", "pause")) == [
@@ -895,3 +905,266 @@ def test_the_new_scenarios_say_what_they_need():
     assert code == storm.EXIT_OK
     assert "TEARDOWN answers: dropped by the daemon" in lines
     assert any(ln.startswith("expect log teardown_timeout >= 2: No answer to TEARDOWN") for ln in lines)
+
+
+# --- the concurrency series ----------------------------------------------------------
+
+def _ev(t, row, state, reason="none", member=None, member_state=None, **fields):
+    msg = {"type": "event", "kind": "output_state", "speaker": {"id": row, "member_id": member or row},
+           "state": state, "reason": reason, **fields}
+    if member_state is not False:
+        msg["member_state"] = member_state or state
+    return (t, msg)
+
+
+class FakeEvents:
+    """What the judge reads from an event channel that sends output_state."""
+
+    def __init__(self, events=()):
+        self.events = list(events)
+        self.capabilities = ["changed", "output_state"]
+        self.seq = storm.SeqCounter()
+        self.drops = 0
+        self.errors = []
+        self.timeline = storm.Timeline()
+
+    def has(self, capability):
+        return capability in self.capabilities
+
+    def output_events(self):
+        return list(self.events)
+
+
+def _judged(events, tmp_path, *extra, starts=(), pair=None):
+    args = _args(tmp_path, "http://127.0.0.1:1", *extra)
+    s = _storm(args, events=FakeEvents(events))
+    s.starts = list(starts)
+    s.pair = pair
+    s._judge_events()
+    return {name: (ok, detail) for name, ok, detail in s.verdict.checks}
+
+
+def test_the_transition_table_rejects_streaming_after_stopped(tmp_path):
+    assert storm.illegal_transitions(["connecting", "connected", "streaming", "stopping", "stopped",
+                                      "connecting", "streaming"]) == []
+    assert storm.illegal_transitions(["streaming", "stopped", "streaming"]) == [
+        "streaming after stopped without connecting"]
+    assert storm.illegal_transitions(["stopped", "connected"]) == ["connected after stopped without connecting"]
+    assert storm.illegal_transitions(["streaming", "stopping", "connecting", "stopped"]) == [
+        "connecting while stopping, before stopped"]
+    assert storm.illegal_transitions(["streaming", "stopping", "failed"]) == ["failed while stopping, before stopped"]
+    # A start that fails and is tried again, and a probe while nothing plays
+    assert storm.illegal_transitions(["connecting", "failed", "connecting", "streaming"]) == []
+    assert storm.illegal_transitions(["connecting", "stopped", "connecting", "connected", "streaming"]) == []
+
+    # Judged per member, over each member's own phase
+    checks = _judged([
+        _ev(1.0, "7", "connecting"), _ev(1.1, "7", "streaming"), _ev(1.2, "7", "stopped"),
+        _ev(1.3, "7", "streaming"),
+        _ev(1.0, "8", "streaming", member="81", member_state="stopped"),
+        _ev(1.1, "8", "streaming", member="81", member_state="connecting"),
+    ], tmp_path)
+    ok, detail = checks["each speaker's phases followed the transition table"]
+    assert ok is False and "member 7: streaming after stopped" in detail and "81" not in detail
+    assert checks["every output_state event carried member_state"][0] is True
+    checks = _judged([_ev(1.0, "7", "connecting", member_state=False)], tmp_path)
+    assert checks["every output_state event carried member_state"] == (False, "1 of 1 without")
+
+
+def test_every_pair_member_must_send_its_own_events(tmp_path):
+    pair = storm.Speaker("9", "Pair", "pair")
+    # The two members' events need not be adjacent nor carry the same phase
+    events = [_ev(1.0, "9", "connecting", member="9"), _ev(1.2, "3", "connecting"),
+              _ev(1.4, "9", "streaming", member="91", member_state="connecting"),
+              _ev(1.6, "9", "streaming", member="9", member_state="streaming"),
+              _ev(1.9, "9", "streaming", member="91", member_state="streaming")]
+    checks = _judged(events, tmp_path, pair=pair)
+    assert checks["each pair member sent its own events"] == (True, "2 member(s)")
+    checks = _judged([e for e in events if e[1]["speaker"]["member_id"] != "91"], tmp_path, pair=pair)
+    assert checks["each pair member sent its own events"] == (False, "1 member(s)")
+    checks = _judged([_ev(1.0, "3", "connecting")], tmp_path, pair=pair)
+    assert checks["each pair member sent its own events"][0] is None
+
+
+def test_each_accepted_start_shows_connecting_within_a_second(tmp_path):
+    a, b, c = storm.Speaker("1", "A"), storm.Speaker("2", "B"), storm.Speaker("3", "C")
+    starts = [storm.Op(a, True, sent=10.0, replied=10.1, status=204, prior="stopped"),
+              storm.Op(b, True, sent=10.0, replied=10.1, status=204, prior="stopped"),
+              # Already connecting: a select answers 204 and sends nothing new
+              storm.Op(c, True, sent=10.0, replied=10.1, status=204, prior="connecting")]
+    events = [_ev(10.05, "1", "connecting"), _ev(12.0, "2", "connecting")]
+    ok, detail = _judged(events, tmp_path, starts=starts)["each accepted start showed connecting within a second"]
+    assert ok is False and detail.startswith("B: connecting 1.9 s after the answer")
+    assert storm.connecting_seen(storm.row_events(events, "1"), 10.0, 10.1) == (True, 10.05)
+    assert storm.connecting_seen([], 10.0, 10.1) == (False, None)
+
+
+def test_the_wrong_pin_sequence_is_recognised():
+    def evs(*steps):
+        return [(float(i), state, reason, "5", state) for i, (state, reason) in enumerate(steps)]
+
+    assert storm.wrong_pin_sequence(evs(("password", "pin_invalid"), ("connecting", "none"),
+                                        ("password", "pin_required")))
+    # The authorise's own connecting first changes nothing
+    assert storm.wrong_pin_sequence(evs(("connecting", "none"), ("password", "pin_invalid"),
+                                        ("connecting", "none"), ("password", "pin_required")))
+    assert not storm.wrong_pin_sequence(evs(("password", "pin_invalid")))
+    assert not storm.wrong_pin_sequence(evs(("password", "pin_invalid"), ("password", "pin_required")))
+    # A timed-out authorise is not a wrong PIN
+    assert not storm.wrong_pin_sequence(evs(("password", "timeout"), ("connecting", "none"),
+                                            ("password", "pin_required")))
+
+
+def test_an_automatic_connecting_after_password_fails_the_pin_check():
+    evs = [(1.0, "connecting", "none", "5", "connecting"), (2.0, "password", "pin_required", "5", "password"),
+           (5.0, "connecting", "none", "5", "connecting"), (6.0, "password", "pin_required", "5", "password")]
+    # Nothing of the script's after the prompt: the second start was the daemon's own
+    assert storm.automatic_connects(evs, [(0.9, 1.0)]) == [5.0]
+    # The script's select sent after the prompt explains it
+    assert storm.automatic_connects(evs, [(0.9, 1.0), (4.9, 5.0)]) == []
+    # A select sent before the prompt but answered after it may have been the one
+    assert storm.automatic_connects(evs, [(0.9, 1.0), (1.9, 2.5)]) == []
+    # The start after a wrong PIN is the one its select asked for
+    wrong = [(1.0, "password", "pin_invalid", "5", "password"), (1.5, "connecting", "none", "5", "connecting"),
+             (2.0, "password", "pin_required", "5", "password")]
+    assert storm.automatic_connects(wrong, [(0.5, 0.6)]) == []
+
+    group = [(1.0, "connecting", "none", "4", "connecting"), (2.0, "password", "pin_required", "4", "password"),
+             (3.0, "password", "pin_required", "41", "connecting")]
+    assert storm.follower_connects(group, "4") == [3.0]
+    assert storm.follower_connects(group, "4", until=2.5) == []
+
+
+def test_sigterm_is_only_sent_with_allow_restart(daemon_factory, tmp_path, monkeypatch):
+    lines = []
+    code = storm.dry_run(storm.build_parser().parse_args(["S10", "--speakers", "A"]), out=lines.append)
+    assert code == storm.EXIT_SETUP and "--allow-restart" in lines[0]
+    d = daemon_factory(["Speaker A"])
+    ran = []
+
+    def run(cmd, **kw):
+        ran.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    args = _args(tmp_path, d.base, "--speakers", "Speaker A")
+    args.scenario = "S10"
+    assert _storm(args, run=run, out=lines.append).run() == storm.EXIT_SETUP
+    assert ran == []
+
+    monkeypatch.setattr(storm, "SIGTERM_AFTER_S", (0.01, 0.02))
+    args = _args(tmp_path, d.base, "--speakers", "Speaker A", "--allow-restart", "--repeat", "2")
+    args.scenario = "S10"
+    out = []
+    assert _storm(args, run=run, out=out.append).run() == storm.EXIT_OK, out
+    assert [c[-5:] if "kill" in c else c[-3:] for c in ran] == [
+        ["systemctl", "kill", "-s", "TERM", "owntone"], ["systemctl", "start", "owntone"]] * 2
+    assert "PASS the daemon came back after each SIGTERM: 2 made" in out
+    assert any(ln.startswith("SKIP the daemon exited within 10 s") for ln in out)
+    assert any(ln.startswith("SKIP PUT max") for ln in out)
+    assert d.rows[d.id_of("Speaker A")]["selected"] is False
+
+
+@pytest.fixture
+def quicker(monkeypatch, quick):
+    monkeypatch.setattr(storm, "TONE_GAP_S", (0.05, 0.1))
+    monkeypatch.setattr(storm, "TONE_GAP_SHORT_S", (0.05, 0.1))
+
+
+@pytest.mark.parametrize("scenario,extra,tone", [
+    ("S5", ["--mode-speaker", "Pair", "--speakers", "Kitchen", "--repeat", "4", "--mode-every-s", "0.3"], False),
+    ("S8", ["--speakers", "Speaker A,Kitchen", "--repeat", "2"], True),
+    ("S12", ["--speakers", "Speaker A,Kitchen", "--repeat", "2"], True),
+    ("S13", ["--speakers", "Speaker A", "--pair", "Pair", "--firewall", "Kitchen=192.0.2.9", "--repeat", "2"],
+     False),
+    ("S11", ["--speakers", "Speaker A", "--pair", "Pair", "--minutes", "0", "--repeat", "1"], False),
+    ("S14", ["--pin-speaker", "Kitchen"], False),
+])
+def test_the_concurrency_scenarios_pass_against_a_daemon_that_behaves(daemon_factory, tmp_path, quicker,
+                                                                       scenario, extra, tone):
+    log = tmp_path / "owntone.log"
+    d = daemon_factory(["Speaker A", "Kitchen", "Pair"], holding=True, log=log, pair="Pair", window_s=0.1)
+    args = _args(tmp_path, d.base, *extra, "--settle-s", "0.2", "--seed", "5", "--log", str(log),
+                 "--put-p99-ms", "1000", "--put-max-ms", "2000", "--get-p99-ms", "1000")
+    args.scenario = scenario
+    args.no_tone = not tone
+    ran, out, fake_tone, fw = [], [], FakeTone(), FakeFirewall()
+
+    def run(cmd, **kw):
+        ran.append(cmd)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    code = _storm(args, tone=fake_tone if tone else None, firewall=fw, out=out.append, run=run).run()
+    assert code == storm.EXIT_OK, out
+    report = json.loads((tmp_path / "report.json").read_text())
+    assert not any(r["selected"] for r in d.rows.values())
+    made = {c["name"]: c["ok"] for c in report["checks"]}
+    expected = {
+        "S5": {"each switch ended streaming in the new mode", "a TEARDOWN came before each RAOP start"},
+        "S8": {"no reply took over a second while the tone stopped and started"},
+        "S12": {"after each start of the tone every selected speaker streamed"},
+        "S13": {"every speaker was listed again", "the pair row was listed again"},
+        "S11": {"S11 loops ran", "no speaker was left with a session", "every cycle ended streaming",
+                "the final row agreed with the last request"},
+        "S14": {"the PIN storm"},
+    }[scenario]
+    assert expected <= set(made), made
+    if scenario == "S5":
+        modes = [body["mode"] for _, body in d.puts if "mode" in body]
+        assert modes == ["raop", "airplay2", "raop", "airplay2"]
+    if scenario in ("S8", "S12"):
+        assert fake_tone.calls[0] == "start" and fake_tone.calls.count("start") == 3
+    if scenario == "S8":
+        assert report["latency"]["update"]["count"] >= 1
+    if scenario == "S13":
+        # avahi is restarted on the first round, the mDNS block is raised on the second
+        assert sum(1 for c in ran if c[-2:] == ["restart", "avahi-daemon"]) == 2
+        assert fw.calls == ["enter", "exit", "enter", "exit"]
+        assert made["every speaker listed in every read"] is None
+    if scenario == "S11":
+        assert "S11 runs S1, S2, S3, S4, S9 in each loop" in out
+    if scenario == "S14":
+        assert made["the PIN storm"] is None
+
+
+def test_the_mdns_block_drops_only_the_speakers_announcements():
+    ran = []
+
+    def run(cmd, **kw):
+        ran.append(cmd)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    with storm.Firewall(["192.0.2.7"], "iptables", run=run, euid=0, mdns_only=True):
+        pass
+    assert ran == [["iptables", "-I", "INPUT", "-s", "192.0.2.7", "-d", storm.MDNS_GROUP, "-j", "DROP"],
+                   ["iptables", "-D", "INPUT", "-s", "192.0.2.7", "-d", storm.MDNS_GROUP, "-j", "DROP"]]
+    ran.clear()
+    with storm.Firewall(["192.0.2.7"], "nft", run=run, euid=0, mdns_only=True):
+        pass
+    assert ["nft", "add", "rule", "inet", storm.NFT_TABLE, "in", "ip", "saddr", "192.0.2.7",
+            "ip", "daddr", storm.MDNS_GROUP, "drop"] in ran
+    assert not any("out" in c and "192.0.2.7" in c for c in ran)
+
+
+def test_the_concurrency_scenarios_say_what_they_need():
+    def dry(*argv):
+        lines = []
+        code = storm.dry_run(storm.build_parser().parse_args([*argv, "--dry-run"]), out=lines.append)
+        return code, lines
+
+    code, lines = dry("S5", "--speakers", "A")
+    assert code == storm.EXIT_SETUP and "needs --mode-speaker" in lines[0]
+    code, lines = dry("S14", "--speakers", "A")
+    assert code == storm.EXIT_SETUP and "needs --pin-speaker" in lines[0]
+    for scenario in ("S8", "S12"):
+        code, lines = dry(scenario, "--speakers", "A", "--no-tone")
+        assert code == storm.EXIT_SETUP and "--no-tone" in lines[0]
+    code, lines = dry("S12")
+    assert code == storm.EXIT_SETUP and "needs --speakers" in lines[0]
+    code, lines = dry("S11", "--speakers", "A", "--no-tone", "--firewall", "B=192.0.2.1", "--minutes", "5")
+    assert code == storm.EXIT_OK
+    assert lines[0].endswith("running S1, S2, S3, S4, S7, S9 in each loop")
+    code, lines = dry("S13", "--speakers", "A", "--firewall", "B=192.0.2.1", "--firewall-tool", "iptables")
+    assert code == storm.EXIT_OK and "mDNS blocked: B at 192.0.2.1" in lines
+    assert any(storm.MDNS_GROUP in ln for ln in lines)
+    code, lines = dry("S14", "--pin-speaker", "TV", "--interactive-pin", "--pin-group", "Group TV")
+    assert code == storm.EXIT_OK and "wrong PIN: 0000; right PIN: asked for" in lines
