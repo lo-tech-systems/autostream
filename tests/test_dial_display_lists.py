@@ -1282,7 +1282,7 @@ class TestInfoPage:
         exercised directly, synchronously, by the tests that need it — the
         same discipline TestOnOutputsResult uses for its own worker-thread
         callback), then fold the pending screen request in. Returns the
-        gather_seq this open captured."""
+        gather sequence this open captured."""
         with patch("dial_display.threading.Thread"):
             display.open_info()
         with display._lock:

@@ -1888,7 +1888,7 @@ class DialDisplay:
         rows = self._info.rows if self._info is not None else INFO_PLACEHOLDER_ROWS
         page = self._info.page if (self._screen == "info_value" and self._info is not None) else 0
         self._info = InfoState(
-            rows=rows, page=page, opened_at=time.monotonic(), gather_seq=self._info_gather_seq,
+            rows=rows, page=page, opened_at=time.monotonic(),
         )
         self._screen = "info"
         return True

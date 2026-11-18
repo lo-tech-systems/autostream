@@ -742,9 +742,7 @@ def info_value_layout_for(
 
 @dataclass(frozen=True)
 class IdleLayout:
-    """Idle-screen geometry: a single non-actuating affordance line
-    (reusing the same centre-low rect the main surface's artist line
-    occupies — `affordance`), the actuating rect for the whole panel
+    """Idle-screen geometry: the actuating rect for the whole panel
     below the top band (`replay`, == the IDLE_REPLAY zone in
     the IDLE geometry), the small top-right square (`info`, == the
     IDLE_BELL zone) that holds the warning bell and opens the warnings card
@@ -752,7 +750,6 @@ class IdleLayout:
     == the IDLE_WIFI zone): the Wi-Fi status glyph, the same side as `info`,
     which opens the info list."""
 
-    affordance: Rect
     replay: Rect
     info: Rect
     wifi: Rect = (0, 0, 0, 0)
@@ -1211,9 +1208,7 @@ def eq_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = Non
 
 
 def idle_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> IdleLayout:
-    """Compute the idle-screen geometry: the affordance line is the same
-    centre-low rectangle the main surface's (non-actuating) artist line
-    occupies; replay is the whole panel below the top band — or, on the
+    """Compute the idle-screen geometry: replay is the whole panel below the top band — or, on the
     compact tier (which has no top band of its own to exclude), the whole
     panel; info is an 8mm-floor square in the top-right corner (the
     fingertip floor wherever density is known, else a band-high square),
@@ -1227,5 +1222,5 @@ def idle_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" = N
     info: Rect = (width - m - side, m, width - m, m + side)
     wifi: Rect = (m, m, m + side, m + side)
     if metrics.content_tier == CONTENT_COMPACT:
-        return IdleLayout(affordance=layout.artist, replay=(0, 0, width, height), info=info, wifi=wifi)
-    return IdleLayout(affordance=layout.artist, replay=(0, layout.top_band[3], width, height), info=info, wifi=wifi)
+        return IdleLayout(replay=(0, 0, width, height), info=info, wifi=wifi)
+    return IdleLayout(replay=(0, layout.top_band[3], width, height), info=info, wifi=wifi)

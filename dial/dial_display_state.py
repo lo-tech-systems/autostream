@@ -87,14 +87,10 @@ class InfoState:
     """Immutable snapshot of the info page's rows and paging. rows: all seven
     fields, ALL pages (the same "every row, sliced at paint time" shape
     ListScreenState uses); page: the current page; opened_at: what
-    SELECTOR_TIMEOUT_SECONDS counts down from; gather_seq: which gather
-    (see DialDisplay._gather_info) this snapshot's rows belong to, so a
-    stale result landing after the page closed/reopened is dropped rather
-    than overwriting fresher (or placeholder) rows."""
+    SELECTOR_TIMEOUT_SECONDS counts down from."""
     rows: tuple[InfoRow, ...]
     page: int
     opened_at: float
-    gather_seq: int
 
 
 # The seven info fields, shown at once and filled in within about a second

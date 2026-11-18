@@ -527,12 +527,6 @@ class TestRepeatSurface:
 
 class TestIdleSurface:
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
-    def test_affordance_is_the_artist_rect(self, width, height):
-        main = layout_for(width, height)
-        idle = idle_layout_for(width, height)
-        assert idle.affordance == main.artist
-
-    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_top_band_excluded(self, width, height):
         layout = layout_for(width, height)
         ty0, ty1 = layout.top_band[1], layout.top_band[3]
@@ -1153,7 +1147,7 @@ class TestDensityHasNoEffectOnGeometry:
 
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_idle_layout_for_unaffected(self, size, mm):
-        # affordance/replay are unaffected by density at the base tier, same
+        # replay is unaffected by density at the base tier, same
         # as every other layout here; `info` is a deliberate exception (see
         # TestIdleSurface's own pinned info-square tests) — it is 8mm by
         # construction whenever density is known, which is exactly the
@@ -1161,7 +1155,6 @@ class TestDensityHasNoEffectOnGeometry:
         width, height = size
         base = idle_layout_for(width, height)
         dense = idle_layout_for(width, height, metrics=metrics_for(width, height, mm))
-        assert base.affordance == dense.affordance
         assert base.replay == dense.replay
 
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
