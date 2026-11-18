@@ -44,7 +44,11 @@ function card(w) {
   const body = el('div', 'warning-card-body');
   body.append(el('div', 'warning-card-title', w.title), el('div', 'warning-card-msg', w.message));
   c.appendChild(body);
-  if (w.link) c.appendChild(el('span', 'warning-card-chevron', '\u203a'));
+  if (w.link) {
+    const chev = el('span', 'warning-card-chevron', '\u203a');
+    chev.setAttribute('aria-hidden', 'true');
+    c.appendChild(chev);
+  }
   return c;
 }
 
@@ -63,6 +67,7 @@ function drawStrip(w, redraw) {
 }
 
 export function initWarnings(redraw) {
+  document.addEventListener('touchstart', () => {}, { passive: true });
   document.addEventListener('click', (e) => {
     if (e.target.closest('#red-banner') && document.querySelector('#red-banner.red-banner-tap')) { bannerOpen = !bannerOpen; redraw(); }
   });

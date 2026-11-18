@@ -146,7 +146,42 @@ class TestStrip:
         expect(linked).to_have_count(1)
         expect(linked).to_have_attribute("href", "/service")
         expect(linked.locator(".warning-card-chevron")).to_have_text("›")
-        expect(page.locator("#warnings-strip div.warning-card")).to_have_count(1)
+        expect(linked.locator(".warning-card-chevron")).to_have_attribute("aria-hidden", "true")
+        expect(page.get_by_role("link", name=re.compile(r"^Belt\s*belt message$"))).to_have_count(1)
+        plain = page.locator("#warnings-strip div.warning-card")
+        expect(plain).to_have_count(1)
+        assert plain.evaluate("e => [e.getAttribute('role'), e.getAttribute('tabindex'), e.tabIndex]") == [None, None, -1]
+
+    def test_a_link_card_shows_focus_from_the_keyboard(self, page: "Page", home_url: str):
+        _open(page, home_url, entry("belt", link="/service"), entry("dials"))
+        for _ in range(30):
+            page.keyboard.press("Tab")
+            if page.evaluate("document.activeElement.classList.contains('warning-card')"):
+                break
+        else:
+            pytest.fail("Tab never reached the link card")
+        card = page.locator("#warnings-strip a.warning-card-link")
+        expect(card).to_be_focused()
+        accent = page.evaluate("""() => {
+            const p = document.createElement('i'); p.style.color = 'var(--color-accent)';
+            document.body.appendChild(p); const c = getComputedStyle(p).color; p.remove(); return c;
+        }""")
+        expect(card).to_have_css("outline-style", "solid")
+        expect(card).to_have_css("outline-color", accent)
+        page.keyboard.press("Tab")
+        assert not page.evaluate("document.activeElement.classList.contains('warning-card')")
+
+    def test_a_link_card_presses_to_the_pressed_surface(self, page: "Page", home_url: str):
+        """The page fixture is per test, so the button left down here cannot leak into another."""
+        _open(page, home_url, entry("belt", link="/service"))
+        card = page.locator("#warnings-strip a.warning-card-link")
+        pressed = page.evaluate("""() => {
+            const p = document.createElement('i'); p.style.backgroundColor = 'var(--color-surface-pressed)';
+            document.body.appendChild(p); const c = getComputedStyle(p).backgroundColor; p.remove(); return c;
+        }""")
+        card.hover()
+        page.mouse.down()
+        expect(card).to_have_css("background-color", pressed)
 
     def test_a_card_follows_the_stream_with_no_reload(self, page: "Page", home_url: str):
         _open(page, home_url)

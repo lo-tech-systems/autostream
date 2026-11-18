@@ -551,7 +551,7 @@ CEILINGS = {
     "page/home/home_speakers.js": 376,
     "page/home/home_now_playing.js": 170,
     "page/home/home_repeat.js": 110,
-    "page/home/home_warnings.js": 80,
+    "page/home/home_warnings.js": 85,
     "page/home/home_autostart.js": 45,
     "page/selector_menu.js": 65,
     "page/equaliser.js": 124,

@@ -13,6 +13,9 @@
 .warning-card-body{flex:1 1 auto;min-width:0;font-size:.9rem;line-height:1.3;}
 .warning-card-title{font-weight:700;color:var(--color-text-strong);}
 .warning-card-chevron{flex:0 0 auto;font-size:1.4rem;color:var(--color-text-dim);}
+.warning-card-link{-webkit-tap-highlight-color:transparent;}
+.warning-card-link:active{background:var(--color-surface-pressed);}
+.warning-card-link:focus-visible{outline:2px solid var(--color-accent);outline-offset:2px;}
 .warning-more{display:block;width:100%;margin:0 0 .5rem;padding:.4rem;border:none;background:none;color:var(--color-accent);font-size:.9rem;font-weight:600;cursor:pointer;}
 #red-banner.red-banner-tap{cursor:pointer;}
 #red-banner div{padding:.1rem 0;}
