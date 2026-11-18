@@ -23,6 +23,11 @@ other way counts as the Play for the speakers it muted: the player ended it
 outputs.resume intent). Switching the paused speaker off ends its Pause and
 leaves the others as they are.
 
+A turn of a paused or muted speaker's own volume knob arrives as a wake:
+the player does not report the level of a silent speaker. A wake on a
+paused speaker is its Play; on a speaker that is only muted it unmutes that
+speaker alone; on any other it does nothing.
+
 The policy owns no lock. Its state is confined to the authority's worker
 thread, where the hooks run, and what it calls takes its own short locks.
 """
@@ -69,6 +74,7 @@ class EventContext:
     now: float
     member_id: Optional[str]
     speaker_name: Optional[str]
+    protocol: Optional[str] = None   # where a receiver command came from; for logs
 
 
 def _requester(unit_id: str) -> str:
@@ -117,7 +123,7 @@ class OutputPolicy:
         if verb == "plps":
             verb = "play" if self._paused(ev.speaker_id, outputs) else "paus"
             LOG.info("receiver toggle from %s: taken as %s", who, "play" if verb == "play" else "pause")
-        name = {"paus": "receiver.pause", "play": "receiver.play"}.get(verb)
+        name = {"paus": "receiver.pause", "play": "receiver.play", "wake": "receiver.wake"}.get(verb)
         if name is None:
             LOG.info(
                 "receiver command %s from %s (%s): no action",
@@ -125,7 +131,7 @@ class OutputPolicy:
             )
             return
         self._touched = True
-        ctx = EventContext(outputs, now, ev.member_id, ev.speaker_name)
+        ctx = EventContext(outputs, now, ev.member_id, ev.speaker_name, protocol=ev.protocol)
         submit(Intent(name, {"id": ev.speaker_id}, Origin.DEVICE, _requester(ev.speaker_id), context=ctx))
 
     def on_timer(self, now: float, outputs: OutputsPart) -> None:
@@ -314,6 +320,29 @@ class OutputPolicy:
         )
         return Outcome(ok=True, result={"action": "restored"})
 
+    def wake(self, intent: Intent, wait: float) -> Outcome:
+        """A paused or muted speaker's own knob was turned. On a paused one
+        it is its Play: the speaker resumes at its own level and what its
+        Pause muted is restored. On a speaker that is only muted it unmutes
+        that speaker alone, at its own level."""
+        ctx: EventContext = intent.context
+        uid = intent.args["id"]
+        who = ctx.speaker_name or uid
+        via = ctx.protocol or "?"
+        unit = ctx.outputs.unit(uid)
+        if unit is None:
+            LOG.info("receiver wake from %s: no such speaker", who)
+            return Outcome(ok=False, error="unknown_output")
+        if self._paused(uid, ctx.outputs):
+            LOG.info("receiver wake from %s (%s): taken as its play", who, via)
+            return self.play(intent, wait)
+        if unit.muted:
+            get_authority().unmute(uid, Origin.DEVICE, default_level=0, requester=intent.requester)
+            LOG.info("receiver wake from %s (%s): unmuted", who, via)
+            return Outcome(ok=True, result={"action": "unmuted"})
+        LOG.info("receiver wake from %s (%s): not paused or muted; ignored", who, via)
+        return Outcome(ok=True, result={"action": "none"})
+
 
 def _pause_off(intent: Intent, wait: float) -> Outcome:
     """Switch one speaker off because a Pause on it has lasted too long."""
@@ -330,4 +359,5 @@ def get_policy() -> OutputPolicy:
 
 bind("receiver.pause", lambda intent, wait: _policy.pause(intent, wait), owner=_OWNER)
 bind("receiver.play", lambda intent, wait: _policy.play(intent, wait), owner=_OWNER)
+bind("receiver.wake", lambda intent, wait: _policy.wake(intent, wait), owner=_OWNER)
 bind("outputs.pause_off", _pause_off, owner=_OWNER)

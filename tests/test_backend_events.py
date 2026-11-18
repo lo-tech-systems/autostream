@@ -634,6 +634,13 @@ class TestParseEvent:
                                      speaker={"id": 0, "name": None}), 1.0)
         assert ev.speaker_id == "0" and ev.speaker_name is None and ev.member_id is None
 
+    def test_a_receiver_command_carries_its_protocol_and_a_volume_does_not(self):
+        assert be.parse_event(self.msg(verb="wake", protocol="dacp"), 1.0).protocol == "dacp"
+        assert be.parse_event(self.msg(protocol=7), 1.0).protocol is None
+        assert be.parse_event(self.msg(), 1.0).protocol is None
+        ev = be.parse_event(self.msg(kind="device_volume", verb="volumeup", value=45, protocol="dacp"), 1.0)
+        assert ev.protocol is None
+
     def test_the_member_id_must_be_a_string(self):
         ev = be.parse_event(self.msg(speaker={"id": "1", "member_id": 7}), 1.0)
         assert ev.member_id is None

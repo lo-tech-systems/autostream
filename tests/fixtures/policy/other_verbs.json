@@ -79,6 +79,22 @@
     },
     "at_ms": 190511
    }
+  },
+  {
+   "at": 3,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "mute",
+    "protocol": "dacp",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
   }
  ],
  "expect": {
@@ -102,7 +118,8 @@
   "log": [
    "receiver command nitm from Speaker A (1001): no action",
    "receiver command pitm from Speaker A (1001): no action",
-   "receiver command xyzz from Speaker A (1001): no action"
+   "receiver command xyzz from Speaker A (1001): no action",
+   "receiver command mute from Speaker A (1001): no action"
   ]
  }
 }

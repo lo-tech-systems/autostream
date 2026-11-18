@@ -140,6 +140,15 @@ class TestRefusals:
         assert any("receiver.pause" in r.getMessage() and "unknown_output" in r.getMessage()
                    for r in caplog.records)
 
+    def test_a_wake_for_an_unknown_speaker_is_an_info_line_and_no_write(self, w, caplog):
+        with caplog.at_level(logging.INFO, logger="autostream"):
+            deliver(w, event("wake", id="77", received=T0 + 1))
+        assert w.fb.calls == []
+        assert any("receiver wake from Speaker 77: no such speaker" in r.getMessage()
+                   and r.levelno == logging.INFO for r in caplog.records)
+        assert any("receiver.wake" in r.getMessage() and "unknown_output" in r.getMessage()
+                   for r in caplog.records)
+
     def test_a_pause_for_a_speaker_that_is_off_is_refused(self, w, caplog):
         w.a.merge_for_tests([row(1, selected=True, volume_percent=40), row(2)], boot="b0", now=T0)
         w.a.deselect("2", Origin.USER)
@@ -185,11 +194,13 @@ class TestIntentLog:
         with caplog.at_level(logging.DEBUG, logger="autostream.intents"):
             deliver(w, event("paus", received=T0 + 1))
             deliver(w, event("play", received=T0 + 2))
+            deliver(w, event("wake", received=T0 + 3))
         lines = [r.getMessage() for r in caplog.records if r.name == "autostream.intents"]
         receiver = [re.sub(r" version=\d+$", "", line) for line in lines if line.startswith("intent receiver.")]
         assert receiver == [
             "intent receiver.pause origin=device requester=device:1 result=ok",
             "intent receiver.play origin=device requester=device:1 result=ok",
+            "intent receiver.wake origin=device requester=device:1 result=ok",
         ]
 
     def test_turning_the_others_off_switches_off_all_but_the_paused_speaker(self, w, caplog):

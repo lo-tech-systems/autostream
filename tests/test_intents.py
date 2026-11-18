@@ -162,7 +162,7 @@ class TestRows:
             "settings.service_field.set", "settings.discard", "first_boot.commit",
             "align.start", "align.abort", "align.finish", "align.discard",
             "backend.setting.set", "log.level.set",
-            "receiver.pause", "receiver.play", "outputs.pause_off",
+            "receiver.pause", "receiver.play", "receiver.wake", "outputs.pause_off",
             "input.counters.reset", "input.playback_config.set",
             "dials.authorize", "dials.revoke",
         }
@@ -235,6 +235,7 @@ class TestRows:
     @pytest.mark.parametrize("name,allowed,id_limit", [
         ("receiver.pause", Origin.DEVICE, 32),
         ("receiver.play", Origin.DEVICE, 32),
+        ("receiver.wake", Origin.DEVICE, 32),
         ("outputs.pause_off", Origin.POLICY, 64),
     ])
     def test_the_pause_rows_take_one_origin_and_a_bounded_id(self, name, allowed, id_limit):

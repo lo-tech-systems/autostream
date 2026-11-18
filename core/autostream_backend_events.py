@@ -63,6 +63,7 @@ class DeviceEvent:
     at_ms: int  # the player's monotonic clock, same origin as uptime_ms
     received: float  # time.monotonic() at the sink
     member_id: Optional[str] = None  # the device the event came from; for logs
+    protocol: Optional[str] = None  # receiver commands: where it came from; for logs
 
 
 class EventSink(Protocol):
@@ -117,6 +118,7 @@ def parse_event(msg: Mapping, received: float) -> Optional[DeviceEvent]:
     member_id = speaker.get("member_id")
     value = msg.get("value")
     at_ms = msg.get("at_ms")
+    protocol = msg.get("protocol")
     return DeviceEvent(
         kind=kind,
         speaker_id=str(speaker.get("id")),
@@ -126,6 +128,7 @@ def parse_event(msg: Mapping, received: float) -> Optional[DeviceEvent]:
         at_ms=at_ms if isinstance(at_ms, int) and not isinstance(at_ms, bool) else 0,
         received=received,
         member_id=member_id if isinstance(member_id, str) else None,
+        protocol=protocol if kind == "receiver_command" and isinstance(protocol, str) else None,
     )
 
 

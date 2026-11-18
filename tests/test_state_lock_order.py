@@ -552,10 +552,16 @@ def test_a_receiver_pause_and_play_break_no_rule(authority, monkeypatch, scope):
     a.step(now=100.0)
     a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "play", None, 2, 200.0))
     a.step(now=200.0)
+    # A second Pause, ended by a turn of the paused speaker's own knob
+    a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "paus", None, 3, 200.5))
+    a.step(now=200.5)
+    a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "wake", None, 4, 200.8))
+    a.step(now=200.8)
+    assert not a._units["1"].desired.muted
     a.note_session(False)
     a.step(now=201.0)
     # These rows cannot be held, so the speaker is muted instead
-    assert {name for name, _ in held} >= {"hold", "mute"} | (
+    assert {name for name, _ in held} >= {"hold", "mute", "unmute"} | (
         {"mute_all"} if scope == "all" else {"deselect_others"} if scope == "off_all" else set())
     assert all(h == frozenset() for _, h in held)
     assert lockcheck.ORDER_VIOLATIONS == []

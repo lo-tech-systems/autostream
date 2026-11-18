@@ -1,0 +1,87 @@
+{
+ "outputs": [
+  {
+   "id": "1001",
+   "name": "Speaker A",
+   "type": "AirPlay 2",
+   "selected": true,
+   "volume": 40,
+   "session": {
+    "state": "streaming",
+    "failure": "none"
+   },
+   "has_homepods": false
+  }
+ ],
+ "settings": {
+  "device_pause_scope": "output"
+ },
+ "session": true,
+ "steps": [
+  {
+   "at": 0,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "paus",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  },
+  {
+   "at": 60,
+   "line": {
+    "type": "event",
+    "seq": 3,
+    "kind": "receiver_command",
+    "verb": "wake",
+    "protocol": "airplay2_events",
+    "speaker": {
+     "id": "1001",
+     "member_id": "1001",
+     "name": "Speaker A"
+    },
+    "at_ms": 190511
+   }
+  },
+  {
+   "at": 300,
+   "tick": true
+  }
+ ],
+ "expect": {
+  "writes": [
+   [
+    "set_output_muted",
+    "1001",
+    true
+   ],
+   [
+    "set_output_muted",
+    "1001",
+    false
+   ]
+  ],
+  "units": {
+   "1001": {
+    "selected": true,
+    "muted": false,
+    "volume": 40,
+    "held": false
+   }
+  },
+  "silence_chosen": false,
+  "paused": [],
+  "log": [
+   "receiver pause from Speaker A (1001): Speaker A muted (it cannot be held); nothing else changed",
+   "receiver wake from Speaker A (airplay2_events): taken as its play",
+   "receiver play from Speaker A: Speaker A restored"
+  ]
+ }
+}

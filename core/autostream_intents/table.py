@@ -176,6 +176,7 @@ def _build_rows() -> dict:
         _row("outputs.deselect_all", {}, (), {Origin.SESSION, Origin.USER, Origin.POLICY}),
         _row("receiver.pause", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),
         _row("receiver.play", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),
+        _row("receiver.wake", {"id": v.text(error="missing_output_id", max_len=32)}, {"id"}, {Origin.DEVICE}),
         _row("outputs.pause_off", {"id": v.text(error="missing_output_id", max_len=64)}, {"id"}, {Origin.POLICY}),
         _row(
             "volume.step",
