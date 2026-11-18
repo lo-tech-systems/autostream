@@ -24,6 +24,7 @@
 // =============================================================================
 
 #include "autostream_monitor.h"
+#include "test_log_capture.h"
 
 #include <cerrno>
 #include <chrono>
@@ -562,12 +563,64 @@ static void test_backlog_capacity_is_reserved_up_front()
 // Entry point
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The reader-stalled warning goes through the keyed log limit: overflows
+// repeated inside one window write one line, and the rest are counted.
+// ---------------------------------------------------------------------------
+
+static std::int64_t g_fixed_clock_ns = 1000000000;
+static std::int64_t fixed_clock_ns() { return g_fixed_clock_ns; }
+
+static int count_lines_containing(const std::vector<std::string>& lines, const char* needle)
+{
+    int n = 0;
+    for (const std::string& line : lines)
+        if (line.find(needle) != std::string::npos)
+            ++n;
+    return n;
+}
+
+static void test_repeated_overflows_write_one_line_per_window()
+{
+    logger_init(MonitorLogLevel::Warn);
+    logger_test_set_clock(fixed_clock_ns);
+    LogFileCapture capture;
+
+    FifoFixture fx;
+    FifoWriter  writer;
+    writer.set_path(fx.path);
+
+    std::vector<uint8_t> priming = make_pattern(16, /*base=*/0);
+    writer.write(priming.data(), priming.size());
+    fx.read_available(priming.size());
+    int pipe_cap = ::fcntl(fx.reader_fd, F_GETPIPE_SZ);
+    std::vector<uint8_t> fill = make_pattern(static_cast<size_t>(pipe_cap), /*base=*/2);
+    writer.write(fill.data(), fill.size());
+
+    size_t cap_bytes = static_cast<size_t>(AudioMonitor::output_rate_hz())
+                     * static_cast<size_t>(AudioMonitor::output_bytes_per_frame());
+    std::vector<uint8_t> oversized = make_pattern(cap_bytes + 1, /*base=*/3);
+    for (int i = 0; i < 3; ++i)
+        writer.write(oversized.data(), oversized.size());
+    CHECK(writer.counters().overflow_events == 3, "T15 three overflows happened");
+
+    logger_flush_repeats();
+    std::vector<std::string> lines = capture.finish();
+    logger_test_set_clock(nullptr);
+    logger_init(MonitorLogLevel::Warn);
+    CHECK(count_lines_containing(lines, "[fifo] Reader stalled") == 1,
+          "T15 one warning for three overflows in a window");
+    CHECK(count_lines_containing(lines, "fifo reader stalled: 2 more suppressed") == 1,
+          "T15 the other two are counted");
+}
+
 int main()
 {
     // The broken-pipe test writes to a FIFO whose reader has gone. The
     // daemon ignores SIGPIPE in its own main(); this binary must too, or
     // the kernel kills it before FifoWriter ever sees EPIPE.
     ::signal(SIGPIPE, SIG_IGN);
+    logger_init(MonitorLogLevel::Warn);
 
     test_plain_write_byte_exact();
     test_backlog_fills_and_drains_in_order();
@@ -577,6 +630,9 @@ int main()
     test_no_reader_counts_discarded_bytes();
     test_broken_pipe_counts_backlog_and_block();
     test_backlog_capacity_is_reserved_up_front();
+    test_repeated_overflows_write_one_line_per_window();
+
+    logger_shutdown();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);

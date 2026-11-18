@@ -404,8 +404,6 @@ RateEstimator::RateEstimator()
     , _run_class(0)
     , _run_count(0)
     , _rate_matching_applied(false)
-    , _last_step_log_time(-1e9)
-    , _last_mismatch_log_time(-1e9)
     , _mismatch_warned(false)
     , _published_ratio(48000.0 / 48000.0)
     , _published_rate(48000.0)
@@ -433,10 +431,10 @@ void RateEstimator::reset(int negotiated_rate, int output_rate, int seed_rate, i
     _detect_frames     = 0;
     _detect_tainted    = false;
     clear_run();
-    _rate_matching_applied  = _rate_matching_enabled.load(std::memory_order_relaxed);
-    _last_step_log_time     = -1e9;
-    _last_mismatch_log_time = -1e9;
-    _mismatch_warned        = false;
+    _rate_matching_applied = _rate_matching_enabled.load(std::memory_order_relaxed);
+    _mismatch_warned       = false;
+    logger_rate_rearm(log_key(LogKey::RateStep, input_index));
+    logger_rate_rearm(log_key(LogKey::RateMismatch, input_index));
 
     // Publish safe initial values so any thread that reads before the first
     // measurement window completes gets a sensible initial ratio.
@@ -670,7 +668,7 @@ void RateEstimator::close_detector_window(double now)
     if (enabled)
         step_to(cls, now);
     else
-        report_mismatch(cls, now);
+        report_mismatch(cls);
 }
 
 int RateEstimator::classify(double measured) const
@@ -753,19 +751,17 @@ void RateEstimator::step_to(int new_nominal, double now)
     _relock_count.fetch_add(1, std::memory_order_relaxed);
 
     const double ratio = _published_ratio.load(std::memory_order_relaxed);
-    if (now - _last_step_log_time >= STEP_LOG_INTERVAL_SECONDS)
-    {
-        _last_step_log_time = now;
-        LOG_INFO("[input%d] Capture rate step: nominal %d -> %d Hz (negotiated %d Hz, ratio %.6f, step #%u)",
-                 _input_index, old_nominal, new_nominal, _negotiated_rate, ratio,
-                 _relock_count.load(std::memory_order_relaxed));
-    }
-    else
+    // While the INFO line is limited, the step is shown at DEBUG instead; the
+    // INFO line's suppressed count includes the steps shown that way.
+    if (!LOG_INFO_EVERY(log_key(LogKey::RateStep, _input_index), STEP_LOG_INTERVAL_SECONDS,
+                         "[input%d] Capture rate step: nominal %d -> %d Hz (negotiated %d Hz, ratio %.6f, step #%u)",
+                         _input_index, old_nominal, new_nominal, _negotiated_rate, ratio,
+                         _relock_count.load(std::memory_order_relaxed)))
         LOG_DEBUG("[input%d] Capture rate step: nominal %d -> %d Hz (ratio %.6f)",
                   _input_index, old_nominal, new_nominal, ratio);
 }
 
-void RateEstimator::report_mismatch(int delivered, double now)
+void RateEstimator::report_mismatch(int delivered)
 {
     // The rate first, then the state, so a reader that sees Mismatch also
     // sees a non-zero rate.
@@ -775,14 +771,11 @@ void RateEstimator::report_mismatch(int delivered, double now)
     publish_lock(RateLockState::Mismatch);
     if (!changed)
         return;
-    if (now - _last_mismatch_log_time >= MISMATCH_LOG_INTERVAL_SECONDS)
-    {
-        _last_mismatch_log_time = now;
-        _mismatch_warned        = true;
-        LOG_WARN("[input%d] Capture rate mismatch: device delivers %d Hz but was opened at %d Hz; "
-                 "dynamic rate matching is off for this input",
-                 _input_index, delivered, _negotiated_rate);
-    }
+    if (LOG_WARN_EVERY(log_key(LogKey::RateMismatch, _input_index), MISMATCH_LOG_INTERVAL_SECONDS,
+                        "[input%d] Capture rate mismatch: device delivers %d Hz but was opened at %d Hz; "
+                        "dynamic rate matching is off for this input",
+                        _input_index, delivered, _negotiated_rate))
+        _mismatch_warned = true;
 }
 
 double RateEstimator::src_ratio() const

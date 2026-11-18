@@ -197,8 +197,6 @@ void OutputStage::thread_func()
         stream_start_time = get_monotonic_time();
         stream_open       = true;
     };
-    double warn_last_log   = 0.0;
-    double sched_warn_last_log = 0.0;
     auto   deadline        = std::chrono::steady_clock::now();
 
     while (!_stop_requested.load(std::memory_order_relaxed))
@@ -277,12 +275,8 @@ void OutputStage::thread_func()
             if (!ready)
             {
                 _stats.record_live_wait_timeout();
-                double now = get_monotonic_time();
-                if (now - warn_last_log >= kLiveWaitWarnPeriodSeconds)
-                {
-                    LOG_WARN("[output] Live-clocked wait timed out; proceeding with a short block");
-                    warn_last_log = now;
-                }
+                LOG_WARN_EVERY(log_key(LogKey::OutputLiveWaitTimeout), kLiveWaitWarnPeriodSeconds,
+                               "[output] Live-clocked wait timed out; proceeding with a short block");
                 // mix_block() below pads whatever is missing and counts
                 // the underrun.
             }
@@ -304,12 +298,8 @@ void OutputStage::thread_func()
             _stats.record_late(late);
             if (late > kSchedGapWarnSeconds)
             {
-                double now = get_monotonic_time();
-                if (now - sched_warn_last_log >= kSchedGapWarnPeriodSeconds)
-                {
-                    LOG_WARN("[output] scheduling gap: woke %.0f ms late", late * 1000.0);
-                    sched_warn_last_log = now;
-                }
+                LOG_WARN_EVERY(log_key(LogKey::OutputSchedulingGap), kSchedGapWarnPeriodSeconds,
+                               "[output] scheduling gap: woke %.0f ms late", late * 1000.0);
             }
 
             deadline += std::chrono::duration_cast<std::chrono::steady_clock::duration>(block_period);

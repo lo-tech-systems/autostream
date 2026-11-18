@@ -847,7 +847,7 @@ bool InputChannel::start(std::string* error_out)
     _last_above_threshold_time        = 0.0;
     _capture_start_time               = 0.0;
     _last_notify_capture_started_time = 0.0;
-    _ring_overflow_last_log_time      = 0.0;
+    logger_rate_rearm(log_key(LogKey::CaptureRingFull, _index));
 
     // Reset per-channel EQ state.  Setting _current_eq_bands to nullptr forces
     // process_thread_func() to rebuild _local_filters from scratch on the first
@@ -1206,13 +1206,10 @@ void InputChannel::capture_thread_func()
             // invariant; the capture thread writing it (even atomically) can
             // race with the process thread's store and silently corrupt the
             // read position.
-            // Throttle the log to once every 5 seconds to avoid log spam
-            // under sustained CPU load.
-            if (now - _ring_overflow_last_log_time >= 5.0)
-            {
-                LOG_WARN("[input%d] Ring buffer full; dropping periods", _index);
-                _ring_overflow_last_log_time = now;
-            }
+            // At most one line every 5 seconds, so sustained CPU load does
+            // not flood the log.
+            LOG_WARN_EVERY(log_key(LogKey::CaptureRingFull, _index), 5.0,
+                           "[input%d] Ring buffer full; dropping periods", _index);
             _capture_ring_drops.fetch_add(1, std::memory_order_relaxed);
             continue;
         }

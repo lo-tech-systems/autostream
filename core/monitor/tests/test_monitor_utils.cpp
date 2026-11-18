@@ -904,44 +904,6 @@ static void set_fake_seconds(double seconds)
     g_fake_ns.store(static_cast<std::int64_t>(seconds * 1.0e9), std::memory_order_relaxed);
 }
 
-// Captures the logger's sink into a file for the scope of one test.
-class RateCapture
-{
-public:
-    RateCapture()
-    {
-        std::snprintf(_path, sizeof(_path), "/tmp/test_monitor_utils_rate_XXXXXX");
-        _fd = ::mkstemp(_path);
-        if (_fd >= 0)
-            _redirect = new StderrRedirect(_fd);
-    }
-
-    ~RateCapture()
-    {
-        finish();
-    }
-
-    // Wait for the sink, stop capturing, and return the lines written.
-    std::vector<std::string> finish()
-    {
-        if (_fd < 0)
-            return {};
-        logger_test_wait_drained(1000);
-        delete _redirect;
-        _redirect = nullptr;
-        ::close(_fd);
-        _fd = -1;
-        std::vector<std::string> lines = read_captured_lines(_path);
-        ::unlink(_path);
-        return lines;
-    }
-
-private:
-    char _path[64];
-    int _fd = -1;
-    StderrRedirect* _redirect = nullptr;
-};
-
 static void rate_test_begin(MonitorLogLevel level = MonitorLogLevel::Warn)
 {
     logger_init(level);
@@ -963,7 +925,7 @@ static bool contains(const std::string& text, const char* needle)
 static void test_rate_second_call_in_window_is_suppressed()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
 
     bool first = LOG_WARN_EVERY(slot, 5.0, "[test] rated %d", 1);
@@ -980,7 +942,7 @@ static void test_rate_second_call_in_window_is_suppressed()
 static void test_rate_arguments_not_evaluated_when_suppressed()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
     int evaluated = 0;
 
@@ -996,7 +958,7 @@ static void test_rate_arguments_not_evaluated_when_suppressed()
 static void test_rate_count_rides_on_the_next_line()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
 
     LOG_WARN_EVERY(slot, 5.0, "[test] rated");
@@ -1021,7 +983,7 @@ static void test_rate_count_rides_on_the_next_line()
 static void test_rate_keys_and_instances_are_independent()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
 
     bool a = LOG_WARN_EVERY(log_key(LogKey::CaptureRingFull, 1), 5.0, "[test] a");
     bool b = LOG_WARN_EVERY(log_key(LogKey::CaptureRingFull, 2), 5.0, "[test] b");
@@ -1042,7 +1004,7 @@ static void test_rate_keys_and_instances_are_independent()
 static void test_rate_disabled_level_does_not_touch_the_slot()
 {
     rate_test_begin(MonitorLogLevel::Warn);
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::RateWindowDiscarded, 1);
 
     bool first = LOG_DEBUG_EVERY(slot, 5.0, "[test] debug line");
@@ -1062,7 +1024,7 @@ static void test_rate_disabled_level_does_not_touch_the_slot()
 static void test_rate_sweep_reports_the_count_once()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
 
     LOG_WARN_EVERY(slot, 5.0, "[test] rated");
@@ -1098,7 +1060,7 @@ static void test_rate_sweep_reports_the_count_once()
 static void test_rate_lines_skip_the_identical_text_rule()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
 
     for (int window = 0; window < 10; ++window)
@@ -1118,7 +1080,7 @@ static void test_rate_lines_skip_the_identical_text_rule()
 static void test_rate_concurrent_callers_elect_one_emitter()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
     constexpr int kThreads = 4;
     constexpr int kCalls = 10000;
@@ -1166,7 +1128,7 @@ static void test_rate_admit_preserves_errno()
 static void test_rate_rearm_admits_inside_the_window()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::RateStep, 1);
 
     LOG_WARN_EVERY(slot, 60.0, "[test] rated");
@@ -1184,7 +1146,7 @@ static void test_rate_rearm_admits_inside_the_window()
 static void test_rate_flush_and_init_handle_pending_counts()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::CaptureRingFull, 2);
 
     LOG_WARN_EVERY(slot, 5.0, "[test] rated");
@@ -1229,7 +1191,7 @@ __attribute__((noinline)) void operator delete(void* p, std::size_t) noexcept { 
 static void test_rate_suppressed_path_does_not_allocate()
 {
     rate_test_begin();
-    RateCapture capture;
+    LogFileCapture capture;
     const LogSlot slot = log_key(LogKey::CaptureRingFull, 1);
     LOG_WARN_EVERY(slot, 5.0, "[test] rated");
     capture.finish();

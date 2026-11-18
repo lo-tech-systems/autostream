@@ -9,8 +9,11 @@
 
 #pragma once
 
+#include "autostream_monitor_utils.h"
+
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -107,3 +110,49 @@ inline std::vector<std::string> read_captured_lines(const char* path)
             lines.push_back(line);
     return lines;
 }
+
+// ---------------------------------------------------------------------------
+// LogFileCapture: capture the logger's sink into a file for one scope.
+// finish() waits for the logging thread, stops capturing and returns the
+// lines written; the destructor does the same and discards them.
+// ---------------------------------------------------------------------------
+
+class LogFileCapture
+{
+public:
+    LogFileCapture()
+    {
+        logger_test_wait_drained(1000);   // lines logged earlier belong to no capture
+        std::snprintf(_path, sizeof(_path), "/tmp/test_log_capture_XXXXXX");
+        _fd = ::mkstemp(_path);
+        if (_fd >= 0)
+            _redirect = new StderrRedirect(_fd);
+    }
+
+    ~LogFileCapture()
+    {
+        finish();
+    }
+
+    LogFileCapture(const LogFileCapture&) = delete;
+    LogFileCapture& operator=(const LogFileCapture&) = delete;
+
+    std::vector<std::string> finish()
+    {
+        if (_fd < 0)
+            return {};
+        logger_test_wait_drained(1000);
+        delete _redirect;
+        _redirect = nullptr;
+        ::close(_fd);
+        _fd = -1;
+        std::vector<std::string> lines = read_captured_lines(_path);
+        ::unlink(_path);
+        return lines;
+    }
+
+private:
+    char _path[64];
+    int _fd = -1;
+    StderrRedirect* _redirect = nullptr;
+};

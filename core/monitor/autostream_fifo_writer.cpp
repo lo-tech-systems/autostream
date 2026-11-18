@@ -198,13 +198,9 @@ void FifoWriter::append_to_backlog(const uint8_t* data, size_t len)
         // counted as the loss.
         _overflow_bytes.fetch_add(static_cast<uint64_t>(pending + len), std::memory_order_relaxed);
         _overflow_events.fetch_add(1, std::memory_order_relaxed);
-        double now = get_monotonic_time();
-        if (now - _stall_last_log_time >= 5.0)
-        {
-            LOG_WARN("[fifo] Reader stalled; dropped %zu bytes (backlog and block) on '%s'",
-                     pending + len, _path.c_str());
-            _stall_last_log_time = now;
-        }
+        LOG_WARN_EVERY(log_key(LogKey::FifoReaderStalled), 5.0,
+                       "[fifo] Reader stalled; dropped %zu bytes (backlog and block) on '%s'",
+                       pending + len, _path.c_str());
         _backlog.clear();
         _backlog_pos = 0;
         return;

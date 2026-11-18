@@ -28,6 +28,7 @@
 
 #include "autostream_monitor.h"
 #include "autostream_monitor_utils.h"
+#include "test_log_capture.h"
 
 #include <cassert>
 #include <cmath>
@@ -653,6 +654,70 @@ static void test_mismatch_clears_only_after_three_nominal_windows()
     CHECK(cleared_at > 0.384 - 1e-6 && cleared_at < 0.512 + 1e-6, "clears after three windows at the nominal, not before");
     CHECK(est.lock_state() == RateLockState::Locked, "Locked once cleared");
     CHECK(est.relock_count() == 0, "clearing is not a step");
+}
+
+// ---------------------------------------------------------------------------
+// RateEstimator: the mismatch warning goes through the keyed log limit
+// ---------------------------------------------------------------------------
+
+static std::int64_t g_fixed_clock_ns = 1000000000;
+static std::int64_t fixed_clock_ns() { return g_fixed_clock_ns; }
+
+static int count_lines_containing(const std::vector<std::string>& lines, const char* needle)
+{
+    int n = 0;
+    for (const std::string& line : lines)
+        if (line.find(needle) != std::string::npos)
+            ++n;
+    return n;
+}
+
+// Mismatch at 44100, back to the nominal until it clears, then 44100 again.
+static void mismatch_then_clear_then_mismatch(RateEstimator& est, double& t)
+{
+    mismatch_asserted_at_44100(est, t);
+    feed_reads(est, 48000.0, 60, t);
+    feed_reads(est, 44100.0, 90, t);
+}
+
+static void test_mismatch_warning_is_limited_and_paired_with_cleared()
+{
+    logger_init(MonitorLogLevel::Info);
+    logger_test_set_clock(fixed_clock_ns);
+    LogFileCapture capture;
+
+    RateEstimator est;
+    double t = 0.0;
+    mismatch_then_clear_then_mismatch(est, t);
+    CHECK(est.mismatch_rate() == 44100, "T13 the second mismatch is asserted");
+    feed_reads(est, 48000.0, 60, t);   // and cleared again
+    CHECK(est.mismatch_rate() == 0, "T13 the second mismatch clears");
+
+    std::vector<std::string> lines = capture.finish();
+    logger_test_set_clock(nullptr);
+    logger_init(MonitorLogLevel::Warn);
+    CHECK(count_lines_containing(lines, "Capture rate mismatch: device delivers") == 1,
+          "T13 one warning inside the window");
+    CHECK(count_lines_containing(lines, "Capture rate mismatch cleared") == 1,
+          "T13 only the warned mismatch writes a cleared line");
+}
+
+static void test_reset_rearms_the_mismatch_warning()
+{
+    logger_init(MonitorLogLevel::Warn);
+    logger_test_set_clock(fixed_clock_ns);
+    LogFileCapture capture;
+
+    RateEstimator est;
+    double t = 0.0;
+    mismatch_asserted_at_44100(est, t);
+    mismatch_asserted_at_44100(est, t);   // reset() inside
+
+    std::vector<std::string> lines = capture.finish();
+    logger_test_set_clock(nullptr);
+    logger_init(MonitorLogLevel::Warn);
+    CHECK(count_lines_containing(lines, "Capture rate mismatch: device delivers") == 2,
+          "T14 a mismatch after reset() warns at once");
 }
 
 static void test_turning_matching_on_steps_from_existing_evidence()
@@ -1757,6 +1822,8 @@ int main()
     test_rate_near_no_standard_never_steps();
     test_matching_off_publishes_todays_values_and_reports_mismatch();
     test_mismatch_clears_only_after_three_nominal_windows();
+    test_mismatch_warning_is_limited_and_paired_with_cleared();
+    test_reset_rearms_the_mismatch_warning();
     test_turning_matching_on_steps_from_existing_evidence();
     test_turning_matching_off_reverts_the_nominal();
     test_turning_matching_on_for_an_honest_device_does_not_step();

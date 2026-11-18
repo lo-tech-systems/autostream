@@ -476,8 +476,6 @@ private:
     int    _run_class;              // class of the current run: a standard rate or the nominal; 0 = none
     int    _run_count;              // consecutive plausible windows in _run_class, saturates at DETECT_AGREE_WINDOWS
     bool   _rate_matching_applied;  // the flag value the capture thread last acted on
-    double _last_step_log_time;     // throttle for the step INFO line
-    double _last_mismatch_log_time; // throttle for the mismatch WARN line
     bool   _mismatch_warned;        // the WARN for the current mismatch was written; the cleared INFO follows only then
 
     // ── Published values (written by capture thread, read by any thread) ──────
@@ -558,7 +556,7 @@ private:
     void close_detector_window(double now);
     void apply_mode_change(bool enabled, double now);
     void step_to(int new_nominal, double now);
-    void report_mismatch(int delivered, double now);
+    void report_mismatch(int delivered);
     int  classify(double measured) const;
     void clear_run();
     void publish_lock(RateLockState s);
@@ -821,7 +819,6 @@ private:
 
     int         _fd                  = -1;
     std::string _path;
-    double      _stall_last_log_time = 0.0;   // throttles both the EAGAIN stall tracking and the backlog-drop warning
     std::atomic<double> _stall_since{0.0};    // monotonic start of the current failure streak; 0 = healthy/idle
     bool        _pipe_resize_warned  = false; // F_SETPIPE_SZ failure logged once, not on every reopen
 
@@ -3631,7 +3628,6 @@ private:
     std::condition_variable  _ring_cv;
 
     // ── Capture thread private state ─────────────────────────────────────────
-    double _ring_overflow_last_log_time = 0.0;  // throttle for ring-full warning
 
     // Cumulative capture-side loss counters, one period per event. Read by
     // get_status() (relaxed load, same as the other polled counters in this
@@ -4088,6 +4084,8 @@ private:
                                            const RepeatController::TransportAck& a);
 
     static constexpr int NUM_INPUTS  = 2;
+    static_assert(kLogKeyInstances > NUM_INPUTS,
+                  "the log rate limiter needs an instance slot per 1-based input number");
 
     // Output pipe format descriptor. The process-wide g_output_format
     // runtime descriptor (autostream_monitor_utils.h) is set once in
