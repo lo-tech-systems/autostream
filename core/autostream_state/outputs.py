@@ -587,6 +587,17 @@ class OutputAuthority:
             return None
         return -(-sum(levels) // len(levels))
 
+    def _connecting_locked(self, u: UnitState) -> bool:
+        """Wanted during a session, the player has the speaker, and it is not
+        yet playing: still starting, between retries, or switched off on the
+        player. A speaker waiting for a PIN is not connecting."""
+        r = u.reported
+        if not (u.desired.selected and self._session_active) or r is None or u.availability == "password":
+            return False
+        if self._rows_carry_session:
+            return r.session_state != "streaming"
+        return not r.selected
+
     def _build_part_locked(self) -> OutputsPart:
         views = []
         for u in self._ordered_units_locked():
@@ -596,6 +607,7 @@ class OutputAuthority:
             views.append(OutputUnitView(
                 id=u.id, name=name, selected=d.selected, volume=level, muted=d.muted,
                 availability=u.availability, cause=d.cause, reported=u.reported,
+                connecting=self._connecting_locked(u),
             ))
         return OutputsPart(
             units=tuple(views), connected=self._connected, backend_boot=self._backend_boot,
@@ -1051,12 +1063,11 @@ class OutputAuthority:
         with self._lock:
             self._session_active = bool(active)
             self._items.put(("session", bool(active)))
-            if active:
-                return
-            self._silence_chosen = False
-            for u in self._units.values():
-                u.retry_backoff = RETRY_MIN_S
-                u.retry_at = None
+            if not active:
+                self._silence_chosen = False
+                for u in self._units.values():
+                    u.retry_backoff = RETRY_MIN_S
+                    u.retry_at = None
             pending = self._publish_locked(Origin.SESSION, None)
         pending.notify()
 

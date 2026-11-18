@@ -213,6 +213,7 @@ class OutputUnitView:
     availability: str                       # "ok" | "starting" | "failed" | "password" | "gone"
     cause: Origin                           # who last changed desired
     reported: Optional[OutputInfo]          # the last row; None while the row is away after a boot change
+    connecting: bool = False                # wanted in a session and the player has it, but it is not playing yet
 
     @property
     def shown_selected(self) -> bool:
@@ -403,7 +404,7 @@ def _outputs_digest(p: OutputsPart) -> tuple:
     return (
         tuple(
             (u.id, u.name, u.shown_selected, u.volume, u.muted, u.availability,
-             _unit_pin_fields(u), u.reported.type if u.reported is not None else "")
+             _unit_pin_fields(u), u.reported.type if u.reported is not None else "", u.connecting)
             for u in p.units
         ),
         p.connected, p.muted_all, p.silence_chosen,

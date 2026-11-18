@@ -1981,3 +1981,71 @@ class TestPolicyHooks:
             w.a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "paus", None, 2, 2.0))
             w.a.step(now=T0)
         assert "no policy" not in "\n".join(r.getMessage() for r in caplog.records)
+
+
+class TestConnecting:
+    def connecting(self, uid="1"):
+        return snap().unit(uid).connecting
+
+    @pytest.mark.parametrize("session_state,expected", [
+        ("startup", True), ("connected", True), ("stopped", True),
+        ("streaming", False), ("password", False),
+    ])
+    def test_a_wanted_speaker_on_a_row_with_a_session_connects_until_it_streams(self, w, session_state, expected):
+        w.a.note_session(True)
+        merge(w, [group_row(1, session_state, selected=True)])
+        assert self.connecting() is expected
+
+    def test_a_failed_speaker_the_coordinator_keeps_retrying_is_connecting(self, w):
+        merge(w, [group_row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("http_error")]
+        w.a.select("1", Origin.SESSION, volume=30).outcome.result()
+        merge(w, [group_row(1, "failed", selected=False)])
+        assert snap().unit("1").availability == "failed" and self.connecting()
+
+    def test_a_failed_start_being_reverted_is_not_connecting(self, w):
+        merge(w, [group_row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("http_error")]
+        w.a.select("1", Origin.USER, volume=30).outcome.result()
+        merge(w, [group_row(1, "failed", selected=False)])
+        assert snap().unit("1").selected is False and not self.connecting()
+
+    def test_a_speaker_that_is_not_wanted_is_not_connecting(self, w):
+        w.a.note_session(True)
+        merge(w, [group_row(1, "startup", selected=False)])
+        assert not self.connecting()
+
+    def test_nothing_connects_outside_a_session(self, w):
+        merge(w, [group_row(1, "startup", selected=True)])
+        assert not self.connecting()
+
+    def test_the_session_edges_move_it(self, w):
+        merge(w, [group_row(1, "startup", selected=True)])
+        assert not self.connecting()
+        w.a.note_session(True)
+        assert self.connecting()
+        w.a.note_session(False)
+        assert not self.connecting()
+
+    def test_a_unit_whose_row_is_away_is_not_connecting(self, w):
+        w.a.note_session(True)
+        merge(w, [group_row(1, "streaming", selected=True)], boot="b0")
+        merge(w, [], boot="b1")
+        assert snap().unit("1").reported is None and not self.connecting()
+
+    def test_a_row_without_a_session_connects_until_the_player_reports_it_selected(self, w):
+        w.a.note_session(True)
+        merge(w, [row(1)])
+        w.fb.results = [ActionResult(ok=True)]
+        w.a.select("1", Origin.SESSION, volume=30).outcome.result()
+        merge(w, [row(1, selected=False)])
+        assert self.connecting()
+        merge(w, [row(1, selected=True)])
+        assert not self.connecting()
+
+    def test_a_speaker_waiting_for_a_pin_is_not_connecting(self, w):
+        w.a.note_session(True)
+        merge(w, [row(1, selected=True, needs_auth_key=True)])
+        assert snap().unit("1").availability == "password" and not self.connecting()

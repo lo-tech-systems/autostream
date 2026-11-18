@@ -367,6 +367,7 @@ class TestOutputsPart:
             state.OutputsPart(units=(self.unit("a", volume=5),), connected=True),
             state.OutputsPart(units=(self.unit("a", muted=True),), connected=True),
             state.OutputsPart(units=(self.unit("a", availability="starting"),), connected=True),
+            state.OutputsPart(units=(self.unit("a", connecting=True),), connected=True),
             state.OutputsPart(units=(self.unit("a", name="Other"),), connected=True),
             state.OutputsPart(units=(self.unit("a"),), connected=False),
             state.OutputsPart(units=(self.unit("a"),), connected=True, muted_all=True),
@@ -411,6 +412,9 @@ class TestOutputsPart:
         assert state.outputs_list_digest(muted) == state.outputs_list_digest(base)
         assert state.outputs_list_digest(off) != state.outputs_list_digest(base)
         assert state.outputs_volume_digest(off) == state.outputs_volume_digest(base)
+        # a speaker that is connecting is not a change to the dial lists
+        connecting = dataclasses.replace(base, units=(self.unit("a", selected=True, volume=20, connecting=True),))
+        assert state.outputs_list_digest(connecting) == state.outputs_list_digest(base)
 
     def test_a_part_with_a_reported_row_is_frozen_and_publishable(self):
         from autostream_players import OutputInfo
