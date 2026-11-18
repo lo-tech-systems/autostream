@@ -36,7 +36,7 @@ DIAL_PART_VERSION = 2
 
 # The appliance's own parts the `focused` part passes through; the page reads
 # nothing else of the appliance's state.
-FOCUSED_PART_NAMES = ("session", "repeat", "track", "outputs", "eq")
+FOCUSED_PART_NAMES = ("session", "repeat", "track", "inputs", "outputs", "eq")
 
 # What the `dial` part leaves out of the full body: what the appliance's own
 # parts carry, and the readings that change at every step.

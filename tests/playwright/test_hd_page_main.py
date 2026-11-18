@@ -140,7 +140,7 @@ class TestStates:
         watcher = Watcher(page)
         open_page(page, hd)
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
-        expect(page.locator("#sub")).to_have_text("Dire Straits")
+        expect(page.locator("#sub")).to_have_text("Dire Straits \u00b7 Making Movies")
         art = page.locator("#art")
         expect(art).to_have_attribute("src", re.compile(r"^/api/v1/artwork/[0-9a-f]{16}$"))
         expect(art).not_to_have_class(re.compile("logo"))

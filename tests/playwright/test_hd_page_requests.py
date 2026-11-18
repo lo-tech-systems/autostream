@@ -65,7 +65,7 @@ SEEK_BODY = {"appliance_id": LOUNGE, "args": {"position": 0}}
 # The title while an appliance plays and has not named the track
 # ---------------------------------------------------------------------------
 
-UNTITLED = "Input 1 \u00b7 Line Level"
+UNTITLED = "Line"
 
 
 class TestUntitledTrack:
@@ -75,10 +75,16 @@ class TestUntitledTrack:
         expect(page.locator("#title")).to_have_text(UNTITLED)
         expect(page.locator("#sub")).to_have_text("")
 
-    def test_the_input_name_gives_way_to_a_real_title(self, page, hd):
-        hd.show(hs.SCENARIOS["playing_untitled"])
+    def test_a_playing_appliance_that_named_its_input_reads_the_input(self, page, hd):
+        hd.show(hs.SCENARIOS["playing_untitled_input"])
         open_page(page, hd)
-        expect(page.locator("#title")).to_have_text(UNTITLED)
+        expect(page.locator("#title")).to_have_text("CD")
+        expect(page.locator("#sub")).to_have_text("")
+
+    def test_the_input_name_gives_way_to_a_real_title(self, page, hd):
+        hd.show(hs.SCENARIOS["playing_untitled_input"])
+        open_page(page, hd)
+        expect(page.locator("#title")).to_have_text("CD")
         hd.show(hs.SCENARIOS["playing_artwork"])
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
 
@@ -107,7 +113,7 @@ class TestUntitledTrack:
         hd.show(hs.SCENARIOS["playing_no_artwork"])
         open_page(page, hd)
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
-        expect(page.locator("#sub")).to_have_text("Dire Straits")
+        expect(page.locator("#sub")).to_have_text("Dire Straits \u00b7 Making Movies")
 
 
 # ---------------------------------------------------------------------------

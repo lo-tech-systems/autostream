@@ -9,8 +9,8 @@ import {
 } from "./hd-tables.js";
 import { responseFilters, eqLabel } from "./hd-eq.js";
 import { pending, clockRate, clockPosition, reportedPosition } from "./hd-state.js";
-import { speakerRows, masterVolume, nowPlaying, playing } from "/static/shared/state_view.js";
-import { CHIP, START_FAILURE, AUTO_START_PILL, AUTO_START_CONFIRM } from "/static/shared/texts.js";
+import { speakerRows, masterVolume, nowPlaying, playing, activeInput } from "/static/shared/state_view.js";
+import { CHIP, INPUT_TYPE_LABELS, START_FAILURE, AUTO_START_PILL, AUTO_START_CONFIRM } from "/static/shared/texts.js";
 
 const held = (key, live) => pending.value(key, live);
 
@@ -26,7 +26,11 @@ function nowPlayingText(dial, p, focus) {
     if (!dial.started) { return { title: "Starting...", sub: "" }; }
     if (!p || !playing(p)) { return { title: "Nothing playing", sub: focus ? focus.name : "" }; }
     const np = nowPlaying(p, {});
-    return { title: np.title, sub: np.subtitle };
+    const n = activeInput(p);
+    const t = ((p.track && p.track.entries) || {})[String(n === null ? 1 : n)] || {};
+    const e = ((p.inputs && p.inputs.entries) || []).find((x) => x.index === n);
+    if (!t.enabled) { return { title: n === null ? "Playing" : INPUT_TYPE_LABELS[e && e.input_type] || "Line", sub: "" }; }
+    return { title: np.title, sub: t.state === "identified" ? [t.artist, t.album].filter(Boolean).join(" \u00b7 ") : np.subtitle };
 }
 
 // The speaker rows as the browser draws them. A PIN being entered for a
@@ -113,8 +117,7 @@ function deriveReplay(focus, usable, local) {
         return { id: id, enabled: can(id), pushed: pressed && local.press.target === id };
     });
     return {
-        items: items,
-        ticking: ticking,
+        items: items, ticking: ticking,
         // How long until the position reaches its next whole second.
         nextMs: ticking
             ? (Math.floor(at) + 1 - at) / clockRate(clock, local.now) * 1000 + CONFIG.replayTickLagMs : 0
@@ -215,8 +218,8 @@ function deriveModal(dial, p, focus, local) {
     if (dial.recovery.active && !dial.recovery.confirmed) {
         return {
             key: "presence", source: "", title: "Confirm you are at the dial", severity: "warning", progress: null,
-            message: "The PIN is being recovered from the web UI. Confirm only if that is you.",
-            closable: false, kind: "notice", buttons: [{ id: "presence", label: "Confirm", act: "presence" }]
+            message: "The PIN is being recovered from the web UI. Confirm only if that is you.", closable: false,
+            kind: "notice", buttons: [{ id: "presence", label: "Confirm", act: "presence" }]
         };
     }
     const pinCard = derivePinCard(dial, p, focus, local);
@@ -227,8 +230,8 @@ function deriveModal(dial, p, focus, local) {
     if (refused) {
         return {
             key: "notice", source: refused.webui, title: "Not allowed", severity: "info", progress: null,
-            message: "Allow this dial in " + refused.name + "'s web UI (Setup, Dials)",
-            closable: true, kind: "notice", buttons: [{ id: "ok", label: "OK", act: "close" }]
+            message: "Allow this dial in " + refused.name + "'s web UI (Setup, Dials)", closable: true,
+            kind: "notice", buttons: [{ id: "ok", label: "OK", act: "close" }]
         };
     }
     // The due warning is shown when it belongs to the dial or to the
@@ -251,27 +254,24 @@ export function isLoopbackHost(host) {
 }
 
 export function derive(dial, focused, local) {
-    const offline = local.offline;
     const cardsById = new Map(dial.warnings.cards.map((c) => [c.id, c]));
     const focusId = dial.focus.appliance_id;
     const focus = dial.appliances.find((a) => a.id === focusId) || null;
     const p = focused ? focused.parts : null;
     const shownFocus = held("focus", focusId);
-    const usable = !offline && !!focused && focused.reachable && focused.access === "playback";
+    const usable = !local.offline && !!focused && focused.reachable && focused.access === "playback";
 
     const appliances = dial.appliances.map((a) => {
         const status = applianceStatus(a);
         return {
             id: a.id, name: a.name, label: status.label, bad: status.bad,
-            lit: !status.bad && (a.playing || a.replaying),
-            badge: replayBadge(a), current: a.id === shownFocus,
-            warn: warnBadge(a, cardsById)
+            lit: !status.bad && (a.playing || a.replaying), badge: replayBadge(a),
+            current: a.id === shownFocus, warn: warnBadge(a, cardsById)
         };
     });
 
     const speakers = deriveSpeakers(dial, p, usable);
-    // Master volume and mute act on the dial's volume target: usable only
-    // while that is the focused appliance.
+    // Master volume and mute act on the dial's volume target: usable only while it is focused.
     const mine = !!focused && focused.id === dial.focus.reporting_id;
     const level = mine ? masterVolume(p) : null;
     const known = typeof level === "number";
@@ -295,7 +295,7 @@ export function derive(dial, focused, local) {
     const modal = deriveModal(dial, p, focus, local);
 
     return {
-        offline: offline,
+        offline: local.offline,
         asleep: !!panel.asleep,
         appliances: appliances,
         focusId: shownFocus,
@@ -315,7 +315,7 @@ export function derive(dial, focused, local) {
         eq: eq,
         settings: settings,
         hidePointer: !!panel.kiosk && isLoopbackHost(local.host),
-        sheet: { open: local.sheetOpen, info: deriveInfo(local.info), canPower: !offline && !derivePower(dial, local) },
+        sheet: { open: local.sheetOpen, info: deriveInfo(local.info), canPower: !local.offline && !derivePower(dial, local) },
         modal: modal,
         // Something on the page changes with the clock.
         live: replay.ticking || !!(modal && modal.timed)

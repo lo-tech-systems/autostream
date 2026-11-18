@@ -4,6 +4,7 @@ and resync rule. All pure functions; no server."""
 from __future__ import annotations
 
 import dataclasses
+from types import MappingProxyType
 import json
 import os
 import sys
@@ -106,10 +107,14 @@ class TestFocusedPart:
         assert (focused["boot"], focused["version"], focused["reachable"], focused["access"]) == (
             "bb", 77, True, "playback")
 
-    def test_parts_are_limited_to_the_five_the_page_reads_and_passed_through(self):
+    def test_parts_are_limited_to_the_six_the_page_reads_and_passed_through(self):
         scenario = with_peer(
             "playing_artwork", playing=True, units=[unit()], bands=[0] * 6, repeat=replay_block(),
             warnings=[{"id": "stylus"}], track_entry={"state": "identified", "title": "T"})
+        peer_now = scenario.snapshot.focused_peer
+        held_parts = dict(peer_now.parts, inputs={"entries": [{"index": 1, "input_type": "cd"}]})
+        scenario = scenario.with_snapshot(
+            focused_peer=dataclasses.replace(peer_now, parts=MappingProxyType(held_parts)))
         focused = parts_of(scenario)["focused"]
         held = scenario.snapshot.focused_peer.parts
         assert set(focused["parts"]) == set(FOCUSED_PART_NAMES)

@@ -247,6 +247,8 @@ def focused_peer(snapshot: CoreSnapshot, muted=None, *, boot=PEER_BOOT, version=
         if playing is not None and playing.title:
             held["track"] = {"entries": {"1": {"enabled": True, "state": "identified", "title": playing.title,
                                                "artist": playing.artist, "album": playing.album}}}
+        kind = {"CD": "cd", "Turntable": "turntable"}.get(playing.input_label, "line") if playing is not None else "line"
+        held["inputs"] = {"entries": [{"index": 1, "input_type": kind, "level": {"label": "Input 1"}}]}
         outputs = snapshot.outputs
         if outputs is not None and outputs.appliance_id == appliance_id:
             units = _units(outputs)
