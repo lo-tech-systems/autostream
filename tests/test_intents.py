@@ -153,7 +153,7 @@ class TestRows:
     def test_the_table_names_every_row(self):
         assert set(table.ROWS) == {
             "outputs.set", "output.pin.submit", "outputs.select_default", "outputs.want_default",
-            "outputs.save_default",
+            "outputs.save_default", "outputs.resume",
             "outputs.deselect_all", "volume.step", "volume.set", "mute.set",
             "repeat.arm", "repeat.transport", "repeat.seek", "input.eq.set",
             "output.eq.set", "output.eq.reset",
@@ -249,6 +249,16 @@ class TestRows:
         assert self._submit_real(name, {"id": "1" * (id_limit + 1)}, allowed)[0].error == "missing_output_id"
         assert self._submit_real(name, {"id": "1" * id_limit}, allowed)[0].ok
 
+    def test_the_resume_row_is_a_user_request_with_a_bounded_id(self):
+        assert table.ROWS["outputs.resume"].origins == frozenset({Origin.USER})
+        for origin in (Origin.SYSTEM, Origin.SESSION, Origin.POLICY, Origin.DEVICE):
+            assert self._submit_real("outputs.resume", {"id": "7"}, origin)[0].error == "origin_not_allowed"
+        reply, seen = self._submit_real("outputs.resume", {"id": "7"})
+        assert reply.ok and seen[0][1] == 3.0
+        assert self._submit_real("outputs.resume", {"id": " "})[0].error == "missing_output_id"
+        assert self._submit_real("outputs.resume", {"id": "1" * 65})[0].error == "missing_output_id"
+        assert self._submit_real("outputs.resume", {"id": "7", "selected": True})[0].error == "invalid_args"
+
     def test_wait_defaults_come_from_the_row(self):
         _, seen = self._submit_real("outputs.set", {"id": "7", "selected": False})
         assert seen[0][1] == 3.0
@@ -257,8 +267,8 @@ class TestRows:
 
 
 EXPOSED_PLAYBACK = {
-    "outputs.set", "output.pin.submit", "outputs.want_default", "outputs.save_default", "volume.step", "volume.set",
-    "mute.set", "output.eq.set", "output.eq.reset", "repeat.arm", "repeat.transport", "repeat.seek",
+    "outputs.set", "output.pin.submit", "outputs.want_default", "outputs.save_default", "outputs.resume",
+    "volume.step", "volume.set", "mute.set", "output.eq.set", "output.eq.reset", "repeat.arm", "repeat.transport", "repeat.seek",
 }
 
 

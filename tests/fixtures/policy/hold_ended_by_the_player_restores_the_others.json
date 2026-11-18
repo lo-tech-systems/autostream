@@ -120,7 +120,7 @@
   "paused": [],
   "log": [
    "receiver pause from Speaker A (1001): Speaker A held; Speaker B muted",
-   "hold of Speaker A ended by the player: Speaker B restored"
+   "hold of Speaker A ended: Speaker B restored"
   ]
  }
 }

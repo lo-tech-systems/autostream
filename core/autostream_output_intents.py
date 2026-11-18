@@ -115,6 +115,21 @@ def _outputs_set(intent: Intent, wait: float) -> Outcome:
     return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
 
 
+def _outputs_resume(intent: Intent, wait: float) -> Outcome:
+    """End the hold of a speaker that paused itself, as its own Play would:
+    the player restarts it at the live position, and the output policy then
+    unmutes the speakers its Pause muted. A speaker that is not held is left
+    as it is."""
+    out_id = intent.args["id"]
+    applied = get_authority().resume(out_id, Origin.USER, requester=intent.requester)
+    if applied.refused is not None:
+        return Outcome(ok=False, error=applied.refused, result={"ok": False, "id": out_id, "error": applied.refused})
+    outcome = _first(wait_outcome(applied, wait))
+    if not outcome.ok:
+        return Outcome(ok=False, error=outcome.error, result=_failure(out_id, outcome))
+    return Outcome(ok=True, result={"ok": True, "id": out_id})
+
+
 def _output_pin_submit(intent: Intent, wait: float) -> Outcome:
     user = intent.origin == Origin.USER
     args = intent.args
@@ -299,6 +314,7 @@ def _claim_late_pin(unit_id: str, claimant: str) -> None:
 set_pin_claim_handler(_claim_late_pin)
 
 bind("outputs.set", _outputs_set, owner=_OWNER)
+bind("outputs.resume", _outputs_resume, owner=_OWNER)
 bind("output.pin.submit", _output_pin_submit, owner=_OWNER)
 bind("outputs.select_default", _select_default, owner=_OWNER)
 bind("outputs.want_default", _want_default, owner=_OWNER)

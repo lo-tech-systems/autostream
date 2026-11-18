@@ -17,9 +17,10 @@ when its own screens change.
 
 Every Pause also starts the pause timeout. When it runs out with no Play,
 the held speaker and the speakers that Pause muted and that are still muted
-are turned off (deselected; the player is never stopped). A hold the player
-ends itself (its session ended or was restarted) counts as the Play for the
-speakers it muted. Switching the paused speaker off ends its Pause and
+are turned off (deselected; the player is never stopped). A hold ended any
+other way counts as the Play for the speakers it muted: the player ended it
+(its session ended or was restarted), or a client resumed the speaker (the
+outputs.resume intent). Switching the paused speaker off ends its Pause and
 leaves the others as they are.
 
 The policy owns no lock. Its state is confined to the authority's worker
@@ -135,11 +136,12 @@ class OutputPolicy:
                 self._entries.pop(entry.unit_id, None)
                 continue
             if entry.held and not self._unit_held(entry.unit_id, outputs):
-                # The player ended the hold itself: the speaker plays again,
-                # so the speakers its Pause muted play again too.
+                # The hold ended without the speaker's Play (the player ended
+                # it, or a client resumed the speaker): the speaker plays
+                # again, so the speakers its Pause muted play again too.
                 self._entries.pop(entry.unit_id, None)
                 restored = self._restore_others(entry, outputs, _REQUESTER)
-                LOG.info("hold of %s ended by the player: %s restored", entry.name, _names(outputs, restored))
+                LOG.info("hold of %s ended: %s restored", entry.name, _names(outputs, restored))
                 continue
             if entry.off_at is not None and entry.off_at <= now:
                 self._entries.pop(entry.unit_id, None)

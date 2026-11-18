@@ -23,6 +23,7 @@ PROTOCOL = 4
 # is answered unknown_intent.
 EXPOSED_INTENTS = (
     "outputs.set", "output.pin.submit", "outputs.want_default", "outputs.save_default",
+    "outputs.resume",
     "volume.step", "volume.set", "mute.set",
     "output.eq.set", "output.eq.reset",
     "repeat.arm", "repeat.transport", "repeat.seek",

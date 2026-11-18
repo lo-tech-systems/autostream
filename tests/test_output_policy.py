@@ -3,8 +3,7 @@
 What a Pause or Play pressed on a speaker does: the recorded scenarios
 replayed through the event parser, the output authority and the policy, then
 the cases the scenarios cannot show (the settings read at each event, the
-play guard comparing the time the event was received, the intent log lines,
-the timer hooks).
+intent log lines, the timer hooks, a client's resume).
 """
 from __future__ import annotations
 
@@ -20,14 +19,16 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
+import autostream_output_intents  # noqa: F401  (binds outputs.resume)
 import autostream_output_policy as policy_module
 import policy_replay
 from autostream_backend_events import DeviceEvent
 from autostream_config import OutputsConfig
+from autostream_intents.table import Intent, submit
 from autostream_output_policy import get_policy
 from autostream_state import Origin
 from autostream_state.outputs import get_authority
-from output_fakes import FakeBackend, row, snap
+from output_fakes import FakeBackend, group_row, row, snap
 
 T0 = 1000.0
 
@@ -245,6 +246,46 @@ class TestTimerHooks:
         w.a.deselect("1", Origin.USER)
         w.a.step(now=T0 + 2)
         assert w.pol.paused_units() == ()
+
+
+class TestAClientResume:
+    """outputs.resume from a client (the dial's tap on a Paused speaker):
+    the authority ends the hold, and the policy's timer restores what that
+    speaker's Pause muted, as its own Play would."""
+
+    @pytest.fixture
+    def held(self, w):
+        w.a.merge_for_tests([
+            group_row(1, "streaming", selected=True, volume_percent=40, session_holdable=True),
+            group_row(2, "streaming", selected=True, volume_percent=30, session_holdable=True),
+        ], boot="b0", now=T0)
+        deliver(w, event("paus", received=T0 + 1))
+        assert snap().unit("1").held and snap().unit("2").muted
+        w.fb.calls.clear()
+        return w
+
+    @staticmethod
+    def resume(id="1"):
+        return submit(Intent("outputs.resume", {"id": id}, Origin.USER, "dial:test"), wait=0.5)
+
+    def test_the_speaker_plays_again_and_the_others_are_unmuted(self, held):
+        reply = self.resume()
+        assert reply.ok and reply.result == {"ok": True, "id": "1"}
+        assert ("set_output_hold", ("1", False)) in [c[:2] for c in held.fb.calls]
+        held.a.step(now=T0 + 2)
+        p = snap()
+        assert not p.unit("1").held and not p.unit("2").muted
+        assert held.pol.paused_units() == () and held.pol.next_deadline() is None
+
+    def test_a_speaker_that_is_not_held_is_left_as_it_is(self, held):
+        reply = self.resume("2")
+        assert reply.ok and held.fb.calls == []
+        assert snap().unit("2").muted and held.pol.paused_units() == ("1",)
+
+    def test_an_unknown_speaker_or_one_that_is_off_is_refused(self, held):
+        assert self.resume("77").error == "unknown_output"
+        held.a.deselect("2", Origin.USER)
+        assert self.resume("2").error == "not_selected"
 
 
 class TestReset:

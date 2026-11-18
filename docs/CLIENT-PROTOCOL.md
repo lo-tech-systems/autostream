@@ -113,7 +113,8 @@ severe first, at most 16. Each entry:
 
 Each speaker in `units` carries `held`: `true` while the speaker paused itself (its own
 Pause, or an Apple TV remote's) and the appliance holds it until its own Play. It is still
-`selected`. Clients show it as paused; switching it off and on clears it.
+`selected`. Clients show it as paused. `outputs.resume` ends the hold as the speaker's own
+Play would; switching it off and on clears it too.
 
 Besides the speakers, `outputs` carries `master_volume` (the mean level of
 the selected speakers the appliance can reach, or `null` when there are
@@ -219,7 +220,7 @@ later, such as a speaker asking for a PIN, appears in the `outputs` part
 
 | Intent | Role needed |
 |---|---|
-| `outputs.set`, `output.pin.submit`, `outputs.want_default`, `outputs.save_default` | playback |
+| `outputs.set`, `output.pin.submit`, `outputs.want_default`, `outputs.save_default`, `outputs.resume` | playback |
 | `volume.step`, `volume.set`, `mute.set` | playback |
 | `output.eq.set`, `output.eq.reset` | playback |
 | `repeat.arm`, `repeat.transport`, `repeat.seek` | playback |
@@ -247,6 +248,12 @@ refused `nothing_selected` when no speaker is playing, and
 member the player does not have at the moment (`placeholder` in
 `default_members`). It asks for that member to be started when it appears, or
 not. Without `id` it applies to the first such card.
+
+`outputs.resume` takes `id`, a speaker that is `held`. The appliance ends the
+hold and the speaker plays again from the live position; the speakers its
+Pause muted are unmuted, as for its own Play. A speaker that is not held is
+left as it is and the reply is ok. It is refused `unknown_output` for an
+unknown speaker and `not_selected` for one that is off.
 
 ### Who is asking
 
