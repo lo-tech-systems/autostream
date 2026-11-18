@@ -12,10 +12,17 @@ The daemon is expected to be running as a systemd service before this
 script starts.  The socket path defaults to /tmp/autostream_monitor.sock
 and can be overridden with the AUTOSTREAM_MONITOR_SOCKET environment
 variable.
+
+This module is the process bootstrap and the coordinator loop: it sets up the
+settings store, logging and the output authority, starts the background
+services and the web UI, then polls the daemon twice a second and hands each
+cycle's changes to the modules that act on them (the session tracker, the
+per-input monitors, the self-heal and the published parts).  Monitor start-up
+and resync, the per-input state, track identification, the background
+services and the dial push client are in their own modules.
 """
 
 import importlib
-import os
 import logging
 import sys
 import time
@@ -42,7 +49,6 @@ from autostream_intents import Intent
 from autostream_state import Origin
 from autostream_state.outputs import WRITE_TIMEOUT_S, PlayerServiceBackend, get_authority
 import autostream_dial_push
-from autostream_nowplaying import OwntoneMetadataPipePublisher
 from autostream_playback_stats import DEFAULT_FLUSH_INTERVAL_SECONDS
 from autostream_sysutils import (
     audit_static_system_facts,
@@ -52,29 +58,28 @@ from autostream_sysutils import (
 
 
 # --------------------------------------------------------------------------- #
-# Module-level locks/events, grouped by conceptual store (documentation only  #
-# -- the grouping below is descriptive; the locks/events themselves are not   #
-# consolidated into a single object).                                        #
+# Where the locks and events live. The coordinator holds none of its own; each #
+# belongs to the module that guards the state it protects.                    #
 # --------------------------------------------------------------------------- #
 #
 # Process-wide signals (not tied to any store):
 #   stop_flag, reload_flag                    -- in autostream_runtime
-#   (log_queue -- async log fan-out, bounded 1000 -- is function-local to
-#    the logging-setup call today, not a module-level global; listed here
-#    only because an earlier gap-analysis pass described it as module-level)
 #
-# Independent, single-purpose locks (each guards something distinct enough
-# that folding it into a group below would blur its meaning):
+# Domain locks held across read, build and publish of one part:
+#   input_status._inputs_publish_lock         -- the inputs part
+#   playback_tracking._playback_publish_lock  -- the playback part
+#
+# Independent, single-purpose locks:
 #   (_monitors_lock and _track_id_request_gate are in autostream_runtime;
 #    the Avahi "playing" announcement lock is in autostream_announce)
 #   (the now-playing republish-request lock is in autostream_runtime)
 #   (the repeat-block overlay lock is in autostream_repeat)
 #
-# Class-level (not module-level, listed here for completeness):
+# Class-level:
 #   MonitorClient._lock                       -- serializes daemon-socket
 #                                                 commands across coordinator
 #                                                 + track-ID worker threads
-#   audio_monitor.AudioMonitor._ti_state_lock                -- identification dispatch
+#   audio_monitor.AudioMonitor._ti_state_lock -- identification dispatch
 #                                                 state vs. _apply_track_id_service
 
 
@@ -283,8 +288,8 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
         # apply_startup_log_level drives set_log_level(_startup=True), whose
         # fan-out already forwards the level to the Wi-Fi watcher -- no
         # separate startup forward call is needed here.
-        from autostream_log_policy import apply_startup_log_level as _apply_startup_log_level
-        _apply_startup_log_level(config_path, settings=settings)
+        import autostream_log_policy
+        autostream_log_policy.apply_startup_log_level(config_path, settings=settings)
     except Exception:
         logging.warning("apply_startup_log_level: import or apply failed; continuing")
     audit_static_system_facts()
