@@ -31,6 +31,7 @@ from dial_display_draw import (
     GLYPH_WIFI,
     _LANCZOS,
     _centred_box,
+    _BELL_RGB,
     _cap_lines,
     _dim_rect,
     _draw_bell,
@@ -57,6 +58,7 @@ from dial_display_palette import (
     LIST_SEPARATOR_RGB,
     DIMMED_GLYPH_RGB,
     INVERTED_GLYPH_RGB,
+    BELL_INFO_RGB,
     ALARM_RGB,
     CARD_FILL_RGB,
     CARD_OUTLINE_RGB,
@@ -811,46 +813,73 @@ def _body_eq_bars(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     )
 
 
-# The source line of a warning card is drawn at this fraction of the body
-# size (never below the floor), in the dimmed glyph colour.
-WARNING_SOURCE_FONT_FRACTION = 0.8
-WARNING_SOURCE_FONT_FLOOR_PX = 9
+# A warning card's small text size, as a fraction of the body size (never
+# below the floor): the message when the row is short of room.
+WARNING_SMALL_FONT_FRACTION = 0.8
+WARNING_SMALL_FONT_FLOOR_PX = 9
+
+# The rule under a warning's source band is this many times the divider width.
+WARNING_RULE_WIDTH_FACTOR = 2
+
+
+def _plan_warning_band(
+    draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", body: Body, metrics: LayoutMetrics,
+) -> "tuple[str, object, int, int] | None":
+    """Lay out the source band across the top of *rect* (the card's message
+    row) as (text, font, band height, rule height); None when the warning
+    has no source, no font loads or the band and rule would not leave the
+    row any room. The source is one line at body size, or at the largest
+    smaller size (down to the floor) that holds it whole, and is
+    ellipsized at the floor when even that is too wide. Pure: measuring
+    calls only."""
+    if not body.source:
+        return None
+    max_w = rect[2] - rect[0] - 2 * metrics.pad
+    floor_px = min(metrics.font_body, WARNING_SMALL_FONT_FLOOR_PX)
+    font = None
+    for px in range(metrics.font_body, floor_px - 1, -1):
+        font = _load_font(px)
+        if font is None:
+            return None
+        measured = _text_size(draw, body.source, font)
+        if measured is not None and measured[0] <= max_w:
+            break
+    text = _truncate_to_width(draw, body.source, font, max_w)
+    band_h = round(px * 1.2)
+    rule_h = WARNING_RULE_WIDTH_FACTOR * metrics.divider_w
+    if not text or band_h + rule_h >= rect[3] - rect[1]:
+        return None
+    return text, font, band_h, rule_h
 
 
 def _plan_warning_text(
     draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", body: Body, metrics: LayoutMetrics,
 ) -> "list[tuple[str, object, int, tuple]]":
-    """Lay out an attributed warning's text in *rect* (the card's message
-    row) as (text, font, size, colour) lines, top to bottom. Text arrives
-    from outside, so it is fitted rather than assumed short: the source is
-    one line (ellipsized when too wide); the title is wrapped at readout
-    size, then body size; the message at body size, then at the source's
-    small size. The first combination that shows everything wins. When none
-    does, the title (body size) keeps as many lines as the row allows, the
-    last ellipsized, and the message (small size) gets the height that is
-    left, ellipsized, or is dropped when there is none. Returns [] when no
-    font loads. Pure: measuring calls only."""
+    """Lay out a sourced warning's title and message in *rect* (what the
+    card's message row has left under the source band) as (text, font,
+    size, colour) lines, top to bottom. Text arrives from outside, so it is
+    fitted rather than assumed short: the title is wrapped at readout size,
+    then body size; the message at body size, then at the small size. The
+    first combination that shows everything wins. When none does, the title
+    (body size, or the small size in a very short row) keeps as many lines
+    as the row allows, the last ellipsized, and the message (small size)
+    gets the height that is left, ellipsized, or is dropped when there is
+    none. Returns [] when no font loads or the row holds no line at all.
+    Pure: measuring calls only."""
     pad = metrics.pad
     max_w = rect[2] - rect[0] - 2 * pad
     max_h = rect[3] - rect[1]
-    small_px = max(WARNING_SOURCE_FONT_FLOOR_PX, round(metrics.font_body * WARNING_SOURCE_FONT_FRACTION))
+    small_px = max(WARNING_SMALL_FONT_FLOOR_PX, round(metrics.font_body * WARNING_SMALL_FONT_FRACTION))
     body_px = metrics.font_body
     readout_px = metrics.font_readout
     fonts = {px: _load_font(px) for px in (small_px, body_px, readout_px)}
     if any(font is None for font in fonts.values()) or max_w <= 0:
         return []
 
-    out: "list[tuple[str, object, int, tuple]]" = []
-    used = 0.0
-    source = _truncate_to_width(draw, body.source, fonts[small_px], max_w)
-    if source:
-        out.append((source, fonts[small_px], small_px, DIMMED_GLYPH_RGB))
-        used += small_px * 1.2
-
     def fitted(title_px: int, message_px: int):
         title = _wrap_words(draw, body.title, fonts[title_px], max_w)
         message = _wrap_words(draw, body.line, fonts[message_px], max_w) if body.line else ()
-        if used + (len(title) * title_px + len(message) * message_px) * 1.2 <= max_h:
+        if (len(title) * title_px + len(message) * message_px) * 1.2 <= max_h:
             return title, message
         return None
 
@@ -865,13 +894,17 @@ def _plan_warning_text(
         title, message = chosen
     else:
         title_px, message_px = body_px, small_px
+        if max_h < title_px * 1.2:
+            title_px = small_px
+        if max_h < title_px * 1.2:
+            return []
         title = _wrap_words(draw, body.title, fonts[title_px], max_w)
         message = _wrap_words(draw, body.line, fonts[message_px], max_w) if body.line else ()
-        title_n = min(len(title), max(1, int((max_h - used) // (title_px * 1.2))))
+        title_n = min(len(title), int(max_h // (title_px * 1.2)))
         title = _cap_lines(draw, title, title_n, fonts[title_px], max_w)
-        message_n = int((max_h - used - title_n * title_px * 1.2) // (message_px * 1.2))
+        message_n = int((max_h - title_n * title_px * 1.2) // (message_px * 1.2))
         message = _cap_lines(draw, message, message_n, fonts[message_px], max_w) if message_n > 0 else ()
-    out.extend((line, fonts[title_px], title_px, GLYPH_RGB) for line in title)
+    out = [(line, fonts[title_px], title_px, GLYPH_RGB) for line in title]
     out.extend((line, fonts[message_px], message_px, GLYPH_RGB) for line in message)
     return out
 
@@ -880,14 +913,32 @@ def _draw_fitted_warning_text(
     draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", body: Body, metrics: LayoutMetrics,
 ) -> None:
     """Draw _plan_warning_text()'s lines, one centred row each, the block
-    centred vertically in *rect*."""
+    centred vertically in *rect* and never above its top."""
     lines = _plan_warning_text(draw, rect, body, metrics)
     x0, y0, x1, y1 = rect
-    top = y0 + (y1 - y0 - sum(size * 1.2 for _, _, size, _ in lines)) / 2
+    top = max(y0, y0 + (y1 - y0 - sum(size * 1.2 for _, _, size, _ in lines)) / 2)
     for text, font, size, color in lines:
         row = (x0, int(round(top)), x1, int(round(top + size * 1.2)))
         _draw_label_centered(draw, row, text, font, color)
         top += size * 1.2
+
+
+def _draw_warning_band(
+    draw: ImageDraw.ImageDraw, rect: "tuple[int, int, int, int]", band: "tuple[str, object, int, int]",
+    severity: str, metrics: LayoutMetrics,
+) -> "tuple[int, int, int, int]":
+    """Draw the source band at the top of *rect* (white, with the source in
+    black) and the rule under it in the severity's colour, across the full
+    width. Returns what is left of *rect* underneath for the title and
+    message."""
+    text, font, band_h, rule_h = band
+    x0, y0, x1, y1 = rect
+    draw.rectangle([x0, y0, x1 - 1, y0 + band_h - 1], fill=GLYPH_RGB)
+    _draw_label_centered(draw, (x0, y0, x1, y0 + band_h), text, font, INVERTED_GLYPH_RGB)
+    draw.rectangle(
+        [x0, y0 + band_h, x1 - 1, y0 + band_h + rule_h - 1], fill=_BELL_RGB.get(severity, BELL_INFO_RGB),
+    )
+    return x0, y0 + band_h + rule_h, x1, y1
 
 
 def _cell_label_font(draw: ImageDraw.ImageDraw, label: str, width: int, metrics: LayoutMetrics):
@@ -918,9 +969,10 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     crosshair. With body.percent set, a progress bar takes the bottom
     quarter of the message row (a dimmed track from the card's inner left
     to right edge, a white fill to the percent) and the text is laid out
-    in the rest of the row. With body.source set, the row holds the source
-    over the title over the message, wrapped and shrunk to fit (see
-    _plan_warning_text)."""
+    in the rest of the row. With body.source set, the row opens with the
+    source in a white band across its full width, a rule in the severity's
+    colour under it, and the title over the message below that, wrapped
+    and shrunk to fit (see _plan_warning_band and _plan_warning_text)."""
     layout = warning_layout_for(metrics.width, metrics.height, buttons=len(body.buttons), metrics=metrics)
     draw = ImageDraw.Draw(img)
     readout_font = _load_font(metrics.font_readout)
@@ -938,7 +990,11 @@ def _body_warning(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
             draw.rectangle([x0, bar_y0, fill_x1 - 1, bar_y0 + bar_h - 1], fill=GLYPH_RGB)
         my1 -= zone
     if body.source:
-        _draw_fitted_warning_text(draw, (mx0, my0, mx1, my1), body, metrics)
+        rect = (mx0, my0, mx1, my1)
+        band = _plan_warning_band(draw, rect, body, metrics)
+        if band is not None:
+            rect = _draw_warning_band(draw, rect, band, body.severity, metrics)
+        _draw_fitted_warning_text(draw, rect, body, metrics)
     elif body.line:
         split = my0 + (my1 - my0) * 3 // 5
         _draw_label_centered(draw, (mx0, my0, mx1, split), body.title, readout_font)

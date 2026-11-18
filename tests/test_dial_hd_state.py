@@ -355,7 +355,7 @@ class TestWarnings:
     def test_a_dial_warning_is_one_bell_entry(self):
         bell = _state("warning_sdhealth")["bell"]
         assert bell == {"severity": "warning", "entries": [{
-            "key": "sdhealth", "source": "This dial", "severity": "warning",
+            "key": "sdhealth", "source": "Lounge dial", "severity": "warning",
             "title": "microSD card", "message": "18% life left, replace soon", "actions": []}]}
         assert _state("warning_sdhealth")["status"] is None
 
@@ -416,7 +416,7 @@ class TestWarnings:
         snapshot = dataclasses.replace(
             scenario.snapshot, warnings=hs.warning_states({"update_dial": ("Lounge", "Kitchen")}))
         (entry,) = dataclasses.replace(scenario, snapshot=snapshot).state()["bell"]["entries"]
-        assert (entry["key"], entry["source"]) == ("update_dial", "This dial")
+        assert (entry["key"], entry["source"]) == ("update_dial", "Lounge dial")
         assert entry["title"] == "Update this dial" and entry["message"] == "Lounge, Kitchen need a newer dial"
 
     def test_an_inactive_or_unknown_warning_makes_no_entry(self):

@@ -27,7 +27,7 @@ from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_warning_text import appliance_warning_key
 from dial_warnings import ACTION_CLOSE, APPLIANCE_WARNING_PREFIX, KIND_WARNING
 
-# Who a dial-own entry is attributed to.
+# Who a dial-own entry is attributed to when the dial has no name.
 DIAL_SOURCE = "This dial"
 
 # Worst last, so a larger rank is a worse severity.
@@ -38,7 +38,7 @@ _RANK = {SEVERITY_INFO: 0, SEVERITY_WARNING: 1, SEVERITY_CRITICAL: 2}
 class BellEntry:
     """One warning in a bell."""
     key: str            # the registry key: "sdhealth", "appliance:<aid>:<wid>"
-    source: str         # DIAL_SOURCE, or the appliance's name
+    source: str         # the dial's name (DIAL_SOURCE without one), or the appliance's name
     severity: str       # SEVERITY_INFO, SEVERITY_WARNING or SEVERITY_CRITICAL
     title: str
     message: str
@@ -87,7 +87,7 @@ def dial_bell(snapshot, descriptors) -> Bell:
             continue
         entries.append(BellEntry(
             key=state.id,
-            source=DIAL_SOURCE,
+            source=(snapshot.dial.name or "").strip() or DIAL_SOURCE,
             severity=desc.severity(state.reading),
             title=desc.title_text(state.reading),
             message=desc.message_text(state.reading),

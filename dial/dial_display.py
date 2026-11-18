@@ -2440,7 +2440,7 @@ class DialDisplay:
         view = WarningView(
             title=card.title, message=card.message, buttons=tuple(label for label, _ in card.buttons),
             pressed=CARD_BUTTON_ZONES.index(zone) if zone in CARD_BUTTON_ZONES else None,
-            percent=card.percent, source=card.source,
+            percent=card.percent, source=card.source, severity=card.severity,
         )
         self._paint_locked(self._compositor.compose_warning, self._current_base_image, after=(view,))
 

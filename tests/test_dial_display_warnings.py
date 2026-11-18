@@ -325,7 +325,8 @@ class TestAnEntryClears:
         display._apply_pending_snapshot()
         _fold(display)
         view = _painted(display)
-        assert (view.title, view.buttons, view.source) == ("microSD card", ("Close",), "This dial")
+        assert (view.title, view.buttons, view.source, view.severity) == (
+            "microSD card", ("Close",), "This dial", "warning")
         assert display.touch_surface()[0] == "card1"
 
     def test_the_page_closes_when_the_last_entry_clears(self):

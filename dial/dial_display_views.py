@@ -336,8 +336,9 @@ class WarningView:
     the whole message row), the button labels left to right, the index of
     the pressed cell, if any, the optional progress percent (None draws no
     bar; no buttons draws a notice with no cells) and the optional source
-    (who the warning is about: a non-empty one is drawn as a small line
-    above the title, and the page's text is then fitted to its message row
+    (who the warning is about: a non-empty one is drawn as a band across
+    the top of the message row, over a rule coloured by the severity, and the
+    page's text is then fitted to the rest of the row
     rather than drawn as one line each)."""
 
     title: str
@@ -346,6 +347,7 @@ class WarningView:
     pressed: "int | None" = None
     percent: "int | None" = None
     source: str = ""
+    severity: str = ""
 
 
 # Background sources for _new_frame(): where a frame's base image comes
@@ -430,7 +432,8 @@ class Body:
     bell: "BellBadge | None" = None  # BODY_IDLE_BADGE / BODY_COMPACT_CONTROLS: the warning bell, None draws none
     buttons: tuple[str, ...] = ()  # BODY_WARNING: button labels, left to right, one per layout cell
     percent: "int | None" = None   # BODY_WARNING: progress bar under the message (0..100), None for none
-    source: str = ""               # BODY_WARNING: small line above the title; non-empty fits the text to the row
+    source: str = ""               # BODY_WARNING: the band above the title; non-empty fits the text to the rest of the row
+    severity: str = ""             # BODY_WARNING: colours the rule under the source band
 
 
 @dataclass(frozen=True)

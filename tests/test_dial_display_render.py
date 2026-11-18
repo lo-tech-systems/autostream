@@ -66,9 +66,13 @@ from dial_display_compositor import (  # noqa: E402
     _reset_render_caches,
 )
 from dial_display_palette import (  # noqa: E402
+    BELL_CRITICAL_RGB,
+    BELL_INFO_RGB,
+    BELL_WARNING_RGB,
     CARD_FILL_RGB,
     DIMMED_GLYPH_RGB,
     GLYPH_RGB,
+    INVERTED_GLYPH_RGB,
     LIST_BG_RGB,
     OVERLAY_DIM_FACTOR,
 )
@@ -3204,15 +3208,19 @@ _UNBROKEN = ("S" * 40, "W" * 40, "M" * 120)
 _TYPICAL = ("Lounge", "Technics stylus", "Needs changing soon (7.5 h remaining). Reset in Service.")
 
 
-def _fit_plan(tier, source, title, message):
+def _fit_plan(tier, source, title, message, severity="warning"):
+    """(draw, message row, metrics, title and message lines, source band) for
+    one tier; the lines are laid out in the row left under the band and rule."""
     from PIL import ImageDraw
-    from dial_display_render import _plan_warning_text
+    from dial_display_render import _plan_warning_band, _plan_warning_text
     width, height, mm = _APPLIANCE_TIERS[tier]
     metrics = metrics_for(width, height, mm)
     rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
-    body = Body(BODY_WARNING, title=title, line=message, buttons=("Close",), source=source)
+    body = Body(BODY_WARNING, title=title, line=message, buttons=("Close",), source=source, severity=severity)
     draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
-    return draw, rect, metrics, _plan_warning_text(draw, rect, body, metrics)
+    band = _plan_warning_band(draw, rect, body, metrics)
+    below = (rect[0], rect[1] + band[2] + band[3], rect[2], rect[3])
+    return draw, rect, metrics, _plan_warning_text(draw, below, body, metrics), band
 
 
 class TestApplianceWarningText:
@@ -3222,52 +3230,63 @@ class TestApplianceWarningText:
         yield
         _reset_font_cache()
 
-    def test_a_view_has_no_source_by_default(self):
+    def test_a_view_has_no_source_or_severity_by_default(self):
         assert WarningView(title="x").source == "" and Body().source == ""
+        assert WarningView(title="x").severity == "" and Body().severity == ""
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     @pytest.mark.parametrize("texts", [
         (_WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE), _UNBROKEN, _TYPICAL, ("Lounge", "Power supply", ""),
     ], ids=["worst", "unbroken", "typical", "title_only"])
     def test_every_line_fits_the_message_row_and_the_title_is_never_dropped(self, tier, texts):
-        draw, rect, metrics, plan = _fit_plan(tier, *texts)
+        draw, rect, metrics, plan, band = _fit_plan(tier, *texts)
         max_w = rect[2] - rect[0] - 2 * metrics.pad
         assert plan and plan[0][0]
-        assert sum(size * 1.2 for _, _, size, _ in plan) <= rect[3] - rect[1]
-        for text, font, _, _ in plan:
+        assert band[2] + band[3] + sum(size * 1.2 for _, _, size, _ in plan) <= rect[3] - rect[1]
+        for text, font in [(t, f) for t, f, _, _ in plan] + [(band[0], band[1])]:
             assert _text_size(draw, text, font)[0] <= max_w, text
 
     @pytest.mark.parametrize("tier", ["compact_128x128", "compact_240x240", "rich_320x240"])
     def test_the_longest_title_is_shown_whole_where_the_row_has_room(self, tier):
-        draw, rect, metrics, plan = _fit_plan(tier, _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
-        assert " ".join(text for text, *_ in plan[1:]).startswith(_WORST_TITLE)
+        draw, rect, metrics, plan, band = _fit_plan(tier, _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
+        assert " ".join(text for text, *_ in plan).startswith(_WORST_TITLE)
 
     def test_the_base_panel_ellipsizes_the_source_and_the_title_for_the_longest_title(self):
-        draw, rect, metrics, plan = _fit_plan("base_160x128", _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
-        assert len(plan) == 3
-        assert plan[0][0].endswith("...") and plan[-1][0].endswith("...")
+        draw, rect, metrics, plan, band = _fit_plan("base_160x128", _WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE)
+        assert band[0].endswith("...") and plan[-1][0].endswith("...")
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     def test_the_typical_title_and_source_show_whole_on_every_tier(self, tier):
-        draw, rect, metrics, plan = _fit_plan(tier, *_TYPICAL)
-        assert [text for text, *_ in plan[:2]] == ["Lounge", "Technics stylus"]
+        draw, rect, metrics, plan, band = _fit_plan(tier, *_TYPICAL)
+        assert band[0] == "Lounge" and plan[0][0] == "Technics stylus"
 
-    def test_a_message_gets_the_row_left_over(self):
-        _, _, _, base = _fit_plan("base_160x128", *_TYPICAL)
-        assert len(base) == 3 and base[2][0].startswith("Needs changing")
-        for tier in ("compact_128x128", "compact_240x240", "rich_320x240"):
-            _, _, _, plan = _fit_plan(tier, *_TYPICAL)
-            assert len(plan) >= 3 and plan[2][0].startswith("Needs changing")
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_a_message_gets_the_row_left_over(self, tier):
+        _, _, _, plan, _ = _fit_plan(tier, *_TYPICAL)
+        assert len(plan) >= 2 and plan[1][0].startswith("Needs changing")
 
-    def test_the_message_is_never_larger_than_body_size(self):
-        _, _, metrics, plan = _fit_plan("compact_128x128", *_TYPICAL)
-        assert plan[2][2] <= metrics.font_body
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_the_message_is_never_larger_than_body_size(self, tier):
+        _, _, metrics, plan, _ = _fit_plan(tier, *_TYPICAL)
+        assert plan[1][2] <= metrics.font_body
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     def test_a_short_title_alone_is_drawn_at_readout_size(self, tier):
-        _, _, metrics, plan = _fit_plan(tier, "Lounge", "Power supply", "")
-        assert [text for text, *_ in plan] == ["Lounge", "Power supply"]
-        assert plan[1][2] == metrics.font_readout
+        _, _, metrics, plan, band = _fit_plan(tier, "Lounge", "Power supply", "")
+        assert band[0] == "Lounge"
+        assert [text for text, *_ in plan] == ["Power supply"]
+        assert plan[0][2] == metrics.font_readout
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_a_short_source_is_drawn_at_body_size(self, tier):
+        draw, rect, metrics, plan, band = _fit_plan(tier, "Lounge", "Power supply", "")
+        assert band[2] == round(metrics.font_body * 1.2)
+
+    @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
+    def test_a_long_source_steps_down_before_it_is_cut(self, tier):
+        from dial_display_render import WARNING_SMALL_FONT_FLOOR_PX
+        draw, rect, metrics, plan, band = _fit_plan(tier, "Kitchen dial · 12 of 16", "Power supply", "")
+        assert not band[0].endswith("...") or band[2] == round(WARNING_SMALL_FONT_FLOOR_PX * 1.2)
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     @pytest.mark.parametrize("texts", [(_WORST_SOURCE, _WORST_TITLE, _WORST_MESSAGE), _UNBROKEN, _TYPICAL],
@@ -3276,21 +3295,41 @@ class TestApplianceWarningText:
         width, height, mm = _APPLIANCE_TIERS[tier]
         metrics = metrics_for(width, height, mm)
         rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
-        view = WarningView(title=texts[1], message=texts[2], buttons=("Close",), source=texts[0])
+        view = WarningView(
+            title=texts[1], message=texts[2], buttons=("Close",), source=texts[0], severity="critical",
+        )
         base = Image.new("RGB", (width, height), (0, 0, 0))
         with_text = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
-        with patch.object(dial_display_render, "_plan_warning_text", return_value=[]):
+        with patch.object(dial_display_render, "_plan_warning_text", return_value=[]), \
+                patch.object(dial_display_render, "_plan_warning_band", return_value=None):
             without = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
         box = _diff_bbox(with_text, without)
         assert box is not None
-        assert rect[0] + metrics.pad <= box[0] and box[2] <= rect[2] - metrics.pad
+        assert rect[0] <= box[0] and box[2] <= rect[2]
         assert rect[1] <= box[1] and box[3] <= rect[3]
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
-    def test_the_source_line_is_drawn_above_the_title_and_dimmer(self, tier):
-        _, _, metrics, plan = _fit_plan(tier, *_TYPICAL)
-        assert plan[0][0] == "Lounge" and plan[0][2] < metrics.font_body
-        assert plan[0][3] != plan[1][3]
+    @pytest.mark.parametrize("severity,rule_rgb", [
+        ("info", BELL_INFO_RGB), ("warning", BELL_WARNING_RGB), ("critical", BELL_CRITICAL_RGB),
+    ])
+    def test_the_source_band_is_white_with_black_text_over_a_rule_in_the_severity_colour(
+            self, compositor, tier, severity, rule_rgb):
+        width, height, mm = _APPLIANCE_TIERS[tier]
+        metrics = metrics_for(width, height, mm)
+        rect = warning_layout_for(width, height, buttons=1, metrics=metrics).message
+        view = WarningView(title="Power supply", buttons=("Close",), source="Lounge", severity=severity)
+        base = Image.new("RGB", (width, height), (0, 0, 0))
+        frame = compositor.compose_warning(base, width, height, view, rotate=False, bgr=False, metrics=metrics)
+        _, _, _, _, band = _fit_plan(tier, "Lounge", "Power supply", "", severity)
+        _, _, band_h, rule_h = band
+        assert rule_h == 2 * metrics.divider_w
+        x0, y0, x1, _ = rect
+        # The band's fill reaches both ends of the row, and the text on it is black.
+        assert frame.getpixel((x0, y0)) == frame.getpixel((x1 - 1, y0)) == GLYPH_RGB
+        band_pixels = {frame.getpixel((x, y)) for x in range(x0, x1) for y in range(y0, y0 + band_h)}
+        assert INVERTED_GLYPH_RGB in band_pixels
+        for y in range(y0 + band_h, y0 + band_h + rule_h):
+            assert frame.getpixel((x0, y)) == frame.getpixel((x1 - 1, y)) == rule_rgb
 
     @pytest.mark.parametrize("tier", sorted(_APPLIANCE_TIERS))
     def test_the_source_changes_the_frame_and_no_source_leaves_it_as_before(self, compositor, tier):

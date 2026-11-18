@@ -30,7 +30,7 @@ from dial_warnings import ACTION_CLOSE, ACTION_NEXT, WarningDescriptor
 @dataclass(frozen=True)
 class Card:
     """One card as painted: the readout-size title, the body-size message
-    under it, the small source line above the title ("" for none), a
+    under it, the source band above the title ("" for none), its severity, a
     progress percent (None for no bar) and the buttons as (label, action).
     status_id is the status a Close on this card ends, "" for a warning
     (a warning's Close only puts the card away)."""
@@ -40,6 +40,7 @@ class Card:
     percent: "int | None"
     buttons: tuple
     status_id: str = ""
+    severity: str = ""
 
 
 @dataclass(frozen=True)
@@ -100,7 +101,7 @@ class WarningsPageState:
         return Card(
             title=entry.title, message=entry.message,
             source=f"{entry.source} · {remaining.index(self.key) + 1} of {len(remaining)}" if many else entry.source,
-            percent=None, buttons=tuple((BUTTON_TEXT[a], a) for a in actions),
+            percent=None, buttons=tuple((BUTTON_TEXT[a], a) for a in actions), severity=entry.severity,
         )
 
     def action_at(self, cell: int, bell: Bell) -> "str | None":
@@ -124,4 +125,5 @@ def status_card(desc: WarningDescriptor, reading) -> Card:
         percent=desc.progress(reading),
         buttons=tuple((b.label, b.action) for b in desc.buttons),
         status_id=desc.id,
+        severity=desc.severity(reading),
     )

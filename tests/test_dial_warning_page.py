@@ -6,6 +6,7 @@ against the card the finger saw, and the status card built from a descriptor.
 """
 from __future__ import annotations
 
+import dataclasses
 import sys
 from pathlib import Path
 
@@ -54,6 +55,10 @@ class TestCard:
         assert (card.title, card.message, card.source) == ("A", "msg", "Turntable")
         assert card.buttons == (("Close", ACTION_CLOSE),)
         assert card.status_id == "" and card.percent is None
+
+    def test_the_card_carries_its_entrys_severity(self):
+        bell = Bell((dataclasses.replace(_entry("a"), severity="critical"),))
+        assert _page(bell).card(bell).severity == "critical"
 
     def test_several_entries_add_next_and_the_place(self):
         bell = _bell("a", "b", "c")
@@ -183,3 +188,7 @@ class TestStatusCard:
     @pytest.mark.parametrize("wid", ["update", "update_result"])
     def test_the_source_is_blank(self, wid):
         assert status_card(WARNING_BY_ID[wid], None).source == ""
+
+    @pytest.mark.parametrize("wid", ["update", "update_result"])
+    def test_a_status_card_carries_the_info_severity(self, wid):
+        assert status_card(WARNING_BY_ID[wid], None).severity == "info"

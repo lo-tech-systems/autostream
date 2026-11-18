@@ -1511,7 +1511,7 @@ class TestDialBell:
         open_page(page, hd)
         dial_bell(page).click()
         expect(page.locator("#card-title")).to_have_text("No WiFi")
-        expect(page.locator("#card-source")).to_have_text("This dial")
+        expect(page.locator("#card-source")).to_have_text("Lounge dial")
         assert card_buttons(page) == ["Restart", "Close"]
         expect(page.locator("#card-progress")).to_be_hidden()
         page.locator("#card-buttons button", has_text="Restart").click()
@@ -1551,11 +1551,11 @@ class TestDialBell:
         open_page(page, hd)
         dial_bell(page).click()
         expect(page.locator("#card-title")).to_have_text("No WiFi")
-        expect(page.locator("#card-source")).to_have_text("This dial · 1 of 2")
+        expect(page.locator("#card-source")).to_have_text("Lounge dial · 1 of 2")
         assert card_buttons(page) == ["Next", "Restart", "Close"]
         page.locator("#card-buttons button", has_text="Next").click()
         expect(page.locator("#card-title")).to_have_text("microSD card")
-        expect(page.locator("#card-source")).to_have_text("This dial · 2 of 2")
+        expect(page.locator("#card-source")).to_have_text("Lounge dial · 2 of 2")
         assert card_buttons(page) == ["Next", "Close"]
         page.locator("#card-buttons button", has_text="Next").click()
         expect(page.locator("#card-title")).to_have_text("No WiFi")
