@@ -11,32 +11,25 @@ Locking: the core lock is held only for in-memory work. It is never held
 across network or file I/O, a frame push or a subscriber callback, and it is
 never taken while a display lock is held (nor a display lock while it is
 held). Subscriber callbacks run inline on the publishing thread and must
-only signal (`Event.set`, `queue.put_nowait`, `Condition.notify`); a
-callback that blocks delays that publisher and nothing else. Consumers
-coalesce: several publishes before a consumer runs collapse into one wake,
-and the consumer reads the newest snapshot. `wait_for_change` is the same
-idea for a consumer that would rather block than be called: any number of
-threads may wait at once, each is woken by the publish that makes a newer
-snapshot, and each gets whatever is newest when it runs, so a waiter that
-loops on the `seq` it last saw never misses the latest state (it may skip
-intermediate ones).
+only signal; a callback that blocks delays that publisher and nothing else.
+Consumers coalesce: several publishes before a consumer runs collapse into
+one wake, and the consumer reads the newest snapshot. `wait_for_change` is
+the same idea for a consumer that would rather block than be called: each
+waiter gets whatever is newest when it runs, so a waiter that loops on the
+`seq` it last saw never misses the latest state.
 
 Every appliance is held by its own PeerClient in a peer pool
 (`attach_pool`). `start()` runs one thread, `dial-core`: it folds the
 clients' snapshots into one publish when the pool signals a change (paced to
-a few folds a second) and at the fold interval, so a decision bound to time
-moves on, and once a second does the housekeeping (the update watch,
-expiring warnings, the replay position). The snapshot a
-fold publishes carries a new `ticks` count and a `TickContext` saying what
-the fold started from, which is how a view tells a finished fold from the
-writes in between. What housekeeping does to the warning screens is queued
-for the view as `SourceEffects` (`take_effects`), as is what the request
-replies, network and SD health readings and volume readouts mean for a
-screen. That queue is a channel for one view, not a notification mechanism:
-a second consumer should use `subscribe` or `wait_for_change` and read the
-snapshot. Taking is atomic, so two takers would split the effects between
-them, each effect going to exactly one; a core with no view attached keeps
-only the newest `EFFECTS_BACKLOG_MAX`.
+a few folds a second) and at the fold interval, and once a second does the
+housekeeping (the update watch, expiring warnings, the replay position).
+The snapshot a fold publishes carries a new `ticks` count and a
+`TickContext` saying what the fold started from, which is how a view tells a
+finished fold from the writes in between. What housekeeping, the request
+replies and the readings do to a screen is queued for the view as effects
+(`take_effects`). That queue is a channel for one view, not a notification
+mechanism: a second consumer should use `subscribe` or `wait_for_change`. A
+core with no view attached keeps only the newest `EFFECTS_BACKLOG_MAX`.
 
 The controls' requests go out on one request lane (dial_core_requests), the
 HD page's intents on the caller's own thread (`submit_intent`), and artwork
@@ -130,10 +123,8 @@ _PLAIN_FIELDS = frozenset((
 
 @dataclass
 class CoreIO:
-    """The calls the core makes out of itself: the artwork download and the
-    volume worker's readout store. Each defaults to the real one, looked up
-    when it is called; a view or a test supplies stand-ins that do the same,
-    so replacing a module attribute still takes effect."""
+    """The calls the core makes out of itself, each defaulting to the real
+    one looked up when it is called; a view or a test supplies stand-ins."""
     fetch_artwork: Callable = lambda url, timeout: dial_artwork.default_fetch_artwork(url, timeout)
     artwork_eligible: Callable = lambda url: dial_artwork.default_artwork_eligible(url)
     observe_mute: Callable = lambda *a, **k: observe_mute_state(*a, **k)
@@ -232,12 +223,9 @@ class DialCore:
 
     def subscribe(self, callback: Callable[[], None]) -> int:
         """Register a zero-argument signal callback, called after every
-        publish on the publishing thread. Returns a handle for
-        `unsubscribe`. The callback must only signal: it runs on whichever
-        thread published (the core thread, a tap, a worker), so one that
-        blocks delays that thread. It may subscribe or unsubscribe (itself or
-        another) and may publish; an exception it raises is logged and
-        ignored."""
+        publish on the publishing thread, and return a handle for
+        `unsubscribe`. It must only signal, and may subscribe, unsubscribe or
+        publish; an exception it raises is logged and ignored."""
         with self._lock:
             handle = self._next_handle
             self._next_handle += 1
@@ -246,9 +234,7 @@ class DialCore:
 
     def unsubscribe(self, handle: int) -> None:
         """Remove a subscriber; an unknown handle is ignored. Safe from any
-        thread, including from inside a callback. A publish already past its
-        snapshot of the subscribers skips a callback removed before its turn,
-        but one already running is not interrupted."""
+        thread, including from inside a callback."""
         with self._lock:
             self._subscribers.pop(handle, None)
 
@@ -288,14 +274,10 @@ class DialCore:
         return self._state.roster
 
     def set_field_for_tests(self, name: str, value) -> CoreSnapshot:
-        """Test hook: store one value and publish: a focus field (`manual_id`,
-        `bound_id`, `pending`, `reporting_id`, `source_service_name`,
-        `accepted_replay`) or one of the plain fields
-        (`now_playing`, `idle_affordance`, `dots_active`,
-        `outputs_available`, `eq_available`). Nothing is published when the
-        stored value is already that object or equal to it. The read-modify-write of a
-        focus field happens under the lock, so writers of different focus
-        fields never lose each other's update."""
+        """Test hook: store one focus field or plain field and publish, unless
+        the value held is already that object or equal to it. A focus field
+        is written under the lock, so writers of different ones never lose
+        each other's update."""
         if name in _FOCUS_FIELDS:
             def mutate(state: CoreState) -> "bool | None":
                 held = getattr(state.focus, name)
@@ -423,23 +405,17 @@ class DialCore:
         selected: bool | None = None, volume: int | None = None,
         pin: str | None = None, pin_entry: bool = False,
     ) -> ActionResult:
-        """Enable or disable an output, or set its level. The change shows
-        at once (as the request's shown value) until the appliance's state
-        has caught up with the reply. Refused when the appliance is
-        unknown, lacks the capability or has refused this dial, when the
-        output is not among the rows held, or when another appliance has
-        taken it.
+        """Enable or disable an output, or set its level. The change shows at
+        once (as the request's shown value) until the appliance's state has
+        caught up with the reply. Refused when the appliance is unknown,
+        lacks the capability or has refused this dial, or when the output is
+        not among the rows held or another appliance has taken it.
 
-        A *pin* (four to eight digits) is sent as a PIN submission that
-        enables the output once the speaker is paired; it needs an appliance
-        that accepts one (outputs capability 2) and is held only in the
-        request body, never in the state or the snapshot. *pin_entry* says
-        the caller can show a keypad, so the appliance may ask this dial for
-        a PIN.
-
-        The request is recorded on `outputs_request`, carrying the value
-        it shows meanwhile. Its outcome is published there when the reply
-        lands, and queued as an `OutputsEffect`."""
+        A *pin* is sent as a PIN submission that enables the output once the
+        speaker is paired; it is held only in the request body, never in the
+        state or the snapshot. *pin_entry* says the caller can show a keypad.
+        The outcome is published on `outputs_request` and queued as an
+        `OutputsEffect`."""
         roster = self._state.roster
         refusal = rq.appliance_refusal(roster, appliance_id, "dial_outputs")
         if refusal is not None:
@@ -677,9 +653,8 @@ class DialCore:
             return False
 
     def request_dial_shutdown(self) -> bool:
-        """Ask for a graceful power-off of the dial's own system (one
-        request at a time). True when a request went out; the outcome of one
-        that did not happen is folded into `power` by `_on_shutdown_outcome`."""
+        """Ask for a graceful power-off of the dial's own system (one at a
+        time). True when a request went out."""
         if self._state.power.state == "requested":
             return False
         early: list = []    # an outcome that reached us before the request was published
@@ -713,14 +688,12 @@ class DialCore:
         self._changed(mutate)
 
     def on_network_view(self, view) -> SourceEffects:
-        """Fold a network reading. Connected: the streak resets, the
-        ever-connected latch is set and the No-WiFi warning clears. Down:
-        the streak grows, and at NOWIFI_PROMPT_STREAK the warning goes
-        active unless the link has never been connected since the process
-        started. Ignored (setup mode, reboot pending): the streak resets,
-        the warning and the latch stay. Any other reading changes nothing
-        but the held view. What it did to the warnings is queued for a view
-        and returned."""
+        """Fold a network reading. Connected: the streak resets, the latch is
+        set and the No-WiFi warning clears. Down: the streak grows, and at
+        NOWIFI_PROMPT_STREAK the warning goes active unless the link has
+        never been connected. Ignored (setup, reboot pending): the streak
+        resets, the warning and latch stay. What it did to the warnings is
+        queued for a view and returned."""
         changes = []
 
         def mutate(state: CoreState) -> "bool | None":
@@ -770,12 +743,10 @@ class DialCore:
         return self._queue_effects(SourceEffects(tuple(changes)))
 
     def apply_update_view(self, view) -> SourceEffects:
-        """Fold a software update reading. A run in progress raises the
-        progress card, except in the reboot phase (the caller shows its
-        restarting screen; the updater has already asked for the reboot)
-        and the verify phase (nothing until the verdict). A finished run
-        raises its result card once, recorded in the seen marker, which
-        is file I/O, so call with no lock held."""
+        """Fold a software update reading: progress raises the progress card
+        (not in the reboot or verify phase), and a finished run raises its
+        result card once, recorded in the seen marker. File I/O: call with no
+        lock held."""
         def store(state: CoreState) -> "bool | None":
             if state.update == view:
                 return False
@@ -1020,22 +991,16 @@ class DialCore:
         return ActionResult(True)
 
     def current_source_service_name(self) -> str | None:
-        """mDNS service name of the display's chosen artwork source, or
-        None when nothing is identified/playing. Plain reference read, safe
-        from any thread; may lag the clients by one fold. Used by
-        dial_main's volume-target resolver so a touch/encoder press
-        addresses whatever this dial is showing, or, with a manual focus,
-        the focused appliance, see focus_volume_target()."""
+        """The mDNS service name of the source being shown, or None. A
+        reference read, safe from any thread; may lag the clients by one
+        fold."""
         return self._snapshot.focus.source_service_name
 
     def focus_volume_target(self):
-        """The appliance state the volume/mute worker should address while a
-        manual focus is set: that appliance, playing or idle, when it is on
-        the last-folded roster and not confirmed unauthorized; else None (no
-        focus, or the focus is not on the roster), meaning "use the ordinary
-        playing-set resolution". The worker sends through the pool's client
-        for its appliance id. Plain reference reads, safe from the worker
-        thread; may lag the clients by one fold."""
+        """The appliance state the volume and mute worker should address while
+        a manual focus is set (on the roster and not unauthorized), else None
+        for the ordinary playing-set resolution. Reference reads; may lag by
+        one fold."""
         focus_id = self._snapshot.focus.manual_id
         if not focus_id:
             return None
@@ -1125,12 +1090,10 @@ class DialCore:
                 pass
 
     def _run(self) -> None:
-        """The core thread: fold every interval (or when woken), and do the
-        housekeeping on every wake, never waiting longer than a second. The
-        interval runs from the end of a fold. A wake within `FOLD_MIN_GAP_S`
-        of the last fold's end waits for the gap (cut short by a stop), and
-        the changes that arrive meanwhile join the fold. The loop keeps its
-        own time with a clock nothing replaces."""
+        """The core thread: fold every interval (or when woken) and do the
+        housekeeping on every wake, never waiting longer than a second. A wake
+        within `FOLD_MIN_GAP_S` of the last fold's end waits for the gap. The
+        loop keeps its own time with a clock nothing replaces."""
         next_fold = 0.0
         last_fold_end = float("-inf")
         while not self._stop.is_set():
@@ -1319,14 +1282,11 @@ class DialCore:
     def _fold_reply(self, appliance_id: str, kind: str, token: float, reply) -> None:
         """Fold an appliance's reply into the request carrying *token*. An ok
         reply makes it accepted and keeps its shown value until the
-        appliance's folded state has caught up with the reply
-        (dial_core_requests.settled); a refusal or a transport outcome makes it
-        rejected with that name. What it meant is queued for a view as an
-        `OutputsEffect` or a `RepeatEffect`. An accepted replay start opens the
-        accepted-replay window, and an accepted seek or stop asks once for the
-        replay position; a refused replay request drops a pending focus on
-        that appliance. An EQ reply has no request record: the values set show
-        for their window whatever it says."""
+        appliance's state has caught up (dial_core_requests.settled); a
+        refusal makes it rejected with that name. What it meant is queued as
+        an `OutputsEffect` or a `RepeatEffect`. An accepted replay start opens
+        the accepted-replay window; a refused one drops a pending focus on
+        that appliance. An EQ reply has no request record."""
         if kind in OUTPUT_KINDS:
             lane = "outputs_request"
         elif kind in ("seek", "stop", "arm"):
@@ -1375,17 +1335,13 @@ class DialCore:
     def submit_intent(self, appliance_id: str, name: str, args, *, pin_entry: bool = False) -> PeerReply:
         """Send the HD page's intent *name* with *args* to *appliance_id* on
         the calling thread, never behind the request lane, and return the
-        reply. The local checks the controls make come first, and the request
-        is recorded (on `outputs_request` for a speaker or PIN intent, on
-        `transport` for a repeat one) under the core lock before anything is
-        sent, so the screens see it as they see their own. A local refusal is
-        a reply with the dial's name for it: unknown_intent, unknown_appliance,
-        wrong_state (not the focused appliance, a speaker row that is not held
-        or is in use, a PIN of the wrong shape), no_record, or the
-        appliance's or library's name where one says the same
-        (dial_not_authorized, protocol_mismatch). *pin_entry* says the caller
-        can show a keypad; a PIN submission always says so. Bounded by the
-        client's own read."""
+        reply. The checks the controls make come first, and the request is
+        recorded (on `outputs_request` or `transport`) under the core lock
+        before anything is sent, so the screens see it as they see their own.
+        A local refusal is a reply with the dial's name for it:
+        unknown_intent, unknown_appliance, wrong_state, no_record,
+        dial_not_authorized or protocol_mismatch. *pin_entry* says the caller
+        can show a keypad. Bounded by the client's own read."""
         if name not in rq.SUBMIT_INTENTS:
             return _local_refusal("unknown_intent")
         args = dict(args) if isinstance(args, dict) else {}
