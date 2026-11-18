@@ -158,6 +158,20 @@ class TestImportClosure:
         )
         assert not missing, f"imported by the dial but not installed: {missing}"
 
+    def test_the_peer_library_and_the_eq_bands_are_installed(self):
+        assert {
+            "autostream_protocol", "autostream_peer_http", "autostream_peer_registry",
+            "autostream_peer_client", "autostream_eq_bands",
+        } <= _installer_module_names()
+
+    def test_the_peer_library_imports_only_what_a_dial_carries(self):
+        installed = _installer_module_names()
+        library = [CORE_DIR / f"{n}.py" for n in (
+            "autostream_protocol", "autostream_peer_http", "autostream_peer_registry",
+            "autostream_peer_client", "autostream_eq_bands")]
+        closure = _import_closure(library)
+        assert not sorted(m for m in closure if m not in installed), sorted(closure)
+
     def test_every_installed_name_exists(self):
         for name in _installer_module_names():
             assert ((CORE_DIR / f"{name}.py").is_file()

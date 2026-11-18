@@ -199,6 +199,9 @@ class TestStageCodeTree:
         assert paths == on_disk
         for expected in ("dial_main.py", "autostream_rpi.py", "wifi_loop.py",
                          "autostream_dial_control.py", "autostream_wifi_watcher",
+                         "autostream_protocol.py", "autostream_peer_http.py",
+                         "autostream_peer_registry.py", "autostream_peer_client.py",
+                         "autostream_eq_bands.py",
                          "cgi/download-logs.cgi", "requirements.lock"):
             assert expected in paths, expected
         assert "MANIFEST" not in paths
