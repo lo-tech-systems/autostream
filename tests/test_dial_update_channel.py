@@ -98,7 +98,7 @@ def _release_payload(tag: str = "v1.2.3") -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.1 — DialConfig model
+# DialConfig model
 # ---------------------------------------------------------------------------
 
 class TestDialConfigModel:
@@ -215,7 +215,7 @@ class TestDialConfigModel:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.2 — Dial updater channel reading and cmd_check
+# Dial updater channel reading and cmd_check
 # ---------------------------------------------------------------------------
 
 class TestDialUpdaterChannelReading:
@@ -448,7 +448,7 @@ class TestDialUpdaterCmdApply:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.3 — Dial HTTP /configure API
+# Dial HTTP /configure API
 # ---------------------------------------------------------------------------
 
 class TestDialHttpConfigureApi:
@@ -615,7 +615,7 @@ class TestDialHttpConfigureApi:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.5 — Main appliance dial card (structural)
+# Main appliance dial card (structural)
 # ---------------------------------------------------------------------------
 
 class TestMainDialCardStructural:
@@ -660,7 +660,7 @@ class TestMainDialCardStructural:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.1 — Installer default (structural)
+# Installer default (structural)
 # ---------------------------------------------------------------------------
 
 class TestInstallerDefault:
@@ -681,7 +681,7 @@ class TestInstallerDefault:
 
 
 # ---------------------------------------------------------------------------
-# Section 8.6 — Dial update-check passes channel through
+# Dial update-check passes channel through
 # ---------------------------------------------------------------------------
 
 class TestDialUpdateCheckPassthrough:

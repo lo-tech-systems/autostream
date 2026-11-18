@@ -192,7 +192,7 @@ def set_log_level(
                 )
             # No further persistence needed.
         else:
-            # Determine whether policy state changed (Section 3.2).
+            # Determine whether policy state changed.
             level_changed = (level_str != current_level)
             owner_changed = (changed_by_str != current_changed_by)
             policy_changed = level_changed or owner_changed

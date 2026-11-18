@@ -11,8 +11,6 @@ Key invariants from the implementation plan:
   4. NetworkManager remains the credential store; network.json has no secrets.
   5. The built-in adapter is preferred for the recovery hotspot; a sole USB
      adapter is used as fallback on hardware without a built-in (e.g. Pi 2).
-
-Full regression: 4354 tests passed, 97 skipped on 2026-06-24 after WP1–WP9.
 """
 from __future__ import annotations
 
@@ -210,7 +208,7 @@ class TestStateMachineInvariants:
 
     def test_retired_flags_are_gone_from_state(self):
         """The flags subsumed by HotspotSession / PURPOSE_TABLE are no longer
-        read or written as STATE fields (defects 1 & 2; §3.2)."""
+        read or written as STATE fields (defects 1 & 2)."""
         for flag in (
             "ap_exhausted", "force_setup_mode", "policy_disconnected_wifi",
             "setup_purpose", "manual_ap_active", "ap_enter_time",
@@ -230,7 +228,7 @@ class TestStateMachineInvariants:
         assert "def is_degraded_no_ip" not in self.STATUS_SRC
 
     def test_same_subnet_machinery_removed(self):
-        """Wired-wins replaced the same-subnet policy (§2.7)."""
+        """Wired-wins replaced the same-subnet policy."""
         assert "def same_l3_segment" not in WIFI_NETWORK_SRC
         assert "def _single_usable_ipv4_interface" not in WIFI_NETWORK_SRC
         assert "same_l3_segment(" not in WIFI_WATCHER_SRC

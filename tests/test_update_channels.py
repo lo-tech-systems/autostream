@@ -100,7 +100,7 @@ def _release_payload(
 
 
 # ---------------------------------------------------------------------------
-# Section 4 — Channel normalization
+# Channel normalization
 # ---------------------------------------------------------------------------
 
 class TestNormaliseUpdateChannel:
@@ -132,7 +132,7 @@ class TestNormaliseUpdateChannel:
 
 
 # ---------------------------------------------------------------------------
-# Section 5.1 — GitHub endpoint selection
+# GitHub endpoint selection
 # ---------------------------------------------------------------------------
 
 class TestGithubEndpointSelection:
@@ -174,7 +174,7 @@ class TestGithubEndpointSelection:
 
 
 # ---------------------------------------------------------------------------
-# Section 5.1 — Response parsing
+# Response parsing
 # ---------------------------------------------------------------------------
 
 class TestStableResponseParsing:
@@ -264,7 +264,7 @@ class TestDevResponseParsing:
 
 
 # ---------------------------------------------------------------------------
-# Section 5.1a — Dev channel: max-by-version selection across list + latest
+# Dev channel: max-by-version selection across list + latest
 # ---------------------------------------------------------------------------
 
 class TestDevChannelSelection:
@@ -373,7 +373,7 @@ class TestDevChannelSelection:
 
 
 # ---------------------------------------------------------------------------
-# Section 6 — Version ordering
+# Version ordering
 # ---------------------------------------------------------------------------
 
 class TestVersionOrdering:
@@ -457,7 +457,7 @@ class TestVersionOrdering:
 
 
 # ---------------------------------------------------------------------------
-# Section 6.1 — Release note sanitization
+# Release note sanitization
 # ---------------------------------------------------------------------------
 
 class TestReleaseNotesSanitization:
@@ -545,7 +545,7 @@ class TestReleaseNotesSanitization:
 
 
 # ---------------------------------------------------------------------------
-# Section 7.1 — UpdatesConfig model
+# UpdatesConfig model
 # ---------------------------------------------------------------------------
 
 class TestUpdatesConfigModel:
@@ -589,7 +589,7 @@ class TestUpdatesConfigModel:
 
 
 # ---------------------------------------------------------------------------
-# Section 7.2 — Main updater channel reading
+# Main updater channel reading
 # ---------------------------------------------------------------------------
 
 class TestMainUpdaterChannelReading:
@@ -638,7 +638,7 @@ class TestMainUpdaterChannelReading:
 
 
 # ---------------------------------------------------------------------------
-# Section 7.2 — cmd_check() reports channel
+# cmd_check() reports channel
 # ---------------------------------------------------------------------------
 
 class TestMainUpdaterCmdCheck:
@@ -691,7 +691,7 @@ class TestMainUpdaterCmdCheck:
 
 
 # ---------------------------------------------------------------------------
-# Section 7.2 — cmd_apply() uses single lookup, no double-call
+# cmd_apply() uses single lookup, no double-call
 # ---------------------------------------------------------------------------
 
 class TestMainUpdaterApplySingleLookup:
@@ -848,7 +848,7 @@ class TestMainUpdaterApplySingleLookup:
 
 
 # ---------------------------------------------------------------------------
-# Section 7.3 — Setup page renders channel toggle
+# Setup page renders channel toggle
 # ---------------------------------------------------------------------------
 
 class TestSetupPageChannelToggle:

@@ -15,7 +15,7 @@
 // TrackGapDetector
 //
 // Detects inter-track silence gaps and fires on the first above-threshold block
-// after a qualifying gap.  Fire semantics match the plan exactly:
+// after a qualifying gap.  Fire semantics:
 //
 //   1. Active audio must be observed before any gap candidate is started.
 //   2. Below-threshold audio starts a gap candidate timer.
@@ -26,7 +26,7 @@
 //   5. Exactly one true is returned per gap event.
 //   6. Candidate is cleared immediately on resumption.
 //
-// Rules (from section 5.2 of the scheduling plan):
+// Rules:
 //   - Do not emit for initial silence before the first active audio.
 //   - Do not emit while audio remains below threshold.
 //   - Do not emit for a gap shorter than required_gap_seconds.

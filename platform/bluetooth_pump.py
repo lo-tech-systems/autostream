@@ -176,7 +176,7 @@ class LoopbackPump:
     def set_buffer_ms(self, buffer_ms: int) -> None:
         """Update the configured audio buffer (thread-safe). Takes effect on
         the playback PCM's *next* (re)open — a stream already in progress is
-        never force-reopened to pick this up (LLD / plan SS1 "Audio buffer")."""
+        never force-reopened to pick this up."""
         with self._lock:
             self._buffer_ms = buffer_ms
 

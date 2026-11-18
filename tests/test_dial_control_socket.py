@@ -122,7 +122,7 @@ def _send_recv(sock_path: str, req: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Protocol parser tests (section 9.1) — all platforms
+# Protocol parser tests — all platforms
 # ---------------------------------------------------------------------------
 
 class FakeServer:
@@ -405,7 +405,7 @@ class TestParserErrors:
 
 
 # ---------------------------------------------------------------------------
-# Callback identity tests (section 9.2) — all platforms
+# Callback identity tests — all platforms
 # ---------------------------------------------------------------------------
 
 class TestCallbackIdentity:
@@ -498,7 +498,7 @@ class TestCallbackIdentity:
 
 
 # ---------------------------------------------------------------------------
-# Unix socket server tests (section 9.5) — skipped when AF_UNIX absent
+# Unix socket server tests — skipped when AF_UNIX absent
 # ---------------------------------------------------------------------------
 
 @skip_no_unix

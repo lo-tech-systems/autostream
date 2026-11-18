@@ -425,7 +425,7 @@ class TestUnderrunHardening:
 
 
 # ---------------------------------------------------------------------------
-# Configurable audio buffer (plan SS1 "Audio buffer"): prefill/ring sizing
+# Configurable audio buffer: prefill/ring sizing
 # from buffer_ms, round-up-to-periods, ring headroom, clamp-and-log, and
 # set_buffer_ms()'s "takes effect on next reopen only" contract.
 # ---------------------------------------------------------------------------

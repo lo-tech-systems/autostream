@@ -80,7 +80,7 @@ PAIR_STATE_PAIRING = "pairing"
 PAIR_STATE_DONE = "done"
 PAIR_STATE_FAILED = "failed"
 
-# Configurable audio buffer (plan SS1 "Audio buffer"): nominal milliseconds,
+# Configurable audio buffer: nominal milliseconds,
 # persisted alongside the pairing state; the pump rounds this up to whole
 # ALSA periods at apply time (bluetooth_pump.compute_prefill_periods).
 DEFAULT_BUFFER_MS = 200

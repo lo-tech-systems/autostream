@@ -1471,7 +1471,7 @@ class TestAboutPageFetchScript:
 class TestSnapshotExceptionIsolation:
     """Exceptions thrown by in-memory snapshot accessors must not produce HTTP 500.
 
-    The plan requires partial failures to affect only their own field; the
+    Partial failures must affect only their own field; the
     top-level ok:true must be preserved even if individual getters raise.
     """
 

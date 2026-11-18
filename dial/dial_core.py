@@ -380,7 +380,7 @@ class DialCore:
 
     # ==== 3. Requests =========================================================
     # Owns: the state's `transport`, `outputs_request` and `eq_optimistic`, and `_waiting` (`_settle_locked`
-    # in section 6 also clears it, under the lock).
+    # in section 6 of this file also clears it, under the lock).
     # Threads: the controls run on the view's touch and repaint threads, the page's intents on the HD intent
     # thread, and replies on the lane thread or the HD intent thread.
 

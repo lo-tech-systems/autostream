@@ -558,8 +558,7 @@ class StatsStore:
     supplied dirty flag and flush interval indicate a periodic flush is due.
     Callers must hold their own lock around every method call here (this
     class does no locking of its own -- it shares PlaybackTracker's RLock by
-    composition, matching the design's StatsStore storage contract without
-    introducing any new contention).
+    composition, without introducing any new contention).
     """
 
     def __init__(

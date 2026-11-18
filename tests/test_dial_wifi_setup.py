@@ -126,7 +126,7 @@ def _fn_body(src: str, fn_name: str, end_marker: str) -> str:
 
 class TestConfigureWifiCandidateTransaction:
     """The credential-apply path uses the rollback-safe candidate sequence
-    (Section 6.5) rather than ``nmcli device wifi connect``."""
+    rather than ``nmcli device wifi connect``."""
 
     def test_does_not_use_device_wifi_connect(self):
         """``nmcli device wifi connect`` reuses/modifies an existing profile and

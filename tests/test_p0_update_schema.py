@@ -5,7 +5,7 @@ the same canonical update-result.env schema. The admin read_update_status()
 and the dial HTTP _read_update_state() are the primary consumers; both must
 survive malformed or partially written files.
 
-Requirements from the spec:
+Requirements:
 - Both updater products emit the same required keys, quoting rules,
   percentage range, and timestamp format.
 - Cover messages containing spaces, quotes, equals signs, newlines,

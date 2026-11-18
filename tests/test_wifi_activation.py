@@ -279,7 +279,7 @@ class TestActivationWorker:
     def _pre(self, watcher):
         return watcher.wifi_loop.PreFactsContext(now=1000.0, boot_time=0.0, avahi_ok=True)
 
-    # ---- peek-then-consume control action (§3.6) ----
+    # ---- peek-then-consume control action ----
 
     def test_disruptive_control_action_deferred_while_transitioning(self, watcher):
         watcher.STATE.transitioning = True

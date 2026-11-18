@@ -1,10 +1,10 @@
 """Browser API error contract tests.
 
 Covers:
-  §7.1  send_browser_api_error() helper unit tests
-  §7.3  Route distinction tests (known-route tunneled vs unknown-route native 404)
-  §7.4  NGINX policy regression tests (main config + dial config)
-  §7.6  Direct dial regression tests (import isolation, native statuses)
+  send_browser_api_error() helper unit tests
+  Route distinction tests (known-route tunneled vs unknown-route native 404)
+  NGINX policy regression tests (main config + dial config)
+  Direct dial regression tests (import isolation, native statuses)
 """
 from __future__ import annotations
 
@@ -27,7 +27,7 @@ DIAL_NGINX_CONF   = REPO_ROOT / "system" / "nginx" / "autostream-dial-nginx.conf
 
 
 # ---------------------------------------------------------------------------
-# §7.1  shared helper unit tests
+# shared helper unit tests
 # ---------------------------------------------------------------------------
 
 class TestSendBrowserApiError:
@@ -141,7 +141,7 @@ class TestSendBrowserApiError:
 
 
 # ---------------------------------------------------------------------------
-# §7.3  Route distinction tests
+# Route distinction tests
 # ---------------------------------------------------------------------------
 
 class TestRouteDistinction:
@@ -342,7 +342,7 @@ class TestNativeErrorStatuses:
 
 
 # ---------------------------------------------------------------------------
-# §7.4  NGINX policy regression tests
+# NGINX policy regression tests
 # ---------------------------------------------------------------------------
 
 def _conf_main():
@@ -508,7 +508,7 @@ class TestDialNginxInterceptionPolicy:
 
 
 # ---------------------------------------------------------------------------
-# §7.6  Direct dial regression tests (import isolation)
+# Direct dial regression tests (import isolation)
 # ---------------------------------------------------------------------------
 
 class TestDialImportIsolation:
@@ -539,7 +539,7 @@ class TestDialImportIsolation:
 
 
 # ---------------------------------------------------------------------------
-# §7.7  Gateway error contract
+# Gateway error contract
 # ---------------------------------------------------------------------------
 
 class TestGatewayErrorContract:

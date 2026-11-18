@@ -455,7 +455,7 @@ def get_playing_status() -> Optional[bool]:
     Accepts playback state only when the response is exactly ``ok: true`` and
     ``playing`` is a JSON boolean.  Any unreachable, malformed, or explicitly
     uncertain (``ok: false``) response is treated conservatively as None
-    rather than as stopped playback (Section 8.3).
+    rather than as stopped playback.
     """
     data = _api_get("/api/playing-status")
     if data is None:

@@ -1,6 +1,5 @@
 """Tests for platform/bluetooth_bluez.py's pure, dbus-free helpers —
-adapter bus classification / USB-over-onboard preference (plan SS1 "Adapter
-choice").
+adapter bus classification / USB-over-onboard preference.
 
 Only the pure module-level functions are exercised here: no dbus/gi
 dependency, so this file runs on any Python (dev machines, the WSL test

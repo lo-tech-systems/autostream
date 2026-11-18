@@ -1,4 +1,4 @@
-"""Regression tests for update infrastructure (review findings).
+"""Regression tests for update infrastructure.
 
 Covers:
 1. Deployment-manifest correctness — dial installer must deploy the two

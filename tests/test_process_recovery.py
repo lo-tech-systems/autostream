@@ -211,7 +211,7 @@ def test_service_unit_restart_on_failure():
 
 
 # ---------------------------------------------------------------------------
-# Scanner wrapper delegation (plan section 5, tests 1-2)
+# Scanner wrapper delegation
 # ---------------------------------------------------------------------------
 
 class TestScannerWrappers:

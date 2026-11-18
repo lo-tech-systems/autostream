@@ -22,7 +22,7 @@ Display failure must always degrade to a no-op display; it must never affect
 volume control. Backend hardware code lives in dial_display_adafruit.py;
 Pillow-only image policy lives in dial_display_image.py.
 
-Threads. The touch thread calls only the lock-free entries (section 3): plain
+Threads. The touch thread calls only the lock-free entries (section 3 of this file): plain
 writes and a repaint signal, never self._lock. The repaint thread runs the loop
 and its timers, folds the core's snapshots and requests, and takes self._lock
 to paint. The HTTP thread calls the facade and update_config, which take the
@@ -840,7 +840,7 @@ class DialDisplay:
     # The rule: an entry writes plain fields and signals the repaint thread. It never takes
     # self._lock and does no I/O, because the lock can be held across a whole SPI push and a touch
     # must never wait behind one. The repaint thread folds the requests in under the lock
-    # (section 5). Calls into the core go to its own request lane.
+    # (section 5 of this file). Calls into the core go to its own request lane.
     #
     # Exceptions, each noted where it is defined: _gather_info runs on its own worker thread (and
     # takes the lock briefly), and open_info starts it.

@@ -431,7 +431,7 @@ class TestHotspotPurposeMachine:
         leave.assert_called_once()
 
     def test_explicit_hotspot_not_torn_down_by_ethernet(self, watcher):
-        # EXPLICIT_RECONFIGURE is not eth-suppressible (Section 2.3).
+        # EXPLICIT_RECONFIGURE is not eth-suppressible.
         self._session(watcher, watcher.wifi_policy.HotspotPurpose.EXPLICIT_RECONFIGURE, entered_at=100.0)
         with patch.object(watcher, "leave_setup_mode") as leave, \
              patch.object(watcher.LOOP_CTX, "attempt_recovery_reconnect"):
@@ -552,7 +552,7 @@ class TestWs1Wp3AsyncRecovery:
             watcher.wifi_loop.step_publish_state(watcher.LOOP_CTX, hctx)
         assert watcher.RECOVERY_STATE.failover_reset_done == set()
 
-    # ---- transitioning defer-gates (§2.3) ----
+    # ---- transitioning defer-gates ----
 
     def test_deferred_handlers_hold_off_while_transitioning(self, watcher):
         usb = _adapter(watcher, "wlan1", "bb:bb:bb:bb:bb:01", is_usb=True)
@@ -911,7 +911,7 @@ class TestExplicitModeClassifier:
 
 
 class TestPerTickFactsSnapshot:
-    """One immutable Facts snapshot gathered per pass (Section 2.5)."""
+    """One immutable Facts snapshot gathered per pass."""
 
     def _run_online_idle_pass(self, watcher, *, capture: dict):
         """Run one online/idle monitor pass with all fact helpers wrapped to

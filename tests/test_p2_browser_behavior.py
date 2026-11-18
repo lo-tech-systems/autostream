@@ -501,7 +501,7 @@ class TestOfflinePageStructure:
 
 
 # ---------------------------------------------------------------------------
-# §7.5  Browser behavior: setup-page discriminated response parser (source-contract)
+# Browser behavior: setup-page discriminated response parser (source-contract)
 # ---------------------------------------------------------------------------
 
 def _setup_page_src() -> str:
@@ -709,7 +709,7 @@ class TestSetupPageScriptRendering:
 
 
 # ---------------------------------------------------------------------------
-# §7.6  Dial card HTML structure and in-place update JS contract
+# Dial card HTML structure and in-place update JS contract
 # ---------------------------------------------------------------------------
 
 class TestDialCardHtmlStructure:
@@ -2026,7 +2026,7 @@ class TestDialCardHtmlStructure:
         assert "_dialSetRecoveryBadge(card, false)" in body
 
     def test_touch_restart_poll_targets_runtime_touch_type_not_screen(self):
-        """The plan's central trap: screen.touch_type is the PERSISTED value
+        """The central trap: screen.touch_type is the PERSISTED value
         and flips to the new controller from the OLD, not-yet-restarted
         process, so polling it would report success instantly and verify
         nothing. Only runtime.touch_type reflects what is actually running."""
@@ -2684,7 +2684,7 @@ class TestDialPinRecoveryTwoStepFlow:
 
 
 # ---------------------------------------------------------------------------
-# §7.7  Dial card "Recovery Active" badge (pin_recovery surfaced from mDNS)
+# Dial card "Recovery Active" badge (pin_recovery surfaced from mDNS)
 # ---------------------------------------------------------------------------
 
 class TestDialCardRecoveryBadge:

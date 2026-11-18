@@ -1738,7 +1738,7 @@ def network_monitor_loop(run_once: bool = False):
 
     # Ordered handler lists.  Built once.  step_avahi_hostname also needs the
     # cross-pass loop_state; it is bound with functools.partial so run_steps keeps
-    # a single uniform step(ctx) calling convention (§4.4).
+    # a single uniform step(ctx) calling convention.
     phase_a = [
         partial(wifi_adoption.step_reconnect_episode, ADOPTION_CTX),
         partial(wifi_activation.step_apply_activation_result, ACTIVATION_CTX),

@@ -516,7 +516,7 @@ class TestSendPlayingStatusJson:
 
     def test_exception_returns_explicit_uncertainty(self, tmp_path):
         """Monitor-query failure returns explicit uncertainty (ok:false), never
-        a false idle (Section 8.3)."""
+        a false idle."""
         h = _make_handler()
         sent = []
 

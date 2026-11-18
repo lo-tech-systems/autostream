@@ -665,7 +665,7 @@ class TestReconnectSupervisor:
 
 
 # ---------------------------------------------------------------------------
-# Configurable audio buffer (plan SS1 "Audio buffer")
+# Configurable audio buffer
 # ---------------------------------------------------------------------------
 
 class TestBufferConfiguration:

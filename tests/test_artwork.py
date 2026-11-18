@@ -297,7 +297,7 @@ requires_pillow = pytest.mark.skipif(Image is None, reason="Pillow not installed
 
 
 # ---------------------------------------------------------------------------
-# normalise_artwork() / ArtworkImage -- the size/dimension contract (§A1)
+# normalise_artwork() / ArtworkImage -- the size/dimension contract
 # ---------------------------------------------------------------------------
 
 @requires_pillow

@@ -230,7 +230,7 @@ class VibraClient:
                 # _read_response calls close() on error/EOF; mark explicitly.
                 self._set_runtime_info(connected=False)
                 return False
-            # Strict validation per plan §5.1
+            # Strict validation
             if (
                 resp.get("ok") is not True
                 or resp.get("type") != "pong"

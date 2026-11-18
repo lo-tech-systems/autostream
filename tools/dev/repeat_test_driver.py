@@ -295,7 +295,7 @@ def scenario_d7(socket_path: str, wav_path: str, input_index: int = 1,
     proc = None
     proc2 = None
     try:
-        print("[d7] phase 1: starting playback with repeat disabled")
+        print("[repeat-mid-session] phase 1: starting playback with repeat disabled")
         proc = subprocess.Popen(["aplay", "-D", playback_device, wav_path])
         time.sleep(3.0)   # let a capture session start
 
@@ -303,7 +303,7 @@ def scenario_d7(socket_path: str, wav_path: str, input_index: int = 1,
         rep = st.get("repeat", {})
         assert rep.get("enabled") is False, f"expected repeat disabled, got {rep}"
 
-        print("[d7] phase 2: enabling repeat mid-session (should NOT start recording this session)")
+        print("[repeat-mid-session] phase 2: enabling repeat mid-session (should NOT start recording this session)")
         c.set_repeat_enabled(True, "auto")
         time.sleep(1.0)
         st = c.get_status()
@@ -312,9 +312,9 @@ def scenario_d7(socket_path: str, wav_path: str, input_index: int = 1,
         assert rep["recording"]["active"] is False, (
             f"D7 FAIL: recording started mid-session after enable: {rep}")
         assert rep["recording"]["bytes"] == 0, f"D7 FAIL: unexpected bytes: {rep}"
-        print("[d7] PASS: no recording started mid-session")
+        print("[repeat-mid-session] PASS: no recording started mid-session")
 
-        print("[d7] phase 3: stop this session, start a new one -> should record")
+        print("[repeat-mid-session] phase 3: stop this session, start a new one -> should record")
         proc.terminate()
         proc.wait(timeout=5)
         # Allow silence_seconds to elapse (ending the session) and give the
@@ -331,21 +331,21 @@ def scenario_d7(socket_path: str, wav_path: str, input_index: int = 1,
         rep = st["repeat"]
         assert rep["recording"]["active"] is True, f"D7 FAIL: new session did not record: {rep}"
         assert rep["recording"]["bytes"] > 0, f"D7 FAIL: zero bytes recorded: {rep}"
-        print(f"[d7] PASS: new session recording ({rep['recording']['bytes']} bytes so far)")
+        print(f"[repeat-mid-session] PASS: new session recording ({rep['recording']['bytes']} bytes so far)")
 
-        print("[d7] phase 4: disable mid-session -> bytes should drop to 0 immediately")
+        print("[repeat-mid-session] phase 4: disable mid-session -> bytes should drop to 0 immediately")
         c.set_repeat_enabled(False, "auto")
         st = c.get_status()
         rep = st["repeat"]
         assert rep["enabled"] is False
         assert rep["recording"]["bytes"] == 0, f"D7 FAIL: bytes not freed on disable: {rep}"
         assert rep["recording"]["active"] is False
-        print("[d7] PASS: disable freed the recording immediately")
+        print("[repeat-mid-session] PASS: disable freed the recording immediately")
 
         proc2.terminate()
         proc2.wait(timeout=5)
 
-        print("[d7] ALL PASS")
+        print("[repeat-mid-session] ALL PASS")
     finally:
         for p in (proc, proc2):
             if p is not None and p.poll() is None:
@@ -464,28 +464,28 @@ def scenario_d5_d6(socket_path: str, wav_path: str, input_index: int = 1,
                                  and not s["repeat"]["recording"]["active"] and s)(c.get_status()),
                         timeout=10, desc="session to end in HOLD")
         assert not st["repeat"]["replay"]["active"], "expected HOLD (not armed), replay should not have started"
-        print("[d6] phase 1: recording ended in HOLD as expected (not armed)")
+        print("[arm-idle] phase 1: recording ended in HOLD as expected (not armed)")
 
-        print("[d6] phase 2: arming while idle -> replay should start immediately")
+        print("[arm-idle] phase 2: arming while idle -> replay should start immediately")
         t0 = time.monotonic()
         c.set_repeat_armed(True)
         st = _wait_for(lambda: (lambda s: s["repeat"]["replay"]["active"] and s)(c.get_status()),
                         timeout=3, desc="replay to start immediately on arm")
-        print(f"[d6] PASS: replay started {time.monotonic() - t0:.2f}s after set_repeat_armed(True)")
+        print(f"[arm-idle] PASS: replay started {time.monotonic() - t0:.2f}s after set_repeat_armed(True)")
 
-        print("[d5] phase 1: disarming during replay -> expect fade then stop")
+        print("[disarm-replay] phase 1: disarming during replay -> expect fade then stop")
         c.set_repeat_armed(False)
         st = _wait_for(lambda: (lambda s: not s["repeat"]["replay"]["active"] and s)(c.get_status()),
                         timeout=5, desc="replay to stop after disarm (fade)")
         assert st["repeat"]["recording"]["bytes"] > 0, "D5 FAIL: buffer was not retained after disarm"
         assert not st["repeat"]["armed"]
-        print(f"[d5] PASS: replay stopped, buffer retained ({st['repeat']['recording']['bytes']} bytes)")
+        print(f"[disarm-replay] PASS: replay stopped, buffer retained ({st['repeat']['recording']['bytes']} bytes)")
 
-        print("[d5] phase 2: re-arming works")
+        print("[disarm-replay] phase 2: re-arming works")
         c.set_repeat_armed(True)
         _wait_for(lambda: (lambda s: s["repeat"]["replay"]["active"] and s)(c.get_status()),
                   timeout=3, desc="replay to restart after re-arm")
-        print("[d5] PASS: re-arm restarted replay")
+        print("[disarm-replay] PASS: re-arm restarted replay")
 
         c.set_repeat_armed(False)
         _wait_for(lambda: not c.get_status()["repeat"]["replay"]["active"], timeout=5,

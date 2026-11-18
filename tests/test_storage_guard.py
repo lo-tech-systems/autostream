@@ -31,7 +31,7 @@ sg = load_supervisor_script("autostream_storage_guard", "storage_guard_wp3")
 
 
 # ---------------------------------------------------------------------------
-# get_playing_status — uncertain/malformed treated as None (Section 8.3)
+# get_playing_status — uncertain/malformed treated as None
 # ---------------------------------------------------------------------------
 
 class TestGetPlayingStatus:

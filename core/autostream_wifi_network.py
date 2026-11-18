@@ -6,7 +6,7 @@ Copyright (c) 2025 Lo-tech Systems Limited. All rights reserved.
 Dedicated, root-owned network-facts and bounded-primitive helper for the
 Autostream Wi-Fi recovery watcher (``platform/wifi_watcher.py``).
 
-Responsibility boundary (see the implementation plan, section 2.7):
+Responsibility boundary:
 
   * This module owns *facts* and *bounded primitives*:
       - network-state parsing / atomic writing / legacy migration & mirroring;
@@ -213,7 +213,7 @@ def load_network_state(
 ) -> NetworkState:
     """Resolve the configured network state.
 
-    Resolution order (plan section 3.2):
+    Resolution order:
       1. valid non-empty network.json;
       2. non-empty legacy /opt/autostream/ssid;
       3. unconfigured.
@@ -1064,7 +1064,7 @@ def add_wifi_profile_cmd(con_name: str, ifname: str, ssid: str) -> list[str]:
     ]
 
 
-# Profile settings that would prevent cross-adapter fallback (plan section 5.2).
+# Profile settings that would prevent cross-adapter fallback.
 # 802-11-wireless.bssid is deliberately absent: the USB BSSID pin owns that
 # property and clears/sets it itself at every activation.
 CROSS_ADAPTER_RESTRICTIONS = (
@@ -1239,7 +1239,7 @@ def connection_target_order(
     merged: list[dict],
     builtin_scan_known: bool,
 ) -> list["WifiAdapter"]:
-    """Adapter order to try when applying credentials for *ssid* (Section 6.4).
+    """Adapter order to try when applying credentials for *ssid*.
 
     1. USB adapters that saw the SSID (by permanent MAC);
     2. built-in adapter if it saw the SSID;
@@ -1272,7 +1272,7 @@ def connection_target_order(
 
 
 # ===========================================================================
-# Candidate-profile transaction primitives (Section 6.5)
+# Candidate-profile transaction primitives
 # ===========================================================================
 
 def generate_candidate_name(rand_hex: Optional[str] = None) -> str:
@@ -1439,7 +1439,7 @@ def get_profile_uuid(con_name: str) -> str:
 
 
 # ===========================================================================
-# Runtime dnsmasq interface binding (Section 7.2)
+# Runtime dnsmasq interface binding
 # ===========================================================================
 
 DNSMASQ_IFACE_TOKEN = "__AUTOSTREAM_WIFI_IFACE__"
@@ -1577,5 +1577,4 @@ def default_gateway_ipv4(ifname: str) -> str:
 
 # same_l3_segment / _single_usable_ipv4_interface were removed with the
 # same-subnet Wi-Fi-disconnect policy: the watcher now runs a simple "usable
-# wired Ethernet wins" policy regardless of subnet (state-machine refactor,
-# Section 2.7), so the helper no longer needs to compare L3 segments.
+# wired Ethernet wins" policy regardless of subnet (state-machine refactor), so the helper no longer needs to compare L3 segments.

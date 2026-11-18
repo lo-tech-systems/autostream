@@ -134,7 +134,7 @@ class TestRestartDialServiceBehaviour:
 # ---------------------------------------------------------------------------
 
 class TestUnitNameIsLiteral:
-    """The plan requires the unit name to be an in-function literal string,
+    """The unit name must be an in-function literal string,
     never built from caller-supplied argv, so a compromised/careless caller
     cannot redirect the restart to an arbitrary unit (privilege escalation).
     """

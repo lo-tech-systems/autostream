@@ -296,7 +296,7 @@ class TestCPULicenseCache:
 
 # ---------------------------------------------------------------------------
 # classify_high_performance_pi() / is_high_performance_pi(): audio-path
-# hardware classification (§2.2)
+# hardware classification
 # ---------------------------------------------------------------------------
 
 class TestClassifyHighPerformancePi:
