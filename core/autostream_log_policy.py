@@ -272,8 +272,8 @@ def set_log_level(
     # of set_log_level, not just the HTTP PUT handler, keeps the watcher in sync;
     # it force-TTLs a forwarded debug level to <=1h regardless).
     try:
-        from autostream_webui_api import forward_log_level_to_watcher
-        applied["wifi_watcher"] = forward_log_level_to_watcher(new_level)
+        import autostream_watcher_client as watcher_client
+        applied["wifi_watcher"] = watcher_client.forward_log_level_to_watcher(new_level)
     except Exception as e:
         logger.warning("set_log_level: watcher forward failed: %s", e)
         applied["wifi_watcher"] = False

@@ -1,0 +1,5 @@
+# Names that moved from the Web UI API module into autostream_watcher_client.
+autostream_webui_api._watcher_request -> autostream_watcher_client.watcher_request  alias=watcher_client
+autostream_webui_api._read_watcher_control_token -> autostream_watcher_client._read_watcher_control_token  alias=watcher_client
+autostream_webui_api.forward_log_level_to_watcher -> autostream_watcher_client.forward_log_level_to_watcher  alias=watcher_client
+autostream_webui_api.get_wifi_watcher_version -> autostream_watcher_client.get_wifi_watcher_version  alias=watcher_client

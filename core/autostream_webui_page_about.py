@@ -486,7 +486,7 @@ def _build_text(version: str, connected: bool) -> str:
 
 def _get_wifi_watcher_version() -> str:
     try:
-        from autostream_webui_api import get_wifi_watcher_version
+        from autostream_watcher_client import get_wifi_watcher_version
         return get_wifi_watcher_version()
     except Exception:
         return "unknown"

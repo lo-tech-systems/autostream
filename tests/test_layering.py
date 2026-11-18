@@ -30,7 +30,7 @@ bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
 federation licensing mdns monitor_client mute_state nowplaying owntone
 owntone_mini pin_pairing playback_stats player_service players rpi runtime
 runtime_state settings settings_schema start_buffer_cache system_stats sysutils
-wifi_network
+watcher_client wifi_network
 """.split()
 _L2 = "align appliances dial_push dial_warnings log_policy output_usage".split()
 _L3 = """
@@ -79,6 +79,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
     "autostream_rpi": frozenset({"*"}),
     "autostream_bluetooth_client": frozenset({"*"}),
     "autostream_logging": frozenset({"*"}),
+    "autostream_watcher_client": frozenset({"*"}),
     "track_id.models": frozenset({"*"}),
     "autostream_playback_stats": frozenset({
         "InputPlaybackSnapshot", "PlaybackSnapshot",
@@ -344,7 +345,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
     ('A', 'autostream_log_policy', 'autostream_core', 'set_live_monitor_log_level'),
     ('A', 'autostream_log_policy', 'autostream_core', 'update_live_log_level'),
-    ('A', 'autostream_log_policy', 'autostream_webui_api', 'forward_log_level_to_watcher'),
     ('A', 'autostream_webui_api', 'autostream_core', 'any_monitor_capturing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'apply_track_id_config_live_from_parsed'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_active_track_identification_snapshot'),
@@ -500,7 +500,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('E', 'autostream_dial_push', 'autostream_webui_dials', 'enqueue_fanout'),
     ('E', 'autostream_dial_warnings', 'autostream_webui_dials', 'eligible_dial_uuids'),
     ('E', 'autostream_dial_warnings', 'autostream_webui_dials', 'enqueue_push'),
-    ('E', 'autostream_log_policy', 'autostream_webui_api', 'forward_log_level_to_watcher'),
     ('F', 'autostream_appliance_models', '.claim()', '*'),
 })
 

@@ -29,11 +29,11 @@ if _CORE not in sys.path:
 
 from autostream_webui_api import (
     build_network_card_presentation,
-    get_wifi_watcher_version,
     send_network_roaming_json,
     send_network_setup_json,
     send_network_status_json,
 )
+from autostream_watcher_client import get_wifi_watcher_version
 
 
 # ---------------------------------------------------------------------------
@@ -499,7 +499,7 @@ class TestSendNetworkStatusJson:
             captured["code"] = code
             captured["error"] = msg
 
-        with patch("autostream_webui_api._watcher_request", return_value=(watcher_status, watcher_data)), \
+        with patch("autostream_watcher_client.watcher_request", return_value=(watcher_status, watcher_data)), \
              patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
             send_network_status_json(handler)
@@ -550,7 +550,7 @@ class TestSendNetworkStatusJson:
         def fake_error(h, code, msg):
             captured["code"] = code
 
-        with patch("autostream_webui_api._watcher_request", side_effect=Exception("refused")), \
+        with patch("autostream_watcher_client.watcher_request", side_effect=Exception("refused")), \
              patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
             send_network_status_json(handler)
 
@@ -581,7 +581,7 @@ class TestSendNetworkSetupJson:
             captured["code"] = code
             captured["error"] = msg
 
-        with patch("autostream_webui_api._watcher_request", return_value=(watcher_status, watcher_data)), \
+        with patch("autostream_watcher_client.watcher_request", return_value=(watcher_status, watcher_data)), \
              patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
             send_network_setup_json(handler, body)
@@ -608,7 +608,7 @@ class TestSendNetworkSetupJson:
             return 200, {"ok": True}
 
         handler = _make_handler()
-        with patch("autostream_webui_api._watcher_request", side_effect=fake_request), \
+        with patch("autostream_watcher_client.watcher_request", side_effect=fake_request), \
              patch("autostream_webui_api.send_json"):
             send_network_setup_json(handler, {"action": "start_setup", "csrf_token": "tok"})
 
@@ -649,7 +649,7 @@ class TestSendNetworkSetupJson:
         def fake_error(h, code, msg):
             captured["code"] = code
 
-        with patch("autostream_webui_api._watcher_request", side_effect=OSError("refused")), \
+        with patch("autostream_watcher_client.watcher_request", side_effect=OSError("refused")), \
              patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
             send_network_setup_json(handler, {"action": "start_setup"})
 
@@ -675,7 +675,7 @@ class TestSendNetworkRoamingJson:
             captured["code"] = code
             captured["error"] = msg
 
-        with patch("autostream_webui_api._watcher_request", return_value=(watcher_status, watcher_data)), \
+        with patch("autostream_watcher_client.watcher_request", return_value=(watcher_status, watcher_data)), \
              patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
             send_network_roaming_json(handler, body)
@@ -692,7 +692,7 @@ class TestSendNetworkRoamingJson:
             return 200, {"ok": True}
 
         handler = _make_handler()
-        with patch("autostream_webui_api._watcher_request", side_effect=fake_request), \
+        with patch("autostream_watcher_client.watcher_request", side_effect=fake_request), \
              patch("autostream_webui_api.send_json"):
             send_network_roaming_json(handler, {"managed": True, "csrf_token": "tok"})
 
@@ -708,7 +708,7 @@ class TestSendNetworkRoamingJson:
             return 200, {"ok": True}
 
         handler = _make_handler()
-        with patch("autostream_webui_api._watcher_request", side_effect=fake_request), \
+        with patch("autostream_watcher_client.watcher_request", side_effect=fake_request), \
              patch("autostream_webui_api.send_json"):
             send_network_roaming_json(handler, {"managed": False})
 
@@ -720,20 +720,20 @@ class TestSendNetworkRoamingJson:
         assert result["data"]["ok"] is True
 
     def test_missing_managed_rejected_without_forwarding(self):
-        with patch("autostream_webui_api._watcher_request") as request:
+        with patch("autostream_watcher_client.watcher_request") as request:
             result = self._call({})
         assert result["code"] == 400
         request.assert_not_called()
 
     def test_non_bool_managed_rejected_without_forwarding(self):
         for bad in ("true", 1, None, [], {}):
-            with patch("autostream_webui_api._watcher_request") as request:
+            with patch("autostream_watcher_client.watcher_request") as request:
                 result = self._call({"managed": bad})
             assert result["code"] == 400
             request.assert_not_called()
 
     def test_extra_fields_rejected(self):
-        with patch("autostream_webui_api._watcher_request") as request:
+        with patch("autostream_watcher_client.watcher_request") as request:
             result = self._call({"managed": True, "extra": "bad"})
         assert result["code"] == 400
         request.assert_not_called()
@@ -746,7 +746,7 @@ class TestSendNetworkRoamingJson:
             captured["code"] = code
 
         with patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error), \
-             patch("autostream_webui_api._watcher_request") as request:
+             patch("autostream_watcher_client.watcher_request") as request:
             send_network_roaming_json(handler, "not a dict")  # type: ignore[arg-type]
 
         assert captured["code"] == 400
@@ -760,7 +760,7 @@ class TestSendNetworkRoamingJson:
             return 200, {"ok": True}
 
         handler = _make_handler()
-        with patch("autostream_webui_api._watcher_request", side_effect=fake_request), \
+        with patch("autostream_watcher_client.watcher_request", side_effect=fake_request), \
              patch("autostream_webui_api.send_json"):
             send_network_roaming_json(handler, {"managed": True, "csrf_token": "tok"})
 
@@ -781,7 +781,7 @@ class TestSendNetworkRoamingJson:
         def fake_error(h, code, msg):
             captured["code"] = code
 
-        with patch("autostream_webui_api._watcher_request", side_effect=OSError("refused")), \
+        with patch("autostream_watcher_client.watcher_request", side_effect=OSError("refused")), \
              patch("autostream_webui_api.send_browser_api_error", side_effect=fake_error):
             send_network_roaming_json(handler, {"managed": True})
 
@@ -794,20 +794,20 @@ class TestSendNetworkRoamingJson:
 
 class TestWifiWatcherVersion:
     def test_success_returns_version(self):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
-             patch("autostream_webui_api._watcher_request", return_value=(
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_watcher_client.watcher_request", return_value=(
                  200, {"ok": True, "version": "1.0.0"}
              )):
             assert get_wifi_watcher_version() == "1.0.0"
 
     def test_failure_returns_unknown(self):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
-             patch("autostream_webui_api._watcher_request", return_value=(503, {})):
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_watcher_client.watcher_request", return_value=(503, {})):
             assert get_wifi_watcher_version() == "unknown"
 
     def test_missing_token_returns_unknown_without_request(self):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value=""), \
-             patch("autostream_webui_api._watcher_request") as request:
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value=""), \
+             patch("autostream_watcher_client.watcher_request") as request:
             assert get_wifi_watcher_version() == "unknown"
         request.assert_not_called()
 

@@ -374,7 +374,7 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "_install_signal_handlers"), \
              patch.object(_core_mod, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level") as m_apply, \
-             patch("autostream_webui_api.forward_log_level_to_watcher",
+             patch("autostream_watcher_client.forward_log_level_to_watcher",
                    return_value=True) as m_forward, \
              patch.object(_core_mod, "audit_static_system_facts"), \
              patch.object(_core_mod, "_ensure_playback_tracker"), \

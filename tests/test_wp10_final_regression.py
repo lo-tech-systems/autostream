@@ -27,6 +27,7 @@ REPO_ROOT = Path(__file__).parent.parent
 
 WEBUI_SRC = (REPO_ROOT / "core" / "autostream_webui.py").read_text(encoding="utf-8")
 WEBUI_API_SRC = _source_text.module_text("autostream_webui_api")
+WATCHER_CLIENT_SRC = _source_text.module_text("autostream_watcher_client")
 WIFI_NETWORK_SRC = (REPO_ROOT / "core" / "autostream_wifi_network.py").read_text(encoding="utf-8")
 WIFI_WATCHER_SRC = (REPO_ROOT / "platform" / "wifi_watcher.py").read_text(encoding="utf-8")
 # The Flask HTTP surface — including the per-boot control-token lifecycle — was
@@ -105,9 +106,9 @@ class TestLegacySsidFile:
 
 class TestWatcherControlAuthentication:
     def test_webui_api_reads_token_from_file(self):
-        """The Web UI reads the per-boot control token from a file."""
-        assert "wifi-control.token" in WEBUI_API_SRC
-        assert "_read_watcher_control_token" in WEBUI_API_SRC
+        """The watcher client reads the per-boot control token from a file."""
+        assert "wifi-control.token" in WATCHER_CLIENT_SRC
+        assert "_read_watcher_control_token" in WATCHER_CLIENT_SRC
 
     def test_watcher_generates_token_on_startup(self):
         """The recovery component writes a per-boot token so the Web UI can
@@ -118,7 +119,7 @@ class TestWatcherControlAuthentication:
 
     def test_webui_api_sends_token_in_header(self):
         """The control token is sent as an HTTP header, not in the URL."""
-        assert "X-Autostream-Wifi-Control" in WEBUI_API_SRC
+        assert "X-Autostream-Wifi-Control" in WATCHER_CLIENT_SRC
 
     def test_watcher_control_bound_to_localhost(self):
         """The control listener must bind to 127.0.0.1 only."""
@@ -154,10 +155,10 @@ class TestNetworkJsonNoSecrets:
         assert "schema_version" in WIFI_NETWORK_SRC or "SCHEMA_VERSION" in WIFI_NETWORK_SRC
 
     def test_watcher_request_path_allowlist_is_fixed(self):
-        """The Web UI proxy must only forward to known, fixed paths."""
-        assert '"/network_status"' in WEBUI_API_SRC or "'/network_status'" in WEBUI_API_SRC
-        assert '"/network_control"' in WEBUI_API_SRC or "'/network_control'" in WEBUI_API_SRC
-        assert "disallowed watcher path" in WEBUI_API_SRC
+        """The watcher client must only forward to known, fixed paths."""
+        assert '"/network_status"' in WATCHER_CLIENT_SRC or "'/network_status'" in WATCHER_CLIENT_SRC
+        assert '"/network_control"' in WATCHER_CLIENT_SRC or "'/network_control'" in WATCHER_CLIENT_SRC
+        assert "disallowed watcher path" in WATCHER_CLIENT_SRC
 
 
 # ---------------------------------------------------------------------------

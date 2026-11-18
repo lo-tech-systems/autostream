@@ -27,6 +27,7 @@ if _core not in sys.path:
 
 import autostream_webui_api as api_mod
 import autostream_auth as auth_mod
+import autostream_watcher_client as watcher_client
 
 
 # ---------------------------------------------------------------------------
@@ -300,7 +301,7 @@ class TestSendLogLevelPutJsonWatcherForwarding:
 
         with patch("autostream_log_policy.set_log_level", return_value=set_result), \
              patch("autostream_webui_api.send_json", lambda h, c, p: sent.append((c, p))), \
-             patch("autostream_webui_api.forward_log_level_to_watcher") as m_forward:
+             patch("autostream_watcher_client.forward_log_level_to_watcher") as m_forward:
             api_mod.send_log_level_put_json(h, state, {"level": level}, "user")
 
         return sent, m_forward
@@ -326,7 +327,7 @@ class TestSendLogLevelPutJsonWatcherForwarding:
 
         with patch("autostream_log_policy.set_log_level", return_value=set_result), \
              patch("autostream_webui_api.send_browser_api_error", lambda h, c, e, **kw: sent.append((c, e))), \
-             patch("autostream_webui_api.forward_log_level_to_watcher") as m_forward:
+             patch("autostream_watcher_client.forward_log_level_to_watcher") as m_forward:
             api_mod.send_log_level_put_json(h, state, {"level": "verbose"}, "user")
 
         m_forward.assert_not_called()
@@ -347,57 +348,57 @@ class TestForwardLogLevelToWatcher:
         ("fatal", "warning"),
     ])
     def test_mapping(self, app_level, watcher_level):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
-             patch("autostream_webui_api._watcher_request",
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_watcher_client.watcher_request",
                    return_value=(200, {"ok": True, "queued": True})) as m_request:
-            assert api_mod.forward_log_level_to_watcher(app_level) is True
+            assert watcher_client.forward_log_level_to_watcher(app_level) is True
         args, _ = m_request.call_args
         assert args[0] == "POST"
         assert args[1] == "/network_control"
         assert args[2]["level"] == watcher_level
 
     def test_debug_carries_ttl(self):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
-             patch("autostream_webui_api._watcher_request",
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_watcher_client.watcher_request",
                    return_value=(200, {"ok": True})) as m_request:
-            api_mod.forward_log_level_to_watcher("debug")
+            watcher_client.forward_log_level_to_watcher("debug")
         body = m_request.call_args[0][2]
         assert body["ttl_seconds"] == 3600
 
     @pytest.mark.parametrize("app_level", ["info", "warning"])
     def test_non_debug_has_no_ttl(self, app_level):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
-             patch("autostream_webui_api._watcher_request",
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_watcher_client.watcher_request",
                    return_value=(200, {"ok": True})) as m_request:
-            api_mod.forward_log_level_to_watcher(app_level)
+            watcher_client.forward_log_level_to_watcher(app_level)
         body = m_request.call_args[0][2]
         assert "ttl_seconds" not in body
 
     def test_unknown_level_returns_false_without_request(self):
-        with patch("autostream_webui_api._watcher_request") as m_request:
-            assert api_mod.forward_log_level_to_watcher("verbose") is False
+        with patch("autostream_watcher_client.watcher_request") as m_request:
+            assert watcher_client.forward_log_level_to_watcher("verbose") is False
         m_request.assert_not_called()
 
     def test_missing_token_returns_false_without_request(self):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value=""), \
-             patch("autostream_webui_api._watcher_request") as m_request:
-            assert api_mod.forward_log_level_to_watcher("info") is False
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value=""), \
+             patch("autostream_watcher_client.watcher_request") as m_request:
+            assert watcher_client.forward_log_level_to_watcher("info") is False
         m_request.assert_not_called()
 
     def test_request_exception_returns_false(self):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
-             patch("autostream_webui_api._watcher_request", side_effect=OSError("refused")):
-            assert api_mod.forward_log_level_to_watcher("info") is False
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_watcher_client.watcher_request", side_effect=OSError("refused")):
+            assert watcher_client.forward_log_level_to_watcher("info") is False
 
     def test_non_200_returns_false(self):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
-             patch("autostream_webui_api._watcher_request", return_value=(503, {})):
-            assert api_mod.forward_log_level_to_watcher("info") is False
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_watcher_client.watcher_request", return_value=(503, {})):
+            assert watcher_client.forward_log_level_to_watcher("info") is False
 
     def test_missing_ok_true_returns_false(self):
-        with patch("autostream_webui_api._read_watcher_control_token", return_value="tok"), \
-             patch("autostream_webui_api._watcher_request", return_value=(200, {"ok": False})):
-            assert api_mod.forward_log_level_to_watcher("info") is False
+        with patch("autostream_watcher_client._read_watcher_control_token", return_value="tok"), \
+             patch("autostream_watcher_client.watcher_request", return_value=(200, {"ok": False})):
+            assert watcher_client.forward_log_level_to_watcher("info") is False
 
 
 # ---------------------------------------------------------------------------
