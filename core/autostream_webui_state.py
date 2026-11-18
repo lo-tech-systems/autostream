@@ -8,13 +8,10 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
-from autostream_settings import as_view
+from autostream_settings import SettingsView, as_view
 from autostream_state import store, thaw
-
-if TYPE_CHECKING:
-    from autostream_settings import SettingsView
 
 
 class WebUIState:
@@ -25,7 +22,7 @@ class WebUIState:
         config_path: str,
         state_path: str,
         *,
-        settings: "Optional[SettingsView]" = None,
+        settings: "SettingsView",
     ) -> None:
         self.config_path = config_path
         self.state_path = state_path
@@ -34,12 +31,14 @@ class WebUIState:
         # renderers call state.settings.snapshot() rather than re-reading the
         # config file; writes go through the settings intents.
         self.settings = settings
+        if not isinstance(self._settings, SettingsView):
+            raise TypeError("WebUIState needs a settings view")
 
         # OwnTone restart state
         self._init_owntone_restart()
 
     @property
-    def settings(self) -> "Optional[SettingsView]":
+    def settings(self) -> "SettingsView":
         return self._settings
 
     @settings.setter

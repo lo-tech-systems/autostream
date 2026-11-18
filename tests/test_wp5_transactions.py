@@ -461,16 +461,13 @@ class TestSaveNowEndpoint:
         assert "error" in data
         store.close(save=False)
 
-    def test_no_store_returns_error(self, tmp_path):
-        from autostream_webui_api import send_save_now_json
+    def test_a_state_without_a_settings_view_cannot_be_built(self, tmp_path):
         from autostream_webui_state import WebUIState
         cfg = _minimal_cfg(tmp_path)
-        state = WebUIState(str(cfg), str(tmp_path / "state.json"))  # no settings store
-        handler = _make_handler()
-        send_save_now_json(handler, state)
-        code, data = _response(handler)
-        assert code == 200
-        assert data["ok"] is False
+        with pytest.raises(TypeError):
+            WebUIState(str(cfg), str(tmp_path / "state.json"), settings=None)
+        with pytest.raises(TypeError):
+            WebUIState(str(cfg), str(tmp_path / "state.json"))
 
 
 # ---------------------------------------------------------------------------

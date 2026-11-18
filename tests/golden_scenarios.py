@@ -26,6 +26,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Optional
 from unittest.mock import MagicMock
+from settings_fixtures import fixed_view
 
 _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
@@ -555,7 +556,7 @@ def _begin_mute(scenario: Scenario, fake, monkeypatch) -> None:
 
 def make_state():
     from autostream_webui_state import WebUIState
-    return WebUIState(config_path="golden.json", state_path="golden-state.json")
+    return WebUIState(config_path="golden.json", state_path="golden-state.json", settings=fixed_view())
 
 
 def make_auth():

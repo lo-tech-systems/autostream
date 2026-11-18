@@ -25,6 +25,7 @@ import pytest
 from _setup_card_test_helpers import setup_page_mocks
 from _source_text import page_data, page_scripts
 from fake_store import fake_outputs_result
+from settings_fixtures import fixed_view
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
@@ -62,7 +63,7 @@ def _fake_state(tmp_path):
     cfg.write_text("{}")
     st = tmp_path / "state.json"
     st.write_text("{}")
-    return WebUIState(str(cfg), str(st))
+    return WebUIState(str(cfg), str(st), settings=fixed_view())
 
 
 # ── No global initial_setup ───────────────────────────────────────────────────

@@ -31,6 +31,7 @@ except ImportError:
     _HAS_WEBUI = False
 
 from autostream_auth import AuthManager, Session, SESSION_COOKIE_NAME, PIN_STATUS_MISSING
+from settings_fixtures import CONTROLS_OTHER_APPLIANCES, viewed_state
 
 _skip = pytest.mark.skipif(
     not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
@@ -128,7 +129,7 @@ class TestGetAppliances:
         handler = _make_get_handler("/api/appliances")
 
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_appliances_json") as stub:
             handler.do_GET()
@@ -142,7 +143,7 @@ class TestGetAppliances:
         send_response_codes = []
 
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_appliances_json"):
             handler.send_response = lambda c, *a: send_response_codes.append(c)
@@ -161,7 +162,7 @@ class TestGetGatewayHome:
         mgr = _make_auth(pin="secret")
         handler = _make_get_handler(f"/api/appliances/{aid}/home")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json") as stub:
             handler.do_GET()
@@ -176,7 +177,7 @@ class TestGetGatewayHome:
         mgr = _make_auth(pin="secret")
         handler = _make_get_handler(f"/api/appliances/{aid}/home")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json") as stub:
             handler.do_GET()
@@ -190,7 +191,7 @@ class TestGetGatewayHome:
         redirect_codes = []
         handler.send_response = lambda c, *a: redirect_codes.append(c)
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json"):
             handler.do_GET()
@@ -208,7 +209,7 @@ class TestGetGatewayEqualiser:
         mgr = _make_auth(pin=None)
         handler = _make_get_handler(f"/api/appliances/{aid}/equaliser")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_equaliser_json") as stub:
             handler.do_GET()
@@ -219,7 +220,7 @@ class TestGetGatewayEqualiser:
         mgr = _make_auth(pin=None)
         handler = _make_get_handler(f"/api/appliances/{aid}/equaliser/status")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_eq_status_json") as stub:
             handler.do_GET()
@@ -230,7 +231,7 @@ class TestGetGatewayEqualiser:
         mgr = _make_auth(pin=None)
         handler = _make_get_handler(f"/api/appliances/{aid}/unknown")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False):
             handler.do_GET()
         handler.send_error.assert_called()
@@ -254,7 +255,7 @@ class TestPostGatewayRequiresCsrf:
             body=body,
         )
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_output_json") as stub:
             handler.do_POST()
@@ -272,7 +273,7 @@ class TestPostGatewayRequiresCsrf:
             body=body,
         )
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_output_json") as stub:
             handler.do_POST()
@@ -290,7 +291,7 @@ class TestPostGatewayRequiresCsrf:
             body=body,
         )
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_eq_config_json") as stub:
             handler.do_POST()
@@ -306,7 +307,7 @@ class TestPostGatewayRequiresCsrf:
             csrf_token=csrf_token,
         )
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_eq_reset_json") as stub:
             handler.do_POST()
@@ -325,7 +326,7 @@ class TestPostGatewayRequiresCsrf:
             body=body,
         )
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_output_json") as stub:
             handler.do_POST()
@@ -355,7 +356,7 @@ class TestStaleCsrfRecovery:
             body=body,
         )
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False):
             handler.do_POST()
         return mgr, handler
@@ -384,7 +385,7 @@ class TestStaleCsrfRecovery:
             "/some-page", sess_token="stale", csrf_token="stale", body=b"{}",
         )
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False):
             handler.do_POST()
         handler.send_error.assert_called_once()

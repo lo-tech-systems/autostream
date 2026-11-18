@@ -65,6 +65,7 @@ import autostream_session as session
 import autostream_state
 from fake_store import FakeStore, fake_repeat, fake_session, fake_track
 import autostream_repeat as repeat
+from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -149,7 +150,7 @@ def _invoke(
     inputs' configured types. start_failure, a dict of unit_id, reason and
     optionally requester and at, is a failed start put into the store.
     """
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = _make_handler()
     if list_result is None:
         list_result = _ok_list()
@@ -310,7 +311,7 @@ class TestPlayingField:
     def test_playing_true_during_replay_session(self):
         """A repeat-replay session counts as playing even though no monitor
         is capturing."""
-        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
         handler = _make_handler()
         parsed = MagicMock()
         parsed.owntone.base_url = BASE_URL
@@ -684,7 +685,7 @@ class TestRepeatField:
 
 class TestFailurePaths:
     def test_config_error_returns_config_error(self):
-        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
         handler = _make_handler()
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),
@@ -707,7 +708,7 @@ class TestFailurePaths:
         assert body == {"ok": False, "error": "backend_unavailable"}
 
     def test_an_unreachable_player_returns_backend_unavailable(self):
-        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
         handler = _make_handler()
         parsed = MagicMock()
         parsed.owntone.base_url = BASE_URL

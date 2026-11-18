@@ -494,7 +494,7 @@ def writable_store(settings: object) -> Optional[SettingsStore]:
 
 def as_view(value: object) -> object:
     """A store wrapped in a SettingsView; a view, None or any other object (a
-    test's MagicMock) returned as it is, so it takes the file fallback as today."""
+    test's MagicMock) returned as it is, for the caller to refuse."""
     if isinstance(value, SettingsStore):
         return SettingsView(value)
     return value

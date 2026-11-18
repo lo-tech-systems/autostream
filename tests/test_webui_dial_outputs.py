@@ -44,6 +44,7 @@ from autostream_webui_api import (
     send_dial_outputs_set_post_json,
 )
 from autostream_webui_state import WebUIState
+from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -108,7 +109,7 @@ def _invoke_list(
     config_error: bool = False,
     usage_snapshot: dict | None = None,
 ) -> tuple[int, dict]:
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = _make_handler()
     if list_result is None:
         list_result = _ok_list()
@@ -144,7 +145,7 @@ def _invoke_set(
     config_error: bool = False,
     mutation_result: dict | None = None,
 ) -> tuple[int, dict, MagicMock, MagicMock]:
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = _make_handler()
     if parsed is None:
         parsed = _parsed()
@@ -490,7 +491,7 @@ class TestOutputsSetValidation:
 
     def test_the_real_mutation_never_logs_the_pin(self, caplog):
         import logging as _logging
-        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
         handler = _make_handler()
         with (
             patch("autostream_webui_api.dial_authorization", return_value=AUTH_AUTHORIZED),

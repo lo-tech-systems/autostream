@@ -28,6 +28,7 @@ import autostream_webui_api  # noqa: F401  (registers the service-field rows)
 from autostream_intents import Intent, Origin, submit
 from autostream_settings import SettingsStore, SettingsView, as_view, writable_store
 from autostream_webui_state import WebUIState
+from settings_fixtures import fixed_view
 
 
 @pytest.fixture
@@ -88,8 +89,7 @@ def test_the_web_state_holds_a_view_however_it_is_given_the_store(store, tmp_pat
     assert isinstance(built.settings, SettingsView)
     assert writable_store(built.settings) is store
 
-    later = WebUIState(store.config_path, str(tmp_path / "state.json"))
-    assert later.settings is None
+    later = WebUIState(store.config_path, str(tmp_path / "state.json"), settings=fixed_view())
     later.settings = store
     assert isinstance(later.settings, SettingsView)
     assert writable_store(later.settings) is store
@@ -102,7 +102,7 @@ def test_the_web_state_holds_a_view_however_it_is_given_the_store(store, tmp_pat
 # ------------------------------------------------------------- code scans
 
 def _core_modules():
-    return sorted(_CORE.glob("autostream*.py"))
+    return sorted(_CORE.rglob("*.py"))
 
 
 def test_no_module_outside_settings_tests_the_store_type():
@@ -258,3 +258,19 @@ def test_save_takes_an_optional_timeout(ctx, store):
     assert saved == [10.0, 5.0]
     assert submit(Intent("settings.save", {"timeout": 0.0}, Origin.USER, "webui",
                          context=ctx)).error == "invalid_timeout"
+
+
+# ------------------------------------------------ pages read only the settings
+
+def test_the_snapshot_helper_refuses_settings_that_are_not_a_view():
+    from autostream_webui_common import _config_snapshot
+    state = MagicMock()
+    state.settings = MagicMock()
+    with pytest.raises(TypeError):
+        _config_snapshot(state)
+
+
+def test_a_web_state_cannot_be_built_without_a_view(tmp_path):
+    with pytest.raises(TypeError):
+        WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
+

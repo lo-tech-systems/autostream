@@ -30,6 +30,7 @@ from autostream_players import ActionResult, ListOutputsResult, OutputInfo
 from autostream_webui_api import send_dial_volume_post_json
 from autostream_webui_state import WebUIState
 from fake_store import FakeStore
+from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -73,7 +74,7 @@ def _invoke(
     config_error: bool = False,
 ) -> tuple[int, dict, MagicMock]:
     """Call send_dial_volume_post_json and return (status, body, update_mock)."""
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = _make_handler()
     if list_result is None:
         list_result = _ok_list()

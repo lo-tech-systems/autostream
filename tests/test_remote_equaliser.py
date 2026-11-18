@@ -32,6 +32,7 @@ except ImportError:
     _HAS_WEBUI = False
 
 from autostream_auth import AuthManager, PIN_STATUS_MISSING
+from settings_fixtures import CONTROLS_OTHER_APPLIANCES, viewed_state
 
 _skip = pytest.mark.skipif(
     not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
@@ -87,7 +88,7 @@ class TestRemoteEqualiserRouting:
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}/equaliser")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_equaliser_page") as stub:
@@ -101,7 +102,7 @@ class TestRemoteEqualiserRouting:
         def _stub(h, s, aid):
             called_with["aid"] = aid
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_equaliser_page", side_effect=_stub):
@@ -115,7 +116,7 @@ class TestRemoteEqualiserRouting:
         handler.send_header = MagicMock(side_effect=lambda k, v: redirect_locations.append((k, v)))
         handler.send_response = MagicMock()
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
@@ -129,7 +130,7 @@ class TestRemoteEqualiserRouting:
         mgr = _make_auth(pin=None)
         handler = _make_get("/a/invalid/equaliser")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
@@ -142,7 +143,7 @@ class TestRemoteEqualiserRouting:
         redirect_codes = []
         handler.send_response = MagicMock(side_effect=lambda c, *a: redirect_codes.append(c))
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_equaliser_page"):
@@ -154,7 +155,7 @@ class TestRemoteEqualiserRouting:
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}/")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value=_LOCAL_ID), \
              patch("autostream_webui.send_remote_home_page") as stub:
@@ -187,7 +188,7 @@ class TestRemoteEqualiserPageContent:
     def _render(self, aid: str = _REMOTE_ID) -> str:
         from autostream_webui_page_equaliser import send_remote_equaliser_page
 
-        state = MagicMock()
+        state = viewed_state(CONTROLS_OTHER_APPLIANCES)
         state.config_path = "dummy.ini"
 
         handler = MagicMock()
@@ -377,7 +378,7 @@ class TestEqualiserCurveSampleRate:
     def test_local_page_js_embeds_live_output_rate(self):
         from autostream_webui_page_equaliser import send_equaliser_page
 
-        state = MagicMock()
+        state = viewed_state(CONTROLS_OTHER_APPLIANCES)
         state.config_path = "dummy.ini"
         handler = MagicMock()
         written_chunks = []
@@ -411,7 +412,7 @@ class TestEqualiserCurveSampleRate:
     def test_remote_page_js_embeds_live_output_rate(self):
         from autostream_webui_page_equaliser import send_remote_equaliser_page
 
-        state = MagicMock()
+        state = viewed_state(CONTROLS_OTHER_APPLIANCES)
         state.config_path = "dummy.ini"
         handler = MagicMock()
         written_chunks = []
@@ -438,7 +439,7 @@ class TestEqualiserCurveSampleRate:
     def test_page_falls_back_to_48000_when_monitor_unreachable(self):
         from autostream_webui_page_equaliser import send_equaliser_page, _CURVE_FS_FALLBACK
 
-        state = MagicMock()
+        state = viewed_state(CONTROLS_OTHER_APPLIANCES)
         state.config_path = "dummy.ini"
         handler = MagicMock()
         written_chunks = []

@@ -34,6 +34,7 @@ except ImportError:
     _HAS_WEBUI = False
 
 from autostream_auth import AuthManager, Session, SESSION_COOKIE_NAME, PIN_STATUS_MISSING
+from settings_fixtures import CONTROLS_OTHER_APPLIANCES, viewed_state
 
 _skip_no_webui = pytest.mark.skipif(
     not _HAS_WEBUI, reason="autostream_webui import chain unavailable"
@@ -149,7 +150,7 @@ class TestPostRouterAuthEnforcement:
         handler = _make_handler(path, sess_token, csrf_token)
 
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch(stub_target) as stub:
             handler.do_POST()
 
@@ -165,7 +166,7 @@ class TestPostRouterAuthEnforcement:
         handler = _make_handler(path, sess_token, csrf_token)
 
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required",
                    return_value=False), \
              patch(stub_target) as stub:
@@ -188,7 +189,7 @@ class TestRetiredFormRoutes:
             sent.append(code)
         handler.send_response = _cap
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False):
             handler.do_POST()
         assert sent and sent[0] == 405
@@ -200,7 +201,7 @@ class TestRetiredFormRoutes:
         handler = _make_handler("/logs", sess_token, csrf_token)
 
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False):
             handler.do_POST()
 
@@ -248,7 +249,7 @@ class TestFederationRoutesSkipBrowserAuth:
         fake_cfg = MagicMock()
         fake_cfg.webui.advertise_appliance = True
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
              patch("autostream_webui_common._config_snapshot", return_value=fake_cfg), \
@@ -266,7 +267,7 @@ class TestFederationRoutesSkipBrowserAuth:
         mgr = _make_manager(pin="secret")
         handler = self._make_post_handler("/api/federation/v1/session")
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.get_appliance_id", return_value="aabbccdd1122"), \
              patch("autostream_webui.send_json"), \
@@ -304,7 +305,7 @@ class TestGatewayRoutesAuth:
         redirect_codes = []
         handler.send_response = lambda c, *a: redirect_codes.append(c)
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_appliances_json"):
             handler.do_GET()
@@ -317,7 +318,7 @@ class TestGatewayRoutesAuth:
         redirect_codes = []
         handler.send_response = lambda c, *a: redirect_codes.append(c)
         with patch("autostream_webui.AUTH", mgr), \
-             patch("autostream_webui.STATE", MagicMock()), \
+             patch("autostream_webui.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
              patch("autostream_webui.is_commissioning_required", return_value=False), \
              patch("autostream_webui.send_gateway_home_json"):
             handler.do_GET()

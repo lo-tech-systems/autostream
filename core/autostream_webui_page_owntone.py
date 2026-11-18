@@ -46,7 +46,7 @@ from autostream_state import store
 from autostream_state.live import get_capabilities, get_setting, list_outputs
 from autostream_sysutils import run_admin_cmd
 import autostream_webui_static as static
-from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html, locked_load_config, send_html
+from autostream_webui_common import _config_snapshot, build_page_html, build_top_banner_html, send_html
 from autostream_webui_assets import RESTART_MODAL_HTML
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json
@@ -217,12 +217,7 @@ def send_owntone_setup_page(
     """Render Owntone setup."""
     try:
         state_data = load_state(state.state_path)
-        if getattr(state, "settings", None) is not None:
-            raw = state.settings.raw_snapshot()
-            parsed = parse_config(raw, state_data)
-        else:
-            cfg = locked_load_config(state.config_path)
-            parsed = parse_config(cfg, state_data)
+        parsed = parse_config(state.settings.raw_snapshot(), state_data)
     except Exception:
         try:
             handler.send_response(302)

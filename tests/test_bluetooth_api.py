@@ -24,6 +24,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from autostream_bluetooth_client import BLUETOOTH_CAPTURE_DEVICE, BLUETOOTH_PLAYBACK_DEVICE
+from settings_fixtures import fixed_view
 
 
 # ---------------------------------------------------------------------------
@@ -451,14 +452,14 @@ class TestBluetoothStatusCopies:
 
     def test_the_status_is_what_the_part_holds(self, tmp_path, fake_store):
         from autostream_webui_state import WebUIState
-        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
+        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=fixed_view())
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
         fake_store.devices(bluetooth_status=status)
         assert state.get_bluetooth_status() == status
 
     def test_mutating_the_published_dict_does_not_affect_the_part(self, tmp_path, fake_store):
         from autostream_webui_state import WebUIState
-        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
+        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=fixed_view())
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
         fake_store.devices(bluetooth_status=status)
         status["paired"]["name"] = "Mutated"
@@ -469,7 +470,7 @@ class TestBluetoothStatusCopies:
 
     def test_mutating_returned_value_does_not_affect_the_next_read(self, tmp_path, fake_store):
         from autostream_webui_state import WebUIState
-        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
+        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=fixed_view())
         status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Original"}, "link": "connected"}
         fake_store.devices(bluetooth_status=status)
         got = state.get_bluetooth_status()
@@ -481,7 +482,7 @@ class TestBluetoothStatusCopies:
 
     def test_a_part_without_a_status_gives_none(self, tmp_path, fake_store):
         from autostream_webui_state import WebUIState
-        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
+        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=fixed_view())
         fake_store.devices(bluetooth_status={"ok": True, "paired": None})
         fake_store.devices(bluetooth_status=None)
         assert state.get_bluetooth_status() is None

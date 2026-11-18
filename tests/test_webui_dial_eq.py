@@ -48,6 +48,7 @@ from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILA
 from autostream_webui_api import send_dial_eq_post_json, send_dial_eq_set_post_json
 from autostream_webui_state import WebUIState
 import autostream_monitor_control as monitor_control
+from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"
 TEST_APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"  # 20 lowercase hex-shaped chars
@@ -85,7 +86,7 @@ def _invoke_read(
     parsed: SimpleNamespace | None = None,
     config_error: bool = False,
 ) -> tuple[int, dict]:
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = _make_handler()
     if parsed is None:
         parsed = _parsed()
@@ -113,7 +114,7 @@ def _invoke_set(
     parsed: SimpleNamespace | None = None,
     apply_result: tuple = (True, ""),
 ) -> tuple[int, dict, MagicMock]:
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = _make_handler()
     if parsed is None:
         parsed = _parsed()

@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import _source_text
+from settings_fixtures import fixed_view
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -34,11 +35,15 @@ from autostream_webui_post_handlers import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_state(tmp_path: Path) -> MagicMock:
+def _make_state(tmp_path: Path, *, offsets=None, modes=None, config_file=True) -> MagicMock:
+    cfg = {"general": {}, "owntone": {"base_url": "http://localhost:3689",
+                                      "offsets": offsets or {}, "airplay_modes": modes or {}}}
     cfg_path = tmp_path / "autostream.json"
-    cfg_path.write_text(json.dumps({"general": {}, "owntone": {"base_url": "http://localhost:3689"}}))
+    if config_file:
+        cfg_path.write_text(json.dumps(cfg))
     state = MagicMock()
     state.config_path = cfg_path
+    state.settings = fixed_view(cfg)
     return state
 
 
@@ -55,7 +60,7 @@ def _make_result_err(code: str, msg: str = "err"):
 def _call_output_update(body: dict, *, tmp_path: Path,
                         update_result=None, disable_result=None,
                         pin_result=None, speakers=None,
-                        offsets=None, modes=None) -> dict:
+                        offsets=None, modes=None, config_file=True) -> dict:
     """Run the output route's handler against a patched player.
 
     *speakers* are the OutputInfo rows the authority knows; by default the
@@ -67,7 +72,7 @@ def _call_output_update(body: dict, *, tmp_path: Path,
     sent = []
     writes = []
     handler = MagicMock()
-    state = _make_state(tmp_path)
+    state = _make_state(tmp_path, offsets=offsets, modes=modes, config_file=config_file)
 
     def fake_send_json(h, code, data):
         sent.append((code, data))
@@ -90,14 +95,8 @@ def _call_output_update(body: dict, *, tmp_path: Path,
     FakeStore().outputs(speakers)
 
     with patch("autostream_webui_post_handlers.send_json", side_effect=fake_send_json), \
-         patch("autostream_webui_post_handlers.locked_load_config",
-               return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
-         patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
          patch("autostream_player_service.update_output", side_effect=fake_update_output), \
          patch("autostream_player_service.submit_output_pin", side_effect=fake_submit_output_pin):
-        mock_parse.return_value.owntone.base_url = "http://localhost:3689"
-        mock_parse.return_value.owntone.output_offsets_ms = offsets or {}
-        mock_parse.return_value.owntone.output_airplay_modes = modes or {}
         handle_output_update(handler, state, json.dumps(body))
 
     return {"calls": sent, "writes": writes}
@@ -509,6 +508,16 @@ class TestOutputUpdateForwarding:
         assert kwargs["mode"] is not None
         assert kwargs["volume_percent"] == 75
 
+    def test_a_missing_configuration_file_does_not_stop_a_switch(self, tmp_path):
+        """The offset and mode come from the in-memory settings, not the file."""
+        r = _call_output_update(
+            {"id": "99", "selected": True, "volume": 75}, tmp_path=tmp_path,
+            offsets={"99": 200}, modes={"99": "alac"}, config_file=False,
+        )
+        assert r["calls"][0][1].get("ok") is not False
+        (name, out_id, kwargs), = r["writes"]
+        assert kwargs["offset_ms"] == 200
+
 
 # ---------------------------------------------------------------------------
 # Output changes: occupancy protection
@@ -814,14 +823,8 @@ class TestOutputRequesterPassed:
     def test_the_local_handler_names_the_webui_as_requester(self, tmp_path):
         state = _make_state(tmp_path)
         with patch("autostream_webui_post_handlers.send_json"), \
-             patch("autostream_webui_post_handlers.locked_load_config",
-                   return_value={"general": {}, "owntone": {"base_url": "http://localhost:3689"}}), \
-             patch("autostream_webui_post_handlers.parse_config") as mock_parse, \
              patch("autostream_appliance_models.submit_output_change",
                    return_value={"ok": True}) as mut:
-            mock_parse.return_value.owntone.base_url = "http://localhost:3689"
-            mock_parse.return_value.owntone.output_offsets_ms = {}
-            mock_parse.return_value.owntone.output_airplay_modes = {}
             handle_output_update(MagicMock(), state, json.dumps({"id": "1", "selected": True}))
         assert mut.call_args.kwargs["requester"] == "webui"
         assert mut.call_args.kwargs["pin_requester"] == "webui"

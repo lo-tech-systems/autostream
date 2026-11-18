@@ -33,6 +33,7 @@ from autostream_webui_state import WebUIState
 from track_id.models import disabled_snapshot
 from autostream_state.outputs import get_authority
 from fake_store import FakeStore, fake_repeat, fake_session, fake_track
+from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"
 BASE_URL = "http://localhost:3689"
@@ -90,7 +91,7 @@ _ROUTES = [
 
 
 def _state() -> WebUIState:
-    return WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    return WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
 
 
 def _call_refused(fn, body, dial_proto, auth=AUTH_NOT_AUTHORIZED):

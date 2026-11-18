@@ -12,9 +12,12 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests" / "playwright"))
 
+from unittest.mock import MagicMock  # noqa: E402
+
 import _page_stub  # noqa: E402
 import _source_text  # noqa: E402
 from autostream_auth import AuthManager  # noqa: E402
+from autostream_settings import SettingsView  # noqa: E402
 from autostream_webui_page_auth import send_auth_page  # noqa: E402
 
 
@@ -24,8 +27,9 @@ def _get(query: str = "", config_extra: dict | None = None, settings=True):
     with tempfile.TemporaryDirectory() as tmp:
         state = _page_stub._scratch_state(tmp, config_extra)
         if not settings:
-            state.settings = None
-            state.config_path = str(Path(tmp) / "missing.json")
+            broken = MagicMock()
+            broken.snapshot.side_effect = OSError("settings unreadable")
+            state.settings = SettingsView(broken)
         send_auth_page(handler, state, manager, query)
     return b"".join(chunks).decode("utf-8"), manager, handler
 
@@ -64,7 +68,7 @@ def test_dark_mode_follows_the_in_memory_settings():
     assert 'data-theme="light"' in _get(config_extra={"webui": {"dark_mode": False}})[0]
 
 
-def test_an_unreadable_configuration_gives_the_light_theme():
+def test_a_view_whose_snapshot_raises_gives_the_light_theme():
     assert 'data-theme="light"' in _get(settings=False)[0]
 
 

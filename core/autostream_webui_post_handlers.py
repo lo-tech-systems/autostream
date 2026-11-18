@@ -19,14 +19,11 @@ import logging
 
 from autostream_intents import Intent, Origin, submit
 from autostream_pin_pairing import REQUESTER_WEBUI
-from autostream_config import (
-    DEFAULT_AIRPLAY_MODE,
-    parse_config,
-)
+from autostream_config import DEFAULT_AIRPLAY_MODE
 from autostream_player_service import config_airplay_mode_to_backend
 from autostream_sysutils import factory_reset_system
 
-from autostream_webui_common import locked_load_config
+from autostream_webui_common import _config_snapshot
 from autostream_webui_state import WebUIState
 from autostream_webui_api import send_json, send_settings_post_json
 
@@ -40,8 +37,7 @@ def handle_output_update(handler, state: WebUIState, body: str) -> None:
         payload = json.loads(body)
         out_id = str(payload.get("id") or "").strip()
 
-        cfg = locked_load_config(state.config_path)
-        parsed = parse_config(cfg)
+        parsed = _config_snapshot(state)
 
         offset_ms_raw = parsed.owntone.output_offsets_ms.get(out_id) if out_id else None
         offset_ms = int(offset_ms_raw) if offset_ms_raw is not None else None

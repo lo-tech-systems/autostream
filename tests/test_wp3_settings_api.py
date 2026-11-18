@@ -76,7 +76,9 @@ def _make_state(tmp_path: Path, *, with_store: bool = True):
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
         state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
         return state, store
-    state = WebUIState(str(cfg), str(tmp_path / "state.json"))
+    state = MagicMock()
+    state.config_path = str(cfg)
+    state.settings = None
     return state, None
 
 

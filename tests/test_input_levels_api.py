@@ -21,6 +21,7 @@ from autostream_webui_api import send_input_levels_json
 from autostream_webui_state import WebUIState
 import autostream_state as _state
 from fake_store import FakeStore
+from settings_fixtures import fixed_view
 
 
 def _make_handler() -> MagicMock:
@@ -64,7 +65,7 @@ def _call(levels=None, connected=True, config=None, config_error=None,
           note=lambda index: f"note {index}", rate=lambda index: f"rate {index}"):
     if config is None:
         config = MagicMock(audio1_enabled=True, audio2_enabled=False)
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = _make_handler()
     config_patch = (
         patch("autostream_webui_api._config_snapshot", side_effect=config_error)
@@ -125,7 +126,7 @@ def test_input_without_a_running_monitor_gets_empty_rate_fields_and_the_note():
 
 def test_a_non_breaking_space_in_the_text_survives_the_json_reply():
     handler = _make_handler()
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     _state.store().publish_for_tests(
         "monitor", _state.MonitorRuntimeInfo(connected=True))
     _put_inputs([_level(1, -40.0)], lambda index: "note",

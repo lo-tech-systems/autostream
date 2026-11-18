@@ -4,7 +4,7 @@ Verifies:
 - WebUIState stores a settings attribute
 - start_webui_background accepts and stores a SettingsStore; doesn't create a second one
 - _config_snapshot(state) reads from store when available
-- _config_snapshot(state) falls back to disk when state.settings is None
+- _config_snapshot(state) refuses a state whose settings are not a view
 - run_autostream calls settings.save_now() before exiting (final flush)
 - All page-renderer and API read paths use the store (smoke test via _config_snapshot)
 """
@@ -15,6 +15,8 @@ import sys
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+from settings_fixtures import fixed_view
 
 import pytest
 
@@ -47,10 +49,13 @@ def _minimal_cfg(tmp_path: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 class TestWebUIStateSettingsAttribute:
-    def test_settings_defaults_to_none(self, tmp_path):
+    def test_a_state_needs_a_settings_view(self, tmp_path):
+        import pytest
         from autostream_webui_state import WebUIState
-        state = WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
-        assert state.settings is None
+        with pytest.raises(TypeError):
+            WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"))
+        with pytest.raises(TypeError):
+            WebUIState(str(tmp_path / "cfg.json"), str(tmp_path / "state.json"), settings=None)
 
     def test_settings_stored_from_constructor(self, tmp_path):
         from autostream_webui_state import WebUIState
@@ -67,8 +72,7 @@ class TestWebUIStateSettingsAttribute:
         from autostream_webui_state import WebUIState
         from autostream_settings import SettingsStore
         cfg = _minimal_cfg(tmp_path)
-        state = WebUIState(str(cfg), str(tmp_path / "state.json"))
-        assert state.settings is None
+        state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=fixed_view())
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
         state.settings = store
         from autostream_settings import writable_store
@@ -96,16 +100,14 @@ class TestConfigSnapshot:
         assert result.general.log_level == "debug"
         store.close(save=False)
 
-    def test_falls_back_to_disk_when_no_store(self, tmp_path):
+    def test_refuses_settings_that_are_not_a_view(self, tmp_path):
+        import pytest
         from autostream_webui_common import _config_snapshot
-        from autostream_webui_state import WebUIState
 
-        cfg = _minimal_cfg(tmp_path)
-        state = WebUIState(str(cfg), str(tmp_path / "state.json"))
-        assert state.settings is None
-
-        result = _config_snapshot(state)
-        assert result.general.log_level == "info"  # what's on disk
+        state = MagicMock()
+        state.settings = MagicMock()
+        with pytest.raises(TypeError):
+            _config_snapshot(state)
 
     def test_store_snapshot_is_independent(self, tmp_path):
         """Each _config_snapshot call returns a fresh object."""

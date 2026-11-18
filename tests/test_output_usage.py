@@ -20,6 +20,7 @@ if _CORE not in sys.path:
 
 import autostream_output_usage as ou
 from fake_store import fake_session
+from settings_fixtures import fixed_view
 
 
 # ---------------------------------------------------------------------------
@@ -1040,7 +1041,7 @@ class TestAudioStatusPlayingFromSession:
 
         handler = MagicMock()
         handler.wfile = io.BytesIO()
-        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+        state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
         parsed = MagicMock()
         parsed.owntone.base_url = "http://localhost:3689"
         if result is None:

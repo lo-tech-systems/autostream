@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
+from settings_fixtures import fixed_view
 from fake_store import fake_playback_mock
 from autostream_settings import SettingsStore, as_view, writable_store
 
@@ -93,9 +94,12 @@ class TestApplyEqFieldBoolViaStore:
         from autostream_webui_api import send_service_config_json
         config_path = _make_config(str(tmp_path))
         state = _make_state(config_path, None)
+        state.settings = fixed_view()
         handler, sent = _make_handler()
         body = json.dumps({"field": "service_stylus_life_hours_input1", "value": "750"})
-        with patch("autostream_playback_tracking.update_playback_input_config"),              fake_playback_mock() as m_snap:
+        with patch("autostream_playback_tracking.update_playback_input_config"), \
+             patch("autostream_live_config._store_of", return_value=None), \
+             fake_playback_mock() as m_snap:
             m_snap.return_value = MagicMock(inputs={})
             send_service_config_json(handler, state, body)
         assert sent["code"] == 500

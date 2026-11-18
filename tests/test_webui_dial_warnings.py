@@ -24,6 +24,7 @@ from autostream_state import live
 from autostream_dials import AUTH_AUTHORIZED, AUTH_NOT_AUTHORIZED, AUTH_UNAVAILABLE, DIAL_CAPABILITIES
 from autostream_webui_api import send_dial_warnings_post_json
 from autostream_webui_state import WebUIState
+from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"
 APPLIANCE_ID = "aaaaaaaaaaaaaaaaaaaa"
@@ -34,7 +35,7 @@ STYLUS = dw.DialWarning("stylus_in1", "warning", "Input 1 stylus",
 
 def _invoke(json_obj, *, auth_state=AUTH_AUTHORIZED, speaks_v2=True, warnings=(STYLUS,),
             build_error=None, appliance_id=APPLIANCE_ID):
-    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
+    state = WebUIState(config_path="dummy.json", state_path="dummy-state.json", settings=fixed_view())
     handler = MagicMock()
     handler.wfile = io.BytesIO()
     build = MagicMock(return_value=list(warnings), side_effect=build_error)

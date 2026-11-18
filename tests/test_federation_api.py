@@ -33,6 +33,8 @@ from fake_store import FakeStore, fake_levels, fake_playback
 import autostream_federation as fed
 from autostream_pin_pairing import REQUESTER_WEBUI
 from autostream_players import ActionResult
+from autostream_settings import as_view
+from settings_fixtures import fixed_view
 
 _skip = pytest.mark.skipif(not _HAS_WEBUI, reason="autostream_webui import chain unavailable")
 
@@ -86,7 +88,10 @@ def _make_handler(
     return h
 
 
-def _fake_state(tmp_path: Path, advertise_appliance: bool | None = None) -> MagicMock:
+def _fake_state(tmp_path: Path, advertise_appliance: bool | None = None, *,
+                writable: bool = False) -> MagicMock:
+    """A state over the configuration below; *writable* puts a real store behind
+    its settings (close it with ``state.store.close(save=False)``)."""
     cfg: dict = {
         "general": {"silence_seconds": 30},
         "owntone": {"base_url": "http://localhost:3689"},
@@ -117,6 +122,12 @@ def _fake_state(tmp_path: Path, advertise_appliance: bool | None = None) -> Magi
     cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
     s = MagicMock()
     s.config_path = str(cfg_path)
+    if writable:
+        from autostream_settings import SettingsStore
+        s.store = SettingsStore(str(cfg_path), _save_interval_seconds=9999, _writer=MagicMock())
+        s.settings = as_view(s.store)
+    else:
+        s.settings = fixed_view(cfg)
     return s
 
 
@@ -449,14 +460,17 @@ class TestFederationEqStatus:
 @_skip
 class TestFederationEqConfig:
     def _call_eq_config(self, tmp_path, body: dict):
-        state = _fake_state(tmp_path)
+        state = _fake_state(tmp_path, writable=True)
         bearer = _get_bearer()
         h = _make_handler("POST", "/api/federation/v1/equaliser/config",
                           body=json.dumps(body).encode(),
                           headers={"Authorization": bearer})
-        with patch("autostream_monitor_control.set_live_output_gain"), \
-             patch("autostream_monitor_control.save_config"):
-            return _call(h, state)
+        try:
+            with patch("autostream_monitor_control.set_live_output_gain"), \
+                 patch("autostream_monitor_control.save_config"):
+                return _call(h, state)
+        finally:
+            state.store.close(save=False)
 
     def test_valid_gain_field_accepted(self, tmp_path):
         code, data = self._call_eq_config(tmp_path, {"field": "gain_db", "value": "3.0"})
@@ -494,14 +508,17 @@ class TestFederationEqConfig:
 @_skip
 class TestFederationEqReset:
     def test_reset_returns_ok_true(self, tmp_path):
-        state = _fake_state(tmp_path)
+        state = _fake_state(tmp_path, writable=True)
         bearer = _get_bearer()
         h = _make_handler("POST", "/api/federation/v1/equaliser/reset",
                           body=b"",
                           headers={"Authorization": bearer})
-        with patch("autostream_monitor_control.set_live_output_gain"), \
-             patch("autostream_monitor_control.set_live_output_eq"):
-            code, data = _call(h, state)
+        try:
+            with patch("autostream_monitor_control.set_live_output_gain"), \
+                 patch("autostream_monitor_control.set_live_output_eq"):
+                code, data = _call(h, state)
+        finally:
+            state.store.close(save=False)
         assert code == 200
         assert data["ok"] is True
 

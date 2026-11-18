@@ -56,7 +56,6 @@ def _files_and_player_fail(*, cached_buffer: bool = True) -> ExitStack:
     stack = ExitStack()
     for target in (
         "autostream_start_buffer_cache._fetch",
-        "autostream_webui_common.locked_load_config",
         "autostream_config.load_config",
     ):
         stack.enter_context(patch(target, side_effect=boom))
@@ -147,3 +146,8 @@ def test_a_settings_view_that_fails_gives_a_500(state, route, args, expected):
          patch("autostream_appliance_gateway._config_snapshot", side_effect=RuntimeError("boom")):
         code, body = _reply(route, state, *args)
     assert (code, body) == (500, expected)
+
+
+def test_the_web_helpers_have_no_file_loader():
+    import autostream_webui_common
+    assert not hasattr(autostream_webui_common, "locked_load_config")

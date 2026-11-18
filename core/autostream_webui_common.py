@@ -24,9 +24,7 @@ from autostream_settings import SettingsView
 from autostream_auth import FLASH_COOKIE_NAME
 from autostream_bluetooth_client import classify_loopback_hw
 from autostream_config import (
-    CONFIG_IO_LOCK,
     DEFAULT_STYLUS_LIFE_HOURS,
-    load_config,
     normalize_input_type,
 )
 from autostream_playback_stats import InputPlaybackSnapshot, make_fallback_input_snapshot
@@ -45,19 +43,12 @@ from autostream_webui_components import banner_html
 import json as _json
 
 
-def locked_load_config(path: str):
-    """Load config under a global lock to avoid reading partial writes."""
-    with CONFIG_IO_LOCK:
-        return load_config(path)
-
-
 def _config_snapshot(state):
-    """Return a parsed config snapshot, preferring the in-memory settings store."""
+    """The parsed settings the web pages read: the in-memory settings, never the file."""
     settings = getattr(state, "settings", None)
-    if isinstance(settings, SettingsView):
-        return settings.snapshot()
-    from autostream_config import parse_config
-    return parse_config(locked_load_config(state.config_path))
+    if not isinstance(settings, SettingsView):
+        raise TypeError("the web pages need a settings view on their state")
+    return settings.snapshot()
 
 
 # -----------------------------------------------------------------------------

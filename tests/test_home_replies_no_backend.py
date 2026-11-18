@@ -62,7 +62,6 @@ def _backend_down() -> ExitStack:
     stack = ExitStack()
     for target in (
         "autostream_player_service.get_setting",
-        "autostream_webui_common.locked_load_config",
         "autostream_config.load_config",
         "autostream_appliance_models.get_system_hostname",
         "autostream_sysutils.get_system_hostname",
@@ -105,3 +104,8 @@ def test_the_status_reply_carries_its_fields_from_the_snapshot(state):
                 "belt_banner_text", "bearing_banner_text", "dial_update_banner_text",
                 "sample_rate_banner_text"):
         assert key in body, key
+
+
+def test_the_web_helpers_have_no_file_loader():
+    import autostream_webui_common
+    assert not hasattr(autostream_webui_common, "locked_load_config")

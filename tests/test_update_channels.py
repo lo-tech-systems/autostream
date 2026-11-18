@@ -33,6 +33,7 @@ from autostream_update_support import (
     _version_key,
 )
 from fake_store import fake_outputs_result
+from settings_fixtures import fixed_view
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +878,7 @@ class TestSetupPageChannelToggle:
 
         state = MagicMock()
         state.config_path = config_path
+        state.settings = fixed_view(json.loads(Path(config_path).read_text(encoding="utf-8")))
         state.get_monitor_devices.return_value = []
 
         auth = MagicMock()
