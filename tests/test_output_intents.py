@@ -747,6 +747,17 @@ class TestSelectDefault:
         assert reply.ok is False and reply.error == "pin_pending"
         assert player.calls == []
 
+    def test_a_speaker_whose_player_reports_it_waiting_is_not_asked_again(self, player, usage):
+        arrange(group_row(ID, "password", name="Kitchen", needs_auth_key=True, pin_pending=True))
+        reply = _default()
+        assert reply.ok is False and reply.error == "pin_pending"
+        assert player.calls == []
+
+    def test_an_unpaired_speaker_not_waiting_is_started_so_it_shows_a_pin(self, player, usage):
+        arrange(group_row(ID, "stopped", name="Kitchen", needs_auth_key=True, requires_auth=True))
+        assert _default().ok is True
+        assert [c[1] for c in player.calls] == [ID]
+
     def test_an_occupied_speaker_is_left_alone(self, player, usage):
         arrange()
         usage.owner = "Hall"

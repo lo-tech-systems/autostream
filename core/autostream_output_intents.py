@@ -247,9 +247,10 @@ def _select_default(intent: Intent, wait: float) -> Outcome:
     if unit is None or unit.offline:
         return Outcome(ok=False, error="not_found")
     name = unit.name
-    if unit.availability == "password" or (unit.reported is not None and unit.reported.needs_auth_key):
-        # The player deselected it pending pairing; asking again would make
-        # the speaker prompt for a PIN on every retry.
+    if unit.availability == "password":
+        # It waits for a PIN; asking again would replace the PIN on its
+        # screen. A speaker that is only unpaired is started, so that it
+        # shows a PIN; the coordinator asks for that once a session.
         return Outcome(ok=False, error="pin_pending")
     if unit.in_use_by:
         return Outcome(ok=False, error="in_use", result={"owner": unit.in_use_by})

@@ -192,6 +192,9 @@ class AudioMonitor:
         # this session, and which have had the long wait warned about.
         self._default_missing_since: dict[str, float] = {}
         self._default_missing_warned: set[str] = set()
+        # The default outputs (by member key) that asked for a PIN this
+        # session: each is started for its PIN once, not on every retry.
+        self._default_pin_asked: set[str] = set()
         # The output authority's count of player restarts when last looked at
         # (None: adopt the current count without treating it as a restart).
         self._outputs_restarts_seen: Optional[int] = None
@@ -1297,6 +1300,7 @@ class AudioMonitor:
     def clear_default_output_wait(self) -> None:
         self._default_missing_since.clear()
         self._default_missing_warned.clear()
+        self._default_pin_asked.clear()
 
     def note_default_missing(self, now: float, member) -> None:
         """A default speaker is not on the network yet: one line when the wait

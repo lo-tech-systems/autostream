@@ -318,7 +318,11 @@ class SelfHeal:
             if not m.placeholder:
                 monitor.note_default_output_found(now, m)
 
-        if any(u.availability == "password" for u in snap.units):
+        waiting = {u.id for u in snap.units if u.availability == "password"}
+        for m in snap.default_members:
+            if m.unit_id in waiting:
+                monitor._default_pin_asked.add(m.key)
+        if waiting:
             monitor._throttled_owntone_log(
                 now,
                 logging.INFO,
@@ -341,6 +345,14 @@ class SelfHeal:
                 continue
             if unit.selected:
                 continue
+            if m.key in monitor._default_pin_asked:
+                # It showed its PIN this session; the PIN given in the
+                # prompt starts it. Another start would show a new PIN.
+                monitor._throttled_owntone_log(
+                    now, logging.INFO,
+                    "Default output '%s' asked for a PIN this session; not starting it again.", m.name,
+                )
+                continue
             args = {"key": m.key, "volume": m.volume}
             offset_ms = monitor.owntone_output_offsets_ms.get(unit.id)
             if offset_ms is not None:
@@ -352,7 +364,10 @@ class SelfHeal:
             reply = intents.submit(Intent("outputs.select_default", args, Origin.SESSION, "coordinator"))
             if not reply.ok:
                 monitor._log_default_output_refusal(now, m, reply)
-                left = True
+                if reply.error in ("pin_required", "pin_pending"):
+                    monitor._default_pin_asked.add(m.key)
+                else:
+                    left = True
         if left:
             # A member that is missing or refused keeps the retry running
             # until it starts, the user changes the speakers, or the session

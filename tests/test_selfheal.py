@@ -31,7 +31,7 @@ from autostream_players import ActionResult
 from autostream_state import Origin
 from autostream_state.outputs import get_authority
 from fake_store import FakeStore
-from output_fakes import row
+from output_fakes import group_row, row
 import autostream_selfheal as selfheal
 
 BASE_URL = "http://localhost:3689"
@@ -161,6 +161,55 @@ class TestDefaultRule:
             _run(mon, NOW + mon.OWNTONE_RETRY_SECONDS + 1)
         lines = [r for r in caplog.records if "not auto-enabling the default output" in r.getMessage()]
         assert len(lines) == 1
+
+
+class TestDefaultThatAsksForAPin:
+    """A default speaker that needs pairing, from a player whose rows carry the
+    session: started once a session so that it shows a PIN, not on every retry."""
+
+    def test_an_unpaired_default_is_started_to_show_its_pin(self, submitted, fifo_ok):
+        FakeStore().outputs([group_row("1", "stopped", name=DEFAULT_NAME, needs_auth_key=True)])
+        _run(_make_monitor())
+        assert [i.name for i in submitted.intents] == ["outputs.select_default"]
+
+    def test_a_default_that_asked_for_a_pin_is_not_started_again_this_session(self, submitted, fifo_ok):
+        FakeStore().outputs([group_row("1", "stopped", name=DEFAULT_NAME, needs_auth_key=True)])
+        mon = _make_monitor()
+        submitted.answers = [_reply(ok=False, error="pin_required")]
+        _run(mon, NOW)
+        _run(mon, NOW + mon.OWNTONE_RETRY_SECONDS + 1)
+        assert [i.name for i in submitted.intents] == ["outputs.select_default"]
+        assert mon._owntone_enabled_ok is True
+
+    def test_a_new_session_asks_again(self, submitted, fifo_ok):
+        FakeStore().outputs([group_row("1", "stopped", name=DEFAULT_NAME, needs_auth_key=True)])
+        mon = _make_monitor()
+        submitted.answers = [_reply(ok=False, error="pin_required")]
+        _run(mon, NOW)
+        mon.clear_default_output_wait()
+        mon._owntone_enabled_ok = False
+        _run(mon, NOW + mon.OWNTONE_RETRY_SECONDS + 1)
+        assert [i.name for i in submitted.intents] == ["outputs.select_default"] * 2
+
+    def test_a_wait_for_a_pin_that_ended_does_not_start_it_again(self, submitted, fifo_ok):
+        """The player gave up the wait (its time ran out): this session is
+        not asked again, so the PIN does not change on the screen."""
+        FakeStore().outputs([group_row("1", "password", name=DEFAULT_NAME, needs_auth_key=True, pin_pending=True)])
+        mon = _make_monitor()
+        _run(mon, NOW)
+        assert submitted.intents == [] and mon._owntone_enabled_ok is False
+        FakeStore().outputs([group_row("1", "stopped", name=DEFAULT_NAME, needs_auth_key=True)])
+        _run(mon, NOW + mon.OWNTONE_RETRY_SECONDS + 1)
+        assert submitted.intents == []
+
+    def test_other_failures_keep_the_retry_running(self, submitted, fifo_ok):
+        FakeStore().outputs([group_row("1", "stopped", name=DEFAULT_NAME)])
+        mon = _make_monitor()
+        submitted.answers = [_reply(ok=False, error="failed", result={"message": "no answer"})]
+        _run(mon, NOW)
+        assert mon._owntone_enabled_ok is False
+        _run(mon, NOW + mon.OWNTONE_RETRY_SECONDS + 1)
+        assert [i.name for i in submitted.intents] == ["outputs.select_default"] * 2
 
 
 class TestDefaultSelectArguments:

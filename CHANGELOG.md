@@ -120,6 +120,11 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   replaced. A PIN sent while the speaker is still busy finishing something
   else keeps the dialog or keypad open with "The speaker is busy. Try the PIN
   again in a moment."
+- fixed: an Auto-Start speaker that has not been paired yet, such as an Apple
+  TV, was never switched on when playback started, so its PIN never appeared.
+  It is now switched on once each session, which brings up its PIN on the TV
+  and the PIN dialog on the Home page. A PIN that was not given within
+  2 minutes is no longer asked for when the Home page is opened later.
 - changed: a stereo pair pauses and resumes as one from the Home app.
 
 ### Dials
