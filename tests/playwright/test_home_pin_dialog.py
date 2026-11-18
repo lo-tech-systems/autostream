@@ -131,6 +131,8 @@ class TestHomePinDialog:
         _type_pin(page, "1111")
         page.locator("#pinModalOk").click()
         expect(page.locator("#pinModal")).not_to_have_class(_OPEN)
+        # The verdict comes after the reply: the switch shows the reply was taken
+        expect(page.locator("#output_enabled_tv")).to_be_checked()
         failure = {"seq": 1, "unit_id": "tv", "name": "Speaker A", "reason": "pin_invalid",
                    "requester": "webui", "at": page.evaluate("Date.now()") / 1000}
         stub.push({"outputs": outputs(speaker(pin_pending=True), start_failure=failure)})
