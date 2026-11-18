@@ -207,6 +207,7 @@ def republish_current_nowplaying(monitor: Optional["AudioMonitor"], session_acti
     cur = monitor._current_nowplaying
     if cur is None:
         return
+    monitor._nowplaying_publisher.resend_progress()
     monitor._nowplaying_publisher.publish_refresh(
         NowPlayingMetadata(
             title=cur.title,
@@ -215,6 +216,21 @@ def republish_current_nowplaying(monitor: Optional["AudioMonitor"], session_acti
             artwork=None,
         )
     )
+
+
+def update_nowplaying_progress(
+    monitor: Optional["AudioMonitor"],
+    source: Optional[str],
+    repeat_status: Optional[dict],
+    sample_rate,
+) -> None:
+    """Keep the receiver's now-playing clock on the session's position; see
+    OwntoneMetadataPipePublisher.update_progress(). Called every poll cycle,
+    after the cycle's session event and any republish. Nothing to do with no
+    session."""
+    if monitor is None or source is None:
+        return
+    monitor._nowplaying_publisher.update_progress(source, repeat_status, sample_rate)
 
 
 def _session_nowplaying_end(monitor: Optional["AudioMonitor"]) -> None:

@@ -49,6 +49,52 @@ PLACEHOLDER_ARTWORK_FILENAME = "autostream-playback-logo-dark-512x512.png"
 # who wants a different placeholder without touching the install tree).
 PLACEHOLDER_ARTWORK_ENV = "AUTOSTREAM_PLACEHOLDER_ARTWORK_PATH"
 
+# A receiver such as the Apple TV runs its now-playing clock only for a track
+# of known length, so a session always has one: the repeat recording's when
+# there is one, otherwise this.
+FALLBACK_LENGTH_SECONDS = 99 * 60
+# The player counts the position on by itself once given one. A position the
+# session reports this far from where that count has got to is a jump (a
+# replay starting, a seek, a loop) and is sent again.
+PROGRESS_JUMP_SECONDS = 2.0
+
+
+@dataclass(frozen=True)
+class Progress:
+    position_s: float
+    length_s: float
+
+
+def _positive(value) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+        return None
+    return float(value)
+
+
+def session_progress(source: str, repeat_block: Optional[dict], session_elapsed_s: float) -> Progress:
+    """The position and length of the session playing from *source*
+    ("input1", "input2" or "replay"), one clock for the whole session.
+
+    A replay runs over its recording. A live input being recorded runs over
+    the most the recording can hold (past that the position runs beyond the
+    length, and the receiver's clock stops at the end). Anything else is
+    counted from the session start against FALLBACK_LENGTH_SECONDS."""
+    block = repeat_block if isinstance(repeat_block, dict) else {}
+    replay = block.get("replay") if isinstance(block.get("replay"), dict) else {}
+    recording = block.get("recording") if isinstance(block.get("recording"), dict) else {}
+
+    if source == "replay" and replay.get("active"):
+        length = _positive(replay.get("duration_seconds"))
+        if length is not None:
+            return Progress(_positive(replay.get("position_seconds")) or 0.0, length)
+    elif (source.startswith("input") and recording.get("active")
+          and f"input{recording.get('origin_input')}" == source):
+        length = _positive(block.get("max_recording_seconds"))
+        if length is not None:
+            return Progress(_positive(recording.get("seconds")) or 0.0, length)
+
+    return Progress(max(0.0, session_elapsed_s), float(FALLBACK_LENGTH_SECONDS))
+
 
 @functools.lru_cache(maxsize=1)
 def _resolve_placeholder_artwork_path() -> Optional[str]:
@@ -306,12 +352,20 @@ class OwntoneMetadataPipePublisher:
         self._held_artwork: Optional[ArtworkImage] = None
         self._held_lock = threading.Lock()
 
+        # The session's progress as last sent (position, length, monotonic
+        # time sent), None until the session's first is sent; see
+        # update_progress(). Touched from the coordinator thread only.
+        self._session_started_at = time.monotonic()
+        self._progress_sent: Optional[tuple[float, float, float]] = None
+
         if not self._enabled:
             self._cleanup_stale_fifo()
             LOGGER.info("OwnTone pipe metadata publishing disabled (set %s=1 to enable).", PIPE_METADATA_ENV)
             return
 
-        self._queue: queue.Queue[tuple[str, Optional[NowPlayingMetadata]]] = queue.Queue()
+        # (kind, payload): NowPlayingMetadata for "start"/"refresh",
+        # (Progress, sample rate) for "progress", None for "end"/"stop"
+        self._queue: queue.Queue[tuple[str, object]] = queue.Queue()
         self._stop = threading.Event()
         # Bundle framing state: touched only from within _run(),
         # the single consumer thread, so it needs no separate lock. True from
@@ -340,7 +394,37 @@ class OwntoneMetadataPipePublisher:
         or holds a path to something another owner might replace out from
         under it. Thin wrapper over _publish(); see there for the shared
         enqueue logic."""
+        self._session_started_at = time.monotonic()
+        self._progress_sent = None
         self._publish("start", meta)
+
+    def update_progress(self, source: str, repeat_block: Optional[dict], sample_rate) -> None:
+        """Keep the receiver's clock on the session's position (see
+        session_progress()). Called by the coordinator every poll cycle while
+        a session plays. A progress item goes out for the session's first
+        call, when the length changes, and when the position has jumped;
+        between those the player counts on by itself.
+
+        *sample_rate* is the pipe's, the unit of the progress item."""
+        rate = int(sample_rate) if _positive(sample_rate) is not None else None
+        if not self._enabled or rate is None:
+            return
+        now = time.monotonic()
+        progress = session_progress(source, repeat_block, now - self._session_started_at)
+        sent = self._progress_sent
+        if sent is not None:
+            position, length, at = sent
+            if (length == progress.length_s
+                    and abs(position + (now - at) - progress.position_s) < PROGRESS_JUMP_SECONDS):
+                return
+        self._progress_sent = (progress.position_s, progress.length_s, now)
+        self._queue.put(("progress", (progress, rate)))
+
+    def resend_progress(self) -> None:
+        """Send the progress again at the next update_progress(), for a
+        player that has lost it (a newly enabled output or a restarted
+        backend)."""
+        self._progress_sent = None
 
     def publish_refresh(self, meta: NowPlayingMetadata) -> None:
         """Publish updated metadata mid-session (e.g. a track-ID match
@@ -488,6 +572,9 @@ class OwntoneMetadataPipePublisher:
                                     self._held_artwork = meta.artwork
                             self._emit_start_bundle(out, meta)
                             self._session_open = True
+                    elif kind == "progress":
+                        if self._session_open:
+                            self._emit_progress(out, *meta)
                     elif kind == "end":
                         if self._session_open:
                             self._emit_end_bundle(out)
@@ -653,3 +740,13 @@ class OwntoneMetadataPipePublisher:
 
     def _emit_end_bundle(self, out) -> None:
         self._write_item(out, "ssnc", "pend")
+
+    def _emit_progress(self, out, progress: Progress, rate: int) -> None:
+        """A progress item on its own: "start/current/end" in samples at the
+        pipe's rate (Shairport-sync convention), so the player takes the
+        position and the length from it. Start is 1, as the player reads a
+        0 as a missing value."""
+        start = 1
+        current = start + round(progress.position_s * rate)
+        end = start + round(progress.length_s * rate)
+        self._write_item(out, "ssnc", "prgr", f"{start}/{current}/{end}".encode("ascii"))

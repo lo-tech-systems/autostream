@@ -27,6 +27,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -41,8 +42,11 @@ sys.path.insert(0, str(REPO_ROOT / "core"))
 
 from autostream_artwork import ArtworkImage
 from autostream_nowplaying import (
+    FALLBACK_LENGTH_SECONDS,
     MAX_PICTURE_BYTES,
     NowPlayingMetadata,
+    Progress,
+    session_progress,
     OwntoneMetadataPipePublisher,
     PersistentNowPlayingCache,
     get_shared_metadata_publisher,
@@ -1148,5 +1152,123 @@ class TestDefaultNowPlayingStrings:
         # supplies the *title* (Turntable/CD/Line), the prominent line on
         # the receiver -- see TestNowPlayingMetadataDefaults.
         assert NowPlayingMetadata().artist == "autostream"
+
+
+# ---------------------------------------------------------------------------
+# The session's progress: one clock for the whole session, of known length
+# ---------------------------------------------------------------------------
+
+def _repeat(*, replay=None, recording=None, max_recording_seconds=4800):
+    return {
+        "max_recording_seconds": max_recording_seconds,
+        "recording": recording or {"active": False, "seconds": 0, "origin_input": 1},
+        "replay": replay or {"active": False, "position_seconds": 0, "duration_seconds": 0},
+    }
+
+
+class TestSessionProgress:
+    def test_a_replay_runs_over_its_recording(self):
+        block = _repeat(replay={"active": True, "position_seconds": 75.5, "duration_seconds": 1250.0})
+        assert session_progress("replay", block, 9.0) == Progress(75.5, 1250.0)
+
+    def test_a_recorded_live_input_runs_over_the_most_the_recording_holds(self):
+        block = _repeat(recording={"active": True, "seconds": 300, "origin_input": 2})
+        assert session_progress("input2", block, 9.0) == Progress(300.0, 4800.0)
+
+    def test_a_live_input_past_the_buffer_runs_beyond_the_length(self):
+        block = _repeat(recording={"active": True, "seconds": 5000, "origin_input": 1})
+        assert session_progress("input1", block, 9.0) == Progress(5000.0, 4800.0)
+
+    def test_another_inputs_recording_is_not_this_sessions(self):
+        block = _repeat(recording={"active": True, "seconds": 300, "origin_input": 2})
+        assert session_progress("input1", block, 9.0) == Progress(9.0, FALLBACK_LENGTH_SECONDS)
+
+    @pytest.mark.parametrize("source, block", [
+        ("input1", None),
+        ("input1", _repeat()),
+        ("input1", _repeat(recording={"active": True, "seconds": 300, "origin_input": 1},
+                           max_recording_seconds=0)),
+        ("replay", _repeat(replay={"active": True, "position_seconds": 5, "duration_seconds": 0})),
+    ])
+    def test_otherwise_the_session_is_counted_against_the_fallback(self, source, block):
+        assert session_progress(source, block, 42.0) == Progress(42.0, FALLBACK_LENGTH_SECONDS)
+
+
+class TestProgressUpdates:
+    """update_progress() sends the session's progress when the player's own
+    count would be wrong: the session's first, a new length, a jump."""
+
+    @staticmethod
+    def _publisher(now):
+        pub = OwntoneMetadataPipePublisher.__new__(OwntoneMetadataPipePublisher)
+        pub._enabled = True
+        pub._queue = queue.Queue()
+        pub._held_artwork = None
+        pub._held_lock = threading.Lock()
+        pub._session_started_at = now
+        pub._progress_sent = None
+        return pub
+
+    @staticmethod
+    def _sent(pub):
+        items = []
+        while not pub._queue.empty():
+            items.append(pub._queue.get_nowait())
+        return [payload for kind, payload in items if kind == "progress"]
+
+    @staticmethod
+    def _update(pub, now, block, source="replay", rate=48000):
+        with patch("autostream_nowplaying.time.monotonic", return_value=now):
+            pub.update_progress(source, block, rate)
+
+    @staticmethod
+    def _replay(position, duration=1200.0):
+        return _repeat(replay={"active": True, "position_seconds": position, "duration_seconds": duration})
+
+    def test_the_first_is_sent_and_a_steady_one_is_not(self):
+        pub = self._publisher(100.0)
+        self._update(pub, 100.0, self._replay(10.0))
+        self._update(pub, 101.0, self._replay(11.0))
+        self._update(pub, 160.0, self._replay(70.5))
+        assert self._sent(pub) == [(Progress(10.0, 1200.0), 48000)]
+
+    def test_a_jump_is_sent(self):
+        pub = self._publisher(100.0)
+        self._update(pub, 100.0, self._replay(1190.0))
+        self._update(pub, 101.0, self._replay(0.5))
+        assert [p for p, _ in self._sent(pub)] == [Progress(1190.0, 1200.0), Progress(0.5, 1200.0)]
+
+    def test_a_new_length_is_sent(self):
+        pub = self._publisher(100.0)
+        self._update(pub, 100.0, _repeat(), source="input1")
+        self._update(pub, 101.0, _repeat(recording={"active": True, "seconds": 1, "origin_input": 1}),
+                     source="input1")
+        assert [p for p, _ in self._sent(pub)] == [
+            Progress(0.0, FALLBACK_LENGTH_SECONDS), Progress(1.0, 4800.0)]
+
+    def test_a_new_session_and_a_resend_send_it_again(self):
+        pub = self._publisher(100.0)
+        self._update(pub, 100.0, self._replay(10.0))
+        pub.resend_progress()
+        self._update(pub, 101.0, self._replay(11.0))
+        with patch("autostream_nowplaying.time.monotonic", return_value=102.0):
+            pub.publish_start(NowPlayingMetadata(artwork=_art()))
+        self._update(pub, 102.0, self._replay(12.0))
+        assert [p.position_s for p, _ in self._sent(pub)] == [10.0, 11.0, 12.0]
+
+    @pytest.mark.parametrize("rate", [None, 0, -1, "48000", True])
+    def test_nothing_is_sent_without_a_sample_rate(self, rate):
+        pub = self._publisher(100.0)
+        self._update(pub, 100.0, self._replay(10.0), rate=rate)
+        assert self._sent(pub) == []
+
+    def test_the_item_is_in_samples_from_one(self):
+        import base64
+        pub = self._publisher(100.0)
+        buf = io.BytesIO()
+        pub._emit_progress(buf, Progress(2.5, 60.0), 48000)
+        xml = buf.getvalue().decode("ascii")
+        assert OwntoneMetadataPipePublisher._tag_hex("prgr") in xml
+        assert base64.b64encode(b"1/120001/2880001").decode("ascii") in xml
 
 

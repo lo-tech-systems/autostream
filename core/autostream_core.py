@@ -669,6 +669,10 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     autostream_session.republish_current_nowplaying(
                         session_new_monitor, session_source is not None,
                     )
+                autostream_session.update_nowplaying_progress(
+                    session_new_monitor, session_source,
+                    tick_snapshot.repeat_status, status.get("output_rate"),
+                )
                 selfheal.maybe_run_owntone_hang_watchdog(
                     owntone_hang_watchdog,
                     status,

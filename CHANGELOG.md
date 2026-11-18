@@ -63,6 +63,10 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
 - new: on a small-screen dial, a tap on a Paused speaker in the speaker list
   starts it again, as its own Play would. Clients can do the same with the new
   `outputs.resume` intent.
+- fix: the clock on an Apple TV's now-playing screen did not move. The session
+  now has a length: a replay runs over its recording, live playback being
+  recorded runs over the most the recording can hold, and anything else counts
+  up against 99 minutes. The clock runs for the whole session, not per track.
 - new: a Pause setting on the Personalisation card, "When Pause is pressed on a
   speaker", that says what happens to the other speakers: only that speaker
   pauses (the default), the others are muted too, or the others are turned off
