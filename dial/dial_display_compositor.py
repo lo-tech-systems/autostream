@@ -135,6 +135,8 @@ from dial_touch_layout import (
     compact_layout_for,
     compact_picker_layout_for,
     eq_layout_for,
+    band_bell_rect,
+    dots_bell_rect,
     idle_layout_for,
     info_value_layout_for,
     layout_for,
@@ -309,6 +311,16 @@ WIFI_RED = "red"
 WIFI_OFF = "off"
 
 @dataclass(frozen=True)
+class BellBadge:
+    """The warning bell drawn in a corner: the worst severity among the
+    entries (it picks the colour) and how many there are (the number in
+    the bell)."""
+
+    severity: str
+    count: int
+
+
+@dataclass(frozen=True)
 class OverlayState:
     """Immutable snapshot of what the now-playing controls overlay should
     show.
@@ -354,6 +366,9 @@ class OverlayState:
         currently shown — draws three pager dots instead of two whenever
         `dots` is also True. False (the default, byte-identical to before
         this field existed) draws the existing two-dot glyph.
+    bell: the warning bell, or None for none. In the top band (or the compact
+        dots quadrant) while the controls are drawn; on a dark disc in the
+        corner of the artwork while they are not.
     """
 
     visible: bool = False
@@ -366,6 +381,7 @@ class OverlayState:
     dots: bool = False
     album: str = ""
     eq_pages: bool = False
+    bell: "BellBadge | None" = None
 
 
 @dataclass(frozen=True)
@@ -485,6 +501,7 @@ class RepeatViewState:
     pressed: "TouchZone | None" = None
     eq_pages: bool = False
     counter_second: int | None = None
+    bell: "BellBadge | None" = None
 
 
 @dataclass(frozen=True)
@@ -547,6 +564,7 @@ class EqViewState:
     muted: "bool | None" = None
     volume: "int | None" = None
     pressed: "TouchZone | None" = None
+    bell: "BellBadge | None" = None
 
 
 @dataclass(frozen=True)
@@ -578,16 +596,6 @@ class WarningView:
     pressed: "int | None" = None
     percent: "int | None" = None
     source: str = ""
-
-
-@dataclass(frozen=True)
-class BellBadge:
-    """The warning bell drawn in a corner: the worst severity among the
-    entries (it picks the colour) and how many there are (the number in
-    the bell)."""
-
-    severity: str
-    count: int
 
 
 @dataclass(frozen=True)
@@ -696,6 +704,7 @@ class Header:
     dots_filled: int | None = None
     dots_count: int = 2
     back: bool = False
+    bell: "BellBadge | None" = None
 
 
 @dataclass(frozen=True)
@@ -722,7 +731,7 @@ class Body:
     treble_db: "int | None" = None  # BODY_EQ_BARS
     wifi_bars: int = 0            # BODY_IDLE_BADGE: lit arcs on the wifi glyph (0..3) under WIFI_SIGNAL; 0 draws it all grey
     wifi_style: str = WIFI_SIGNAL # BODY_IDLE_BADGE: WIFI_SIGNAL / WIFI_GREY / WIFI_RED / WIFI_OFF — see the constants
-    bell: "BellBadge | None" = None  # BODY_IDLE_BADGE: the warning bell, None draws none
+    bell: "BellBadge | None" = None  # BODY_IDLE_BADGE / BODY_COMPACT_CONTROLS: the warning bell, None draws none
     buttons: tuple[str, ...] = ()  # BODY_WARNING: button labels, left to right, one per layout cell
     percent: "int | None" = None   # BODY_WARNING: progress bar under the message (0..100), None for none
     source: str = ""               # BODY_WARNING: small line above the title; non-empty fits the text to the row
@@ -865,7 +874,7 @@ class DialDisplayCompositor:
         drawn over it, so a caller that draws further must not do so in
         place."""
         if overlay is None or not overlay.visible:
-            return image
+            return _with_corner_bell(image, overlay, metrics)
 
         if metrics.content_tier == CONTENT_COMPACT:
             frame = _compact_controls_frame(overlay, image.width, image.height, metrics)
@@ -875,7 +884,7 @@ class DialDisplayCompositor:
         if reveal_progress >= 1.0:
             # The bands have left the panel: the same frame a hidden overlay
             # produces, through the same call.
-            return image
+            return _with_corner_bell(image, overlay, metrics)
         frame = _now_playing_frame(overlay, image.width, image.height, metrics)
         if not reveal_progress > 0.0:
             return _compose_frame(
@@ -1733,6 +1742,14 @@ _BELL_RGB = {
 }
 _BELL_INFO_RGB = (82, 152, 216)
 
+# The corner bell on resting artwork: a dark translucent disc under it, and
+# the bell's share of the disc. The bell's share of its zone in the top band
+# and in the compact dots quadrant.
+_CORNER_DISC_RGBA = (0, 0, 0, 150)
+_CORNER_BELL_FRACTION = 0.62
+_BAND_BELL_FRACTION = 0.8
+_DOTS_BELL_FRACTION = 0.85
+
 
 @functools.lru_cache(maxsize=48)
 def _glyph_tile(kind: str, params: tuple, w: int, h: int, supersample: int):
@@ -2408,16 +2425,21 @@ def _reveal_frame_pillow(base, layers: RevealLayers, progress: float) -> Image.I
 
 
 def _draw_header(img: Image.Image, layout, header: Header, metrics: LayoutMetrics) -> None:
+    bell_rect = band_bell_rect(layout.name, metrics.band_h)
+    # The bell sits over the name's right end, so the name is drawn shorter.
+    name_rect = layout.name if header.bell is None else (*layout.name[:2], bell_rect[0], layout.name[3])
     _draw_top_band_content(
         img,
         dots_rect=layout.dots if (header.dots_filled is not None and not header.back) else None,
         dots_filled=None if header.back else header.dots_filled,
         dots_count=header.dots_count,
-        name_rect=layout.name, name_text=header.name,
+        name_rect=name_rect, name_text=header.name,
         volume_cluster_rect=layout.volume_cluster,
         volume=header.volume, muted=header.muted,
         metrics=metrics,
     )
+    if header.bell is not None:
+        _draw_bell(img, bell_rect, header.bell, metrics, _BAND_BELL_FRACTION)
     if header.back:
         # The per-output detail page's own back control: an X, the same
         # glyph and icon-sized box the rail's own cancel control uses,
@@ -2773,6 +2795,8 @@ def _body_compact_controls(img: Image.Image, metrics: LayoutMetrics, body: Body)
     ss = metrics.supersample
     dots_color = _GLYPH_RGB if body.dots_lit else _DIMMED_GLYPH_RGB
     _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 0, dots_color, supersample=ss)
+    if body.bell is not None:
+        _draw_bell(img, dots_bell_rect(c.tl), body.bell, metrics, _DOTS_BELL_FRACTION)
     mute_color = _INVERTED_GLYPH_RGB if body.muted else _GLYPH_RGB
     _draw_glyph(img, _compact_glyph_box(c.tr), GLYPH_MUTE, mute_color, supersample=ss)
     draw = ImageDraw.Draw(img)
@@ -3318,6 +3342,29 @@ def _main_pressed_rects(
     return (rect,) if rect is not None else ()
 
 
+def _with_corner_bell(image, overlay, metrics: LayoutMetrics):
+    """Resting artwork: *image* itself when there is no bell (the frame is
+    the bare base), otherwise a copy with the bell on a dark translucent
+    disc in the corner square (IdleLayout.info)."""
+    if overlay is None or overlay.bell is None:
+        return image
+    frame = image.copy()
+    x0, y0, x1, y1 = idle_layout_for(image.width, image.height, metrics=metrics).info
+    w, h, ss = x1 - x0, y1 - y0, metrics.supersample
+    disc = Image.new("RGBA", (w * ss, h * ss), (0, 0, 0, 0))
+    ImageDraw.Draw(disc).ellipse([0, 0, w * ss - 1, h * ss - 1], fill=_CORNER_DISC_RGBA)
+    disc = disc.resize((w, h), _LANCZOS)
+    frame.paste(Image.alpha_composite(frame.crop((x0, y0, x1, y1)).convert("RGBA"), disc).convert("RGB"), (x0, y0))
+    _draw_bell(frame, (x0, y0, x1, y1), overlay.bell, metrics, _CORNER_BELL_FRACTION)
+    return frame
+
+
+def _draw_bell(img: Image.Image, rect, bell: BellBadge, metrics: LayoutMetrics, fraction: float) -> None:
+    """The bell glyph centred in *rect* at *fraction* of its short side."""
+    side = round(min(rect[2] - rect[0], rect[3] - rect[1]) * fraction)
+    _draw_glyph(img, _centred_box(rect, side), GLYPH_BELL, bell.severity, bell.count, supersample=metrics.supersample)
+
+
 def _compact_controls_frame(overlay: OverlayState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
     """The compact tier's playing screen: dimmed base behind, the mute
     cell's own solid wash when muted (before the body's inverted glyph
@@ -3331,7 +3378,7 @@ def _compact_controls_frame(overlay: OverlayState, width: int, height: int, metr
         pressed=_main_pressed_rects(overlay.pressed, width, height, metrics),
         washes=((c.tr, 255),) if overlay.muted else (),
         header=None,
-        body=Body(BODY_COMPACT_CONTROLS, muted=bool(overlay.muted), dots_lit=overlay.dots),
+        body=Body(BODY_COMPACT_CONTROLS, muted=bool(overlay.muted), dots_lit=overlay.dots, bell=overlay.bell),
         footer=Footer(FOOTER_NONE),
     )
 
@@ -3353,7 +3400,7 @@ def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: 
         header=Header(
             name=overlay.name, volume=overlay.volume, muted=overlay.muted,
             dots_filled=0 if overlay.dots else None,
-            dots_count=3 if overlay.eq_pages else 2,
+            dots_count=3 if overlay.eq_pages else 2, bell=overlay.bell,
         ),
         body=Body(BODY_NOW_PLAYING, title=overlay.title, artist=overlay.artist, album=overlay.album),
         footer=Footer(FOOTER_VOLUME_MUTE),
@@ -3428,7 +3475,7 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: Layo
         pressed=_repeat_pressed_rects(state, width, height, metrics),
         header=Header(
             name=state.name, volume=state.volume, muted=state.muted, dots_filled=1,
-            dots_count=3 if state.eq_pages else 2,
+            dots_count=3 if state.eq_pages else 2, bell=state.bell,
         ),
         body=body,
         footer=footer,
@@ -3453,6 +3500,7 @@ def _eq_frame(state: "EqViewState", width: int, height: int, metrics: LayoutMetr
         pressed=_eq_pressed_rects(state.pressed, width, height, metrics),
         header=Header(
             name=state.name, volume=state.volume, muted=state.muted, dots_filled=2, dots_count=3,
+            bell=state.bell,
         ),
         body=Body(BODY_EQ_BARS, bass_db=state.bass_db, treble_db=state.treble_db),
         footer=Footer(FOOTER_NONE),

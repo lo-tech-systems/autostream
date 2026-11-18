@@ -72,7 +72,24 @@ screen: DOTS, NAME, OUTPUTS, MUTE, DOWN, UP, plus ARTWORK (the inter-band
 strip, taps hide the bands) and the non-actuating artist and title labels.
 DOTS is carved from the left of the NAME zone (whose x0 therefore starts
 one band-height plus a 2*margin gap later than before); it opens the
-repeat screen. The LIST geometry
+repeat screen.
+
+BELLS: the warning bell has four homes, each live only while the dial has a
+warning to show (the touch state machine's one bell gate; a table lists a
+bell ahead of whatever it overlaps, so it wins the overlap when live and the
+neighbour keeps its tap when not). BAND_BELL sits at the right end of the
+NAME zone, the band's full height and band_h * 3 / 4 wide
+(band_bell_rect()), on every screen that shares the top band (main, repeat,
+EQ); at the 160x128 reference that is (69, 0, 93, 32) over the name zone
+(41, 0, 93, 32), and at 320x240 / 0.1778 mm per px it is (150, 0, 186, 48)
+over (66, 0, 186, 48). DOTS_BELL is the right 34% of the compact playing
+screen's dots quadrant, its full height (dots_bell_rect()): (76, 0, 114,
+114) of the 240x240 compact quadrant (0, 0, 114, 114), (41, 0, 61, 61) of
+the 128x128 one. IDLE_BELL and ARTWORK_BELL are both IdleLayout.info, the
+corner square: (125, 3, 157, 35) at the 160x128 reference, (269, 6, 314, 51)
+at 320x240 / 0.1778 mm per px. ARTWORK_BELL is the one entry of
+GEOMETRY_ARTWORK_BELL, hit-tested alone while the artwork rests with no
+controls drawn. The LIST geometry
 (`list_zone_at`/`list_layout_for`) is the appliance list (also reused,
 unchanged, for the replay picker): LIST_ROW (one per visible row),
 LIST_BACK, LIST_DOWN and LIST_UP. The REPEAT geometry
@@ -410,6 +427,12 @@ class TouchZone(str, Enum):
     IDLE_BELL: the idle screen's own small top-right warning bell, live
     only while there is a warning to show (see IdleLayout.info); a tap
     opens the warnings card.
+    BAND_BELL: the bell at the right end of the top band's name zone, on
+    every screen that shares the top band (main, repeat, EQ).
+    DOTS_BELL: the bell at the right of the compact playing screen's dots
+    quadrant. ARTWORK_BELL: the bell in the corner of resting artwork (the
+    same corner as IDLE_BELL), live on the hidden surface. All four bells
+    are live only while the dial has a warning to show.
     IDLE_WIFI: the idle screen's own small top-left Wi-Fi status square,
     the mirror image of IDLE_BELL — a tap opens the info list (see
     GEOMETRY_INFO).
@@ -436,6 +459,9 @@ class TouchZone(str, Enum):
     REPEAT_STOP = "repeat_stop"
     IDLE_REPLAY = "idle_replay"
     IDLE_BELL = "idle_bell"
+    BAND_BELL = "band_bell"
+    DOTS_BELL = "dots_bell"
+    ARTWORK_BELL = "artwork_bell"
     OUTPUTS = "outputs"
     OUTPUT_BACK = "output_back"
     OUTPUT_TOGGLE = "output_toggle"
@@ -456,7 +482,9 @@ Rect = tuple[int, int, int, int]  # (x0, y0, x1, y1), x1/y1 exclusive
 
 # The bell zones: live only while the dial has a warning to show (the one
 # bell gate in the touch state machine).
-BELL_ZONES = frozenset((TouchZone.IDLE_BELL,))
+BELL_ZONES = frozenset((
+    TouchZone.IDLE_BELL, TouchZone.BAND_BELL, TouchZone.DOTS_BELL, TouchZone.ARTWORK_BELL,
+))
 
 # A card's button zones, left to right; dial_main routes any of these to the
 # display's card dispatch, which reads the index as the cell tapped.
@@ -500,13 +528,17 @@ GEOMETRY_EQ = "eq"
 GEOMETRY_CARD1 = "card1"
 GEOMETRY_CARD2 = "card2"
 GEOMETRY_CARD3 = "card3"
+# The resting artwork's corner bell: one entry, the idle screen's own corner
+# square. Hit-tested alone, ahead of the reveal-on-touch rule, while the
+# artwork rests with no controls drawn (see the touch state machine).
+GEOMETRY_ARTWORK_BELL = "artwork_bell"
 # An empty table: the "Restarting..." screen has nothing tappable at all, and
 # a surface mapped here can never arm a zone. Kept as a named geometry (not
 # an absent one) so the surface map never has to fall back to MAIN.
 GEOMETRY_NONE = "none"
 GEOMETRIES = (
     GEOMETRY_MAIN, GEOMETRY_LIST, GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY, GEOMETRY_IDLE, GEOMETRY_OUTPUT,
-    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ, GEOMETRY_CARD1, GEOMETRY_CARD2, GEOMETRY_CARD3, GEOMETRY_NONE,
+    GEOMETRY_INFO, GEOMETRY_INFO_VALUE, GEOMETRY_EQ, GEOMETRY_CARD1, GEOMETRY_CARD2, GEOMETRY_CARD3, GEOMETRY_ARTWORK_BELL, GEOMETRY_NONE,
 )
 
 
@@ -539,6 +571,30 @@ TOUCH_REACH_BAND_DIVISOR = 3
 
 def _touch_reach_px(metrics: "LayoutMetrics") -> int:
     return metrics.band_h // TOUCH_REACH_BAND_DIVISOR
+
+
+# The top-band bell's share of the band height, as a width at the right end
+# of the name zone.
+BAND_BELL_NUMERATOR = 3
+BAND_BELL_DENOMINATOR = 4
+# The compact dots quadrant's bell takes this share of the quadrant's width,
+# at its right.
+DOTS_BELL_WIDTH_PERCENT = 34
+
+
+def band_bell_rect(name: Rect, band_h: int) -> Rect:
+    """The top-band bell: the band's full height, band_h * 3 / 4 wide, at the
+    right end of the name zone (it overlaps that zone; the name is drawn
+    shorter while the bell is)."""
+    w = band_h * BAND_BELL_NUMERATOR // BAND_BELL_DENOMINATOR
+    return (max(name[0], name[2] - w), 0, name[2], band_h)
+
+
+def dots_bell_rect(quadrant: Rect) -> Rect:
+    """The compact playing screen's bell: the right DOTS_BELL_WIDTH_PERCENT of
+    the dots quadrant, its full height."""
+    x0, y0, x1, y1 = quadrant
+    return (x1 - (x1 - x0) * DOTS_BELL_WIDTH_PERCENT // 100, y0, x1, y1)
 
 
 def _band_reach(rect: Rect, metrics: "LayoutMetrics") -> Rect:
@@ -577,6 +633,7 @@ def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
         # compact) and no ARTWORK strip (every cell is already a control).
         c = compact_layout_for(width, height, metrics=metrics)
         return (
+            ZoneRect(TouchZone.DOTS_BELL, dots_bell_rect(c.tl)),
             ZoneRect(TouchZone.DOTS, c.tl),
             ZoneRect(TouchZone.MUTE, c.tr),
             ZoneRect(TouchZone.DOWN, c.bl),
@@ -594,11 +651,14 @@ def _main_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = 
 
 
 def _top_band_rects(layout, metrics: "LayoutMetrics") -> tuple[ZoneRect, ...]:
-    """The top band's three controls, shared by the main, repeat and EQ
-    tables (any layout carrying dots/name/volume_cluster), each reaching
-    below the band (see _band_reach). Listed first in every table so the
-    reach wins over the artwork strip, repeat row or EQ steppers under it."""
+    """The top band's controls, shared by the main, repeat and EQ tables
+    (any layout carrying dots/name/volume_cluster), each reaching below the
+    band (see _band_reach). Listed first in every table so the reach wins
+    over the artwork strip, repeat row or EQ steppers under it; the bell is
+    listed ahead of the name it overlaps."""
+    bell = band_bell_rect(layout.name, metrics.band_h)
     return (
+        ZoneRect(TouchZone.BAND_BELL, bell, reach=_band_reach(bell, metrics)),
         ZoneRect(TouchZone.DOTS, layout.dots, reach=_band_reach(layout.dots, metrics)),
         ZoneRect(TouchZone.NAME, layout.name, reach=_band_reach(layout.name, metrics)),
         ZoneRect(TouchZone.OUTPUTS, layout.volume_cluster, reach=_band_reach(layout.volume_cluster, metrics)),
@@ -764,6 +824,13 @@ def _card_zone_rects(buttons: int):
     return build
 
 
+def _artwork_bell_zone_rects(
+    width: int, height: int, metrics: "LayoutMetrics | None" = None,
+) -> tuple[ZoneRect, ...]:
+    """GEOMETRY_ARTWORK_BELL: the idle screen's corner square."""
+    return (ZoneRect(TouchZone.ARTWORK_BELL, idle_layout_for(width, height, metrics=metrics).info),)
+
+
 def _none_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
     """GEOMETRY_NONE: nothing is tappable."""
     return ()
@@ -782,6 +849,7 @@ _GEOMETRY_BUILDERS = {
     GEOMETRY_CARD1: _card_zone_rects(1),
     GEOMETRY_CARD2: _card_zone_rects(2),
     GEOMETRY_CARD3: _card_zone_rects(3),
+    GEOMETRY_ARTWORK_BELL: _artwork_bell_zone_rects,
     GEOMETRY_NONE: _none_zone_rects,
 }
 
@@ -1287,14 +1355,14 @@ def zones_for(width: int, height: int) -> dict[TouchZone, Rect]:
     zone_rects_for) — same five keys in the same insertion order as before
     the table existed.
     """
-    return {entry.zone: entry.rect for entry in zone_rects_for(GEOMETRY_MAIN, width, height)}
+    return {entry.zone: entry.rect for entry in zone_rects_for(GEOMETRY_MAIN, width, height) if entry.zone not in BELL_ZONES}
 
 
 def zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     """Return the main-surface zone containing compose-space point (x, y),
     or None if the point falls in a dead zone or outside the panel
     entirely."""
-    hit = hit_test(GEOMETRY_MAIN, x, y, width, height)
+    hit = hit_test(GEOMETRY_MAIN, x, y, width, height, skip=BELL_ZONES)
     return hit.zone if hit is not None else None
 
 
@@ -1401,7 +1469,7 @@ def repeat_zone_at(x: int, y: int, width: int, height: int) -> TouchZone | None:
     decides whether a hit means anything in the CURRENT layout (REPEAT_PLAY
     is drawn only in the enable layout, START/STOP only in the replaying
     layout; see dial_display_compositor.compose_repeat)."""
-    hit = hit_test(GEOMETRY_REPEAT, x, y, width, height)
+    hit = hit_test(GEOMETRY_REPEAT, x, y, width, height, skip=BELL_ZONES)
     return hit.zone if hit is not None else None
 
 

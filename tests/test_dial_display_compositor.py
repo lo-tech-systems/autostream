@@ -149,7 +149,9 @@ from dial_touch_layout import (  # noqa: E402
     CompactLayout,
     CompactPickerLayout,
     TouchZone,
+    band_bell_rect,
     compact_layout_for,
+    dots_bell_rect,
     compact_picker_layout_for,
     eq_layout_for,
     idle_layout_for,
@@ -2313,6 +2315,135 @@ class TestComposeWarning:
 
     def test_body_buttons_default_is_empty_and_frame_unchanged(self):
         assert Body() == Body(buttons=())
+
+
+# ---------------------------------------------------------------------------
+# The warning bell off the idle screen: in the top band (main, repeat, EQ), in
+# the compact dots quadrant, and on a dark disc on resting artwork.
+# ---------------------------------------------------------------------------
+
+_BELL = BellBadge("warning", 2)
+
+
+def _diff_box(a, b):
+    return ImageChops.difference(a.convert("RGB"), b.convert("RGB")).getbbox()
+
+
+class TestBellInTheBand:
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self):
+        _reset_font_cache()
+        _reset_render_caches()
+        yield
+        _reset_font_cache()
+
+    def _overlay(self, **kw):
+        return OverlayState(visible=True, name="Turntable", volume=40, **kw)
+
+    def _frame(self, compositor, overlay, size=(320, 240), mm=0.1778):
+        base = Image.new("RGB", size, (90, 120, 140))
+        return compositor.compose(
+            base, *size, rotate=False, bgr=False, is_artwork=False, overlay=overlay,
+            metrics=metrics_for(*size, mm))
+
+    def test_the_bell_is_drawn_in_its_rect_and_the_name_is_drawn_shorter(self, compositor):
+        metrics = metrics_for(320, 240, 0.1778)
+        layout = layout_for(320, 240, metrics=metrics)
+        bell = band_bell_rect(layout.name, metrics.band_h)
+        plain = self._frame(compositor, self._overlay())
+        belled = self._frame(compositor, self._overlay(bell=_BELL))
+        box = _diff_box(plain, belled)
+        assert box is not None
+        assert box[0] >= layout.name[0] and box[2] <= layout.name[2] and box[3] <= metrics.band_h
+        # Nothing outside the name zone moved: the dots, the volume and the bodies are as before.
+        for rect in (layout.dots, layout.volume_cluster, (0, metrics.band_h, 320, 240)):
+            assert list(plain.crop(rect).getdata()) == list(belled.crop(rect).getdata())
+        assert list(belled.crop(bell).getdata()) != list(plain.crop(bell).getdata())
+
+    def test_no_bell_is_byte_identical_to_before(self, compositor):
+        a = self._frame(compositor, self._overlay(bell=None))
+        b = self._frame(compositor, self._overlay())
+        assert a.tobytes() == b.tobytes()
+
+    @pytest.mark.parametrize("size,mm", [((160, 128), None), ((320, 240), 0.1778)])
+    def test_the_bell_shows_on_the_repeat_and_eq_screens_too(self, compositor, size, mm):
+        metrics = metrics_for(*size, mm) if mm else None
+        for compose, state in (
+            (compositor.compose_repeat, RepeatViewState(
+                name="Turntable", layout="enable", armed=False, line="", start_enabled=False,
+                stop_enabled=False, stop_pressed=False, volume=40)),
+            (compositor.compose_eq, EqViewState(name="Turntable", bass_db=0, treble_db=0, loaded=True, volume=40)),
+        ):
+            plain = compose(*size, state, rotate=False, bgr=False, metrics=metrics)
+            belled = compose(*size, dataclasses.replace(state, bell=_BELL), rotate=False, bgr=False, metrics=metrics)
+            bell = band_bell_rect(layout_for(*size, metrics=metrics_for(*size, mm) if mm else metrics_for(*size)).name,
+                                  (metrics or metrics_for(*size)).band_h)
+            assert list(plain.crop(bell).getdata()) != list(belled.crop(bell).getdata())
+
+    def test_the_bell_slides_with_the_top_band_during_a_reveal(self, compositor):
+        base = Image.new("RGB", (320, 240), (90, 120, 140))
+        metrics = metrics_for(320, 240, 0.1778)
+        a = compositor.compose(base, 320, 240, rotate=False, bgr=False, is_artwork=False,
+                               overlay=self._overlay(bell=_BELL), metrics=metrics, reveal_progress=0.5)
+        b = compositor.compose(base, 320, 240, rotate=False, bgr=False, is_artwork=False,
+                               overlay=self._overlay(), metrics=metrics, reveal_progress=0.5)
+        assert a.tobytes() != b.tobytes()
+
+
+class TestBellInTheCompactDotsQuadrant:
+    def test_the_bell_is_drawn_right_of_the_dots_and_nothing_else_changes(self, compositor):
+        metrics = metrics_for(240, 240, 0.0973)
+        base = Image.new("RGB", (240, 240), (90, 120, 140))
+        c = compact_layout_for(240, 240, metrics=metrics)
+        zone = dots_bell_rect(c.tl)
+
+        def frame(bell):
+            return compositor.compose(
+                base, 240, 240, rotate=False, bgr=False, is_artwork=False, metrics=metrics,
+                overlay=OverlayState(visible=True, dots=True, bell=bell))
+
+        plain, belled = frame(None), frame(_BELL)
+        box = _diff_box(plain, belled)
+        assert box is not None
+        assert box[0] >= zone[0] and box[2] <= zone[2] and box[1] >= zone[1] and box[3] <= zone[3]
+
+
+class TestBellOnRestingArtwork:
+    def _compose(self, compositor, overlay, size=(160, 128), mm=None, **kw):
+        base = Image.new("RGB", size, (90, 120, 140))
+        metrics = metrics_for(*size, mm) if mm else metrics_for(*size)
+        return base, compositor.compose(
+            base, *size, rotate=False, bgr=False, is_artwork=False, overlay=overlay, metrics=metrics, **kw), metrics
+
+    @pytest.mark.parametrize("overlay", [None, OverlayState(), OverlayState(visible=False)])
+    def test_with_no_bell_the_frame_is_the_bare_base_itself(self, compositor, overlay):
+        base, frame, _ = self._compose(compositor, overlay)
+        assert frame is base
+
+    @pytest.mark.parametrize("size,mm", [((160, 128), None), ((320, 240), 0.1778), ((240, 240), 0.0973)])
+    def test_a_bell_adds_a_disc_only_in_the_corner_square(self, compositor, size, mm):
+        base, frame, metrics = self._compose(compositor, OverlayState(bell=_BELL), size, mm)
+        corner = idle_layout_for(*size, metrics=metrics).info
+        box = _diff_box(base, frame)
+        assert box is not None
+        assert box[0] >= corner[0] and box[1] >= corner[1] and box[2] <= corner[2] and box[3] <= corner[3]
+
+    def test_the_disc_darkens_the_artwork_under_the_bell(self, compositor):
+        base, frame, metrics = self._compose(compositor, OverlayState(bell=_BELL), (320, 240), 0.1778)
+        x0, y0, x1, y1 = idle_layout_for(320, 240, metrics=metrics).info
+        px = frame.getpixel((x0 + 3, (y0 + y1) // 2))        # inside the disc, left of the bell
+        assert sum(px) < sum(base.getpixel((x0 + 3, (y0 + y1) // 2)))
+
+    def test_a_finished_reveal_is_the_resting_frame_with_the_bell(self, compositor):
+        base, resting, _ = self._compose(compositor, OverlayState(bell=_BELL))
+        _, done, _ = self._compose(compositor, OverlayState(visible=True, bell=_BELL), reveal_progress=1.0)
+        assert resting.tobytes() == done.tobytes()
+
+    def test_the_input_image_is_never_drawn_on(self, compositor):
+        base = Image.new("RGB", (160, 128), (90, 120, 140))
+        before = base.tobytes()
+        compositor.compose(base, 160, 128, rotate=False, bgr=False, is_artwork=False, overlay=OverlayState(bell=_BELL))
+        assert base.tobytes() == before
 
 
 # ---------------------------------------------------------------------------

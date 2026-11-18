@@ -1781,9 +1781,11 @@ class DialDisplay:
         addressable: nothing is drawn to tap, so a touch brings the
         controls back and never actuates Restart, Stop or the dots.
         """
-        if self._compact_controls_hidden() and self._screen in ("main", "repeat"):
-            return ("hidden", False, False, False, False)
         snap = self._core.snapshot()
+        if self._compact_controls_hidden() and self._screen in ("main", "repeat"):
+            # (The corner bell is drawn only over playing artwork.)
+            return ("hidden", False, False, False, (
+                self._screen == "main" and snap.now_playing is not None and self._bell(snap).count > 0))
         if self._screen == "repeat" and self._controls_hidden():
             return ("hidden", True, snap.dots_active, snap.outputs_available, False)
         if self._screen == "warnings":
@@ -1800,15 +1802,18 @@ class DialDisplay:
                 s = policy.replay_surface
             else:
                 s = policy.surface
-            return (s[0], s[1], s[2], s[3] and snap.outputs_available, False)
+            # The top band's bell is live on the screens that share it.
+            bell = self._screen in ("repeat", "eq") and self._bell(snap).count > 0
+            return (s[0], s[1], s[2], s[3] and snap.outputs_available, bell)
+        bell = self._bell(snap).count > 0
         if snap.now_playing is None:
-            return ("idle", False, False, False, self._bell(snap).count > 0)
+            return ("idle", False, False, False, bell)
         name_active = True
         dots_active = snap.dots_active
         outputs_active = snap.outputs_available
         if self.persistent_overlay_shown():
-            return ("held", name_active, dots_active, outputs_active, False)
-        return ("hidden", name_active, dots_active, outputs_active, False)
+            return ("held", name_active, dots_active, outputs_active, bell)
+        return ("hidden", name_active, dots_active, outputs_active, bell)
 
     def noncomposited_generation(self) -> int:
         """Current non-composited-state generation counter.
@@ -2410,10 +2415,11 @@ class DialDisplay:
         # snapshot: the user asked for the artwork, whichever mode the
         # controls are in. The touch side is told the same (see dial_main's
         # ARTWORK dispatch) so its session matches.
+        bell = self._bell_badge(snap)
         if self._controls_hidden(now) and not revealing:
-            return _HIDDEN_OVERLAY
+            return _HIDDEN_OVERLAY if bell is None else dataclasses.replace(_HIDDEN_OVERLAY, bell=bell)
         if not (snapshot.visible or held or revealing):
-            return snapshot
+            return snapshot if bell is None else dataclasses.replace(snapshot, bell=bell)
         artist = now_playing.artist if now_playing is not None else ""
         if now_playing is not None and self._layout_metrics().content_tier in (CONTENT_RICH, CONTENT_LARGE):
             # Rich/large only: base keeps its artist row exactly as before,
@@ -2441,7 +2447,7 @@ class DialDisplay:
         dots = snap.dots_active and self._screen == "main"
         return dataclasses.replace(
             snapshot, visible=True, artist=artist, title=title, album=album, volume=volume, muted=muted,
-            name=name, dots=dots, pressed=pressed, eq_pages=snap.eq_available,
+            name=name, dots=dots, pressed=pressed, eq_pages=snap.eq_available, bell=bell,
         )
 
     def _redisplay_current_locked(self) -> None:
@@ -4079,7 +4085,7 @@ class DialDisplay:
         The touch surface is the ordinary one for the whole of a slide-in
         (see touch_surface()): taps act on the bands as they arrive."""
         now = time.monotonic()
-        view = self._build_repeat_view_locked(self._repeat_screen, now)
+        view = dataclasses.replace(self._build_repeat_view_locked(self._repeat_screen, now), bell=self._bell_badge())
         self._repeat_layout_shown = view.layout
         metrics = self._metrics_locked()
         # Only a running replay has artwork behind its controls to reveal:
@@ -4148,7 +4154,7 @@ class DialDisplay:
         counterpart to _display_repeat_locked(). Bypasses _display_locked()
         entirely: this screen has its own compose path and must never pick
         up the main now-playing overlay. Caller holds self._lock."""
-        view = self._build_eq_view_locked(self._eq, time.monotonic())
+        view = dataclasses.replace(self._build_eq_view_locked(self._eq, time.monotonic()), bell=self._bell_badge())
         metrics = self._metrics_locked()
         self._push_frame_locked(lambda: self._compositor.compose_eq(
             metrics.width, metrics.height, view,

@@ -499,3 +499,81 @@ class TestTheBellStatePerAppliance:
         assert sorted(keys) == sorted([appliance_warning_key(AID, "stylus"), appliance_warning_key(other, "stylus")])
         sources = {e.source for e in display._bell().entries}
         assert sources == {"Kitchen", "Lounge"}
+
+
+class TestBellOnThePlayingScreen:
+    """The bell off the idle screen: the surface flag for the touch side's one
+    gate, and the bell carried in the overlay the compositor draws."""
+
+    def _playing(self, **overrides):
+        import test_dial_display as td
+        from dial_test_support import _target
+        display, fb, gt = make_display(targets=[_target()], **overrides)
+        display.enable()
+        td._poll_with_artwork(display, fb)
+        return display
+
+    def test_hidden_and_held_report_the_bell_flag(self):
+        for overrides, surface in (({}, "hidden"), ({"always_show_controls": True}, "held")):
+            display = self._playing(**overrides)
+            assert display.touch_surface()[0] == surface and display.touch_surface()[4] is False
+            on_sd_health_view(display, _sd(15))
+            assert display.touch_surface()[4] is True
+
+    def test_the_repeat_and_eq_screens_report_it_the_others_do_not(self):
+        display = self._playing()
+        on_sd_health_view(display, _sd(15))
+        for screen, expected in (("repeat", True), ("eq", True), ("selector", False), ("info", False)):
+            display._screen = screen
+            assert display.touch_surface()[4] is expected, screen
+
+    def test_the_overlay_carries_the_bell_hidden_or_visible(self):
+        display = self._playing()
+        on_sd_health_view(display, _sd(15))
+        badge = BellBadge("warning", 1)
+        with display._lock:
+            hidden = display._effective_overlay_locked(dd.OverlayState())
+            shown = display._effective_overlay_locked(dd.OverlayState(visible=True))
+        assert hidden.bell == badge and not hidden.visible
+        assert shown.bell == badge and shown.visible
+
+    def test_a_hide_window_still_carries_the_bell(self):
+        display = self._playing()
+        on_sd_health_view(display, _sd(15))
+        display.hide_controls()
+        with display._lock:
+            overlay = display._effective_overlay_locked(dd.OverlayState(visible=True))
+        assert overlay.bell == BellBadge("warning", 1) and not overlay.visible
+
+    def test_no_bell_leaves_the_overlay_object_untouched(self):
+        display = self._playing()
+        snapshot = dd.OverlayState()
+        with display._lock:
+            assert display._effective_overlay_locked(snapshot) is snapshot
+
+    def test_the_playing_frame_is_composed_with_the_bell(self):
+        display = self._playing()
+        on_sd_health_view(display, _sd(15))
+        with patch.object(display._compositor, "compose", wraps=display._compositor.compose) as compose:
+            _fold(display)
+        assert compose.call_args.kwargs["overlay"].bell == BellBadge("warning", 1)
+
+    def test_the_repeat_and_eq_views_carry_the_bell(self):
+        display = self._playing()
+        on_sd_health_view(display, _sd(15))
+        for method, painter in (("compose_repeat", display._display_repeat_locked), ("compose_eq", display._display_eq_locked)):
+            with patch.object(display._compositor, method, wraps=getattr(display._compositor, method)) as compose:
+                with display._lock:
+                    painter()
+            assert compose.call_args.args[2].bell == BellBadge("warning", 1)
+
+    def test_the_compact_resting_artwork_reports_the_bell_only_on_main(self):
+        import test_dial_display as td
+        from dial_test_support import _target
+        display, fb, gt = td._make_compact_display(targets=[_target()])
+        display.enable()
+        td._poll_with_artwork(display, fb)
+        on_sd_health_view(display, _sd(15))
+        display._controls_hidden_until = 0.0
+        surface = display.touch_surface()
+        assert surface[4] is True

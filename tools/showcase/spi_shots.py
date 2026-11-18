@@ -79,10 +79,10 @@ class Panel:
         return dict(rotate=False, bgr=False, metrics=self.metrics)
 
 
-def now_playing(panel, track, volume, muted=False, controls=True, timer=None):
+def now_playing(panel, track, volume, muted=False, controls=True, timer=None, bell=None):
     overlay = comp.OverlayState(
         visible=controls, muted=muted, artist=track.artist, volume=volume, name=track.appliance,
-        title=track.title, dots=True, album=track.album, eq_pages=not panel.compact)
+        title=track.title, dots=True, album=track.album, eq_pages=not panel.compact, bell=bell)
     extra = {"timer_text": timer} if timer else {}
     return panel.compositor.compose(
         panel.artwork_base(track), panel.width, panel.height, is_artwork=False, overlay=overlay,
@@ -233,6 +233,10 @@ def screens(panel):
         ("now-playing", now_playing(panel, jazz, 42)),
         ("now-playing-muted", now_playing(panel, jazz, 42, muted=True)),
         ("now-playing-artwork-only", now_playing(panel, jazz, 42, controls=False)),
+        ("now-playing-warnings", now_playing(panel, jazz, 42, bell=comp.BellBadge("warning", 2))),
+        ("now-playing-critical", now_playing(panel, jazz, 42, bell=comp.BellBadge("critical", 1))),
+        ("now-playing-artwork-only-warnings", now_playing(
+            panel, jazz, 42, controls=False, bell=comp.BellBadge("warning", 2))),
     ]
     if rich:
         out.append(("now-playing-replay-timer", now_playing(panel, jazz, 42, timer="2:00 / 18:20")))

@@ -17,7 +17,8 @@ Two classes, deliberately kept separate:
   importable on a machine with neither installed.
 
 REVEAL-ONLY FIRST TOUCH: a contact that begins while the overlay is not
-visible ONLY reveals it. No zone is sampled, nothing is actuated, however
+visible ONLY reveals it (the one exception: while the dial has a warning,
+the bell drawn in the corner of resting artwork, ARTWORK_BELL, is live). No zone is sampled, nothing is actuated, however
 long the finger stays down — the user gets to see where the buttons are
 before committing to one. Actuating on that first contact would mean
 pressing a control the user could not yet see.
@@ -131,6 +132,7 @@ from dial_touch_layout import (
     GEOMETRY_LIST,
     GEOMETRY_MAIN,
     GEOMETRY_NONE,
+    GEOMETRY_ARTWORK_BELL,
     GEOMETRY_CARD1,
     GEOMETRY_CARD2,
     GEOMETRY_CARD3,
@@ -652,6 +654,12 @@ class TouchStateMachine:
             self._next_repeat_time = None
             return [TouchAction(ACTION_WAKE)]
         if not self._overlay_visible:
+            if self._surface == SURFACE_HIDDEN and self._bell_active:
+                # The one exception to reveal-only first touch: the bell
+                # drawn in the corner of resting artwork is live.
+                hit = hit_test(GEOMETRY_ARTWORK_BELL, event.x, event.y, self._width, self._height, metrics=self._metrics)
+                if hit is not None:
+                    return self._arm_zone(hit.zone, None, now)
             self._overlay_visible = True
             self._phase = _PHASE_REVEAL_PENDING
             return [TouchAction(ACTION_REVEAL_OVERLAY)]
@@ -713,6 +721,10 @@ class TouchStateMachine:
         ) | (frozenset() if self._bell_active else BELL_ZONES)
         hit = hit_test(geometry, x, y, self._width, self._height, metrics=self._metrics, skip=skip)
         zone, index = (hit.zone, hit.index) if hit is not None else (None, None)
+        return self._arm_zone(zone, index, now)
+
+    def _arm_zone(self, zone: "TouchZone | None", index: "int | None", now: float) -> list[TouchAction]:
+        """Arm *zone* (None: a press that landed in a dead zone)."""
         if zone is None:
             # Landed/arrived in a dead zone — nothing to actuate; still
             # counts as a contact sample toward dismiss.

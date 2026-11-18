@@ -76,6 +76,7 @@ from dial_touch_layout import (  # noqa: E402
     metrics_for,
     output_layout_for,
     repeat_layout_for,
+    band_bell_rect,
     warning_layout_for,
     zones_for,
 )
@@ -2556,3 +2557,95 @@ class TestAsleepTouchOnlyWakes:
         woke.assert_called_once_with()
         for m in others.values():
             m.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# The bell zones and the one exception to reveal-only first touch.
+# ---------------------------------------------------------------------------
+
+BAND_BELL_XY = _rect_center(band_bell_rect(zones_for(WIDTH, HEIGHT)[TouchZone.NAME], metrics_for(WIDTH, HEIGHT).band_h))
+CORNER_XY = _rect_center(idle_layout_for(WIDTH, HEIGHT).info)
+
+
+def _tap_kinds(actions):
+    return [a.zone for a in actions if a.kind == ACTION_ZONE_TAP]
+
+
+class TestBandBell:
+    @pytest.mark.parametrize("surface", [SURFACE_HELD, SURFACE_REPEAT, SURFACE_EQ])
+    def test_the_bell_is_live_on_the_screens_sharing_the_top_band(self, surface):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(surface, True, now=0.0, dots_active=True, outputs_active=True, bell_active=True)
+        actions = sm.on_filter_event(press_event(BAND_BELL_XY), now=0.1)
+        assert _tap_kinds(actions) == [TouchZone.BAND_BELL]
+
+    @pytest.mark.parametrize("surface", [SURFACE_HELD, SURFACE_REPEAT, SURFACE_EQ])
+    def test_without_a_bell_the_tap_falls_through_to_the_name(self, surface):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(surface, True, now=0.0, dots_active=True, outputs_active=True, bell_active=False)
+        actions = sm.on_filter_event(press_event(BAND_BELL_XY), now=0.1)
+        assert _tap_kinds(actions) == [TouchZone.NAME]
+
+
+class TestDotsBell:
+    def test_the_compact_dots_quadrant_bell_is_live_only_with_a_bell(self):
+        from dial_touch_layout import compact_layout_for, dots_bell_rect
+        m = metrics_for(240, 240, 0.0973)
+        xy = _rect_center(dots_bell_rect(compact_layout_for(240, 240, metrics=m).tl))
+        live = TouchStateMachine(240, 240, metrics=m)
+        live.set_surface(SURFACE_HELD, False, now=0.0, dots_active=True, bell_active=True)
+        assert _tap_kinds(live.on_filter_event(press_event(xy), now=0.1)) == [TouchZone.DOTS_BELL]
+        off = TouchStateMachine(240, 240, metrics=m)
+        off.set_surface(SURFACE_HELD, False, now=0.0, dots_active=True, bell_active=False)
+        assert _tap_kinds(off.on_filter_event(press_event(xy), now=0.1)) == [TouchZone.DOTS]
+        # The rest of the quadrant keeps its dots action.
+        left = _rect_center((0, 0, 40, 114))
+        assert _tap_kinds(live.on_filter_event(release_event(), now=0.2) + live.on_filter_event(press_event(left), now=0.3)) == [TouchZone.DOTS]
+
+
+class TestArtworkBell:
+    """The resting artwork's corner bell: the one exception to reveal-only
+    first touch, only with a bell, only on the hidden surface."""
+
+    def _hidden(self, bell):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HIDDEN, True, now=0.0, dots_active=True, outputs_active=True, bell_active=bell)
+        return sm
+
+    def test_a_first_touch_on_the_corner_bell_arms_it_straight_away(self):
+        sm = self._hidden(True)
+        actions = sm.on_filter_event(press_event(CORNER_XY), now=0.1)
+        assert kinds(actions) == [ACTION_SET_PRESSED_ZONE, ACTION_ZONE_TAP]
+        assert _tap_kinds(actions) == [TouchZone.ARTWORK_BELL]
+        assert sm.overlay_visible is False          # nothing was revealed
+
+    def test_every_other_first_touch_still_only_reveals(self):
+        for xy in (UP_XY, MUTE_XY, NAME_XY, ARTWORK_XY, (3, HEIGHT - 3)):
+            sm = self._hidden(True)
+            assert kinds(sm.on_filter_event(press_event(xy), now=0.1)) == [ACTION_REVEAL_OVERLAY], xy
+
+    def test_without_a_bell_the_corner_only_reveals(self):
+        sm = self._hidden(False)
+        assert kinds(sm.on_filter_event(press_event(CORNER_XY), now=0.1)) == [ACTION_REVEAL_OVERLAY]
+
+    def test_with_the_bands_up_the_corner_is_the_volume_cluster_not_the_bell(self):
+        sm = self._hidden(True)
+        sm.on_filter_event(press_event(UP_XY), now=0.1)          # reveal
+        sm.overlay_live(0.2)
+        sm.on_filter_event(release_event(), now=0.3)
+        actions = sm.on_filter_event(press_event(CORNER_XY), now=0.4)
+        assert ZoneTapZones(actions) != [TouchZone.ARTWORK_BELL]
+
+    def test_a_held_surface_has_no_artwork_bell(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT)
+        sm.set_surface(SURFACE_HELD, True, now=0.0, dots_active=True, outputs_active=True, bell_active=True)
+        assert TouchZone.ARTWORK_BELL not in _tap_kinds(sm.on_filter_event(press_event(CORNER_XY), now=0.1))
+
+    def test_an_asleep_panel_still_only_wakes(self):
+        sm = TouchStateMachine(WIDTH, HEIGHT, is_asleep=lambda: True)
+        sm.set_surface(SURFACE_HIDDEN, True, now=0.0, bell_active=True)
+        assert kinds(sm.on_filter_event(press_event(CORNER_XY), now=0.1)) == [ACTION_WAKE]
+
+
+def ZoneTapZones(actions):
+    return _tap_kinds(actions)

@@ -425,7 +425,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
     from dial_touch_controllers import get_controller
     from dial_touch_drivers import open_driver
     from dial_touch_filter import DEFAULT_Z_THRESHOLD, TouchFilter
-    from dial_touch_layout import CARD_BUTTON_ZONES, TouchZone
+    from dial_touch_layout import BELL_ZONES, CARD_BUTTON_ZONES, TouchZone
 
     # Any deliberate contact with the screen proves physical presence — the
     # reveal-then-arm scheme (see dial_touch.py) means a first touch may only
@@ -552,7 +552,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
         # show — closing back to main also reveals the main screen's volume
         # overlay on return — see display.cycle_pages()); REPEAT_* act on
         # the repeat screen; EQ_BASS_*/EQ_TREBLE_* act on the EQ page's own
-        # bars; IDLE_REPLAY opens the replay picker; IDLE_BELL opens the
+        # bars; IDLE_REPLAY opens the replay picker; any bell (BELL_ZONES) opens the
         # warnings card; IDLE_WIFI opens the idle screen's read-only info
         # page; any card button (CARD_BUTTON_ZONES) goes to the display's
         # card dispatch; OUTPUTS
@@ -590,7 +590,7 @@ def _build_touch_source(cfg, display, confirm_presence=None, step_percent=None, 
             display.repeat_stop_tap()
         elif zone == TouchZone.IDLE_REPLAY:
             display.open_picker()
-        elif zone == TouchZone.IDLE_BELL:
+        elif zone in BELL_ZONES:
             display.open_warnings()
         elif zone == TouchZone.IDLE_WIFI:
             display.open_info()

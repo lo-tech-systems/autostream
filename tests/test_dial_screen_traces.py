@@ -1301,6 +1301,24 @@ def _scripted_scenarios() -> list[tuple[str, list[tuple]]]:
         ("repaint",),
     ])
 
+    # A warning while something plays: the bell is live on the held controls
+    # and on the artwork-only screen (the corner bell), and clears with the
+    # warning.
+    aid = _aid("bw1")
+    t = _target("BW1", aid)
+    add("playing_with_a_warning_keeps_the_bell_through_a_hide_window", [
+        ("targets", [t]),
+        ("status", {aid: _status_result()}),
+        ("update_config", {"always_show_controls": True}),
+        ("poll",),
+        ("sd_health_view", STATUS_VALID, 15),
+        ("repaint",),
+        ("hide_controls",),
+        ("repaint",),
+        ("sd_health_view", STATUS_VALID, 40),
+        ("repaint",),
+    ])
+
     # A direct switch from one playing appliance to another (no gap in
     # between) pushes a brief dark transition frame before the new
     # appliance's own logo/artwork lands, so the previous one's artwork

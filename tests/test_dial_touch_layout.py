@@ -30,7 +30,9 @@ from dial_touch_layout import (  # noqa: E402
     CONTENT_RICH,
     FONT_BODY_MAX_PX,
     FONT_READOUT_MAX_PX,
+    BELL_ZONES,
     GEOMETRIES,
+    GEOMETRY_ARTWORK_BELL,
     GEOMETRY_EQ,
     GEOMETRY_IDLE,
     GEOMETRY_INFO,
@@ -62,7 +64,9 @@ from dial_touch_layout import (  # noqa: E402
     WarningLayout,
     ZoneRect,
     _dead_zone_margin,
+    band_bell_rect,
     compact_layout_for,
+    dots_bell_rect,
     compact_picker_layout_for,
     eq_layout_for,
     hit_test,
@@ -622,6 +626,9 @@ class TestZoneRectsCompleteness:
         covered = set()
         for geometry in GEOMETRIES:
             covered.update(entry.zone for entry in zone_rects_for(geometry, width, height))
+        # The compact playing screen's own table carries the dots quadrant's bell.
+        covered.update(
+            entry.zone for entry in zone_rects_for(GEOMETRY_MAIN, 240, 240, metrics=_COMPACT_240x240))
         assert covered == set(TouchZone)
 
 
@@ -632,6 +639,7 @@ class TestZoneRectsOrder:
     def test_main_order(self):
         entries = zone_rects_for(GEOMETRY_MAIN, 160, 128)
         assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.BAND_BELL, None),
             (TouchZone.DOTS, None),
             (TouchZone.NAME, None),
             (TouchZone.OUTPUTS, None),
@@ -655,6 +663,7 @@ class TestZoneRectsOrder:
     def test_repeat_order(self):
         entries = zone_rects_for(GEOMETRY_REPEAT, 160, 128)
         assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.BAND_BELL, None),
             (TouchZone.DOTS, None),
             (TouchZone.NAME, None),
             (TouchZone.OUTPUTS, None),
@@ -1169,13 +1178,13 @@ class TestDensityHasNoEffectOnGeometry:
 
     @pytest.mark.parametrize("size,mm", _BASE_RESOLVING_CASES)
     def test_zone_rects_for_unaffected(self, size, mm):
-        # GEOMETRY_IDLE is excluded: its IDLE_BELL rect is the one
-        # deliberate density-dependent exception (see
+        # GEOMETRY_IDLE and the artwork bell's table are excluded: the corner
+        # square is the one deliberate density-dependent exception (see
         # test_idle_layout_for_info_square_is_density_dependent above).
         width, height = size
         metrics = metrics_for(width, height, mm)
         for geometry in GEOMETRIES:
-            if geometry == GEOMETRY_IDLE:
+            if geometry in (GEOMETRY_IDLE, GEOMETRY_ARTWORK_BELL):
                 continue
             assert zone_rects_for(geometry, width, height) == zone_rects_for(
                 geometry, width, height, metrics=metrics
@@ -1527,6 +1536,8 @@ class TestRailZoneTable:
             covered.update(
                 entry.zone for entry in zone_rects_for(geometry, 320, 240, metrics=_RICH_320x240)
             )
+        covered.update(
+            entry.zone for entry in zone_rects_for(GEOMETRY_MAIN, 240, 240, metrics=_COMPACT_240x240))
         assert covered == set(TouchZone)
 
 
@@ -1706,7 +1717,7 @@ class TestAlbumLine:
         # table, exactly like the artist and title rects it sits beside.
         entries = zone_rects_for(GEOMETRY_MAIN, 640, 480, metrics=_LARGE_640x480)
         assert [e.zone for e in entries] == [
-            TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
+            TouchZone.BAND_BELL, TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
             TouchZone.MUTE, TouchZone.DOWN, TouchZone.UP, TouchZone.ARTWORK,
         ]
 
@@ -1925,7 +1936,7 @@ class TestCompactZoneTables:
         entries = zone_rects_for(GEOMETRY_MAIN, metrics.width, metrics.height, metrics=metrics)
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         assert [(e.zone, e.rect) for e in entries] == [
-            (TouchZone.DOTS, c.tl), (TouchZone.MUTE, c.tr),
+            (TouchZone.DOTS_BELL, dots_bell_rect(c.tl)), (TouchZone.DOTS, c.tl), (TouchZone.MUTE, c.tr),
             (TouchZone.DOWN, c.bl), (TouchZone.UP, c.br),
         ]
 
@@ -1991,7 +2002,9 @@ class TestCompactZoneTables:
         # down (its IDLE_BELL/IDLE_REPLAY entries overlap by design, resolved
         # by hit_test's first-match order rather than by non-overlap).
         w, h = metrics.width, metrics.height
-        entries = zone_rects_for(geometry, w, h, metrics=metrics)
+        # The dots quadrant's bell overlaps DOTS by design (listed first, live
+        # only with a warning); the other zones tile.
+        entries = [e for e in zone_rects_for(geometry, w, h, metrics=metrics) if e.zone not in BELL_ZONES]
         c = compact_layout_for(w, h, metrics=metrics)
         m = metrics.margin
         for y in range(h):
@@ -2001,7 +2014,7 @@ class TestCompactZoneTables:
                     if e.rect[0] <= x < e.rect[2] and e.rect[1] <= y < e.rect[3]
                 ]
                 assert len(hits) <= 1, (geometry, x, y, hits)
-                result = hit_test(geometry, x, y, w, h, metrics=metrics)
+                result = hit_test(geometry, x, y, w, h, metrics=metrics, skip=BELL_ZONES)
                 if hits:
                     assert result is not None and (result.zone, result.index) == hits[0]
                 else:
@@ -2248,7 +2261,7 @@ class TestEqZoneTable:
     def test_order_is_dots_name_outputs_then_bass_then_treble(self):
         entries = zone_rects_for(GEOMETRY_EQ, 320, 240, metrics=_RICH_320x240)
         assert [e.zone for e in entries] == [
-            TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
+            TouchZone.BAND_BELL, TouchZone.DOTS, TouchZone.NAME, TouchZone.OUTPUTS,
             TouchZone.EQ_BASS_DOWN, TouchZone.EQ_BASS_UP,
             TouchZone.EQ_TREBLE_DOWN, TouchZone.EQ_TREBLE_UP,
         ]
@@ -2302,7 +2315,7 @@ class TestEqHitTestExhaustive:
 
         for y in range(height):
             for x in range(width):
-                hit = hit_test(GEOMETRY_EQ, x, y, width, height, metrics=metrics)
+                hit = hit_test(GEOMETRY_EQ, x, y, width, height, metrics=metrics, skip=BELL_ZONES)
                 got = hit.zone if hit is not None else None
                 assert got == reference(x, y)
 
@@ -2338,6 +2351,64 @@ class TestEqHitTestExhaustive:
 # Purity: this module must import nothing new (no hardware, no Pillow, no
 # display coupling) — the same guarantee the module docstring makes.
 # ---------------------------------------------------------------------------
+
+class TestBellRects:
+    """The bell rects: the top band's (the right end of the name zone, the
+    band's full height) and the compact dots quadrant's, pinned at the
+    reference sizes, and the corner table the resting artwork's bell uses."""
+
+    @pytest.mark.parametrize("size,mm,name,bell", [
+        ((160, 128), None, (41, 0, 93, 32), (69, 0, 93, 32)),
+        ((320, 240), 0.1778, (66, 0, 186, 48), (150, 0, 186, 48)),
+        ((240, 240), 0.0973, (78, 0, 138, 60), (93, 0, 138, 60)),
+        ((128, 128), 0.2021, (41, 0, 74, 32), (50, 0, 74, 32)),
+    ])
+    def test_band_bell_pinned(self, size, mm, name, bell):
+        metrics = metrics_for(*size, mm) if mm else metrics_for(*size)
+        assert layout_for(*size, metrics=metrics).name == name
+        assert band_bell_rect(name, metrics.band_h) == bell
+
+    @pytest.mark.parametrize("quadrant,bell", [
+        ((0, 0, 77, 61), (51, 0, 77, 61)),
+        ((0, 0, 154, 114), (102, 0, 154, 114)),
+        ((0, 0, 114, 114), (76, 0, 114, 114)),
+        ((0, 0, 61, 61), (41, 0, 61, 61)),
+    ])
+    def test_dots_bell_pinned(self, quadrant, bell):
+        assert dots_bell_rect(quadrant) == bell
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_the_band_bell_overlaps_the_right_end_of_the_name_and_is_listed_first(self, width, height):
+        metrics = metrics_for(width, height)
+        layout = layout_for(width, height, metrics=metrics)
+        bell = band_bell_rect(layout.name, metrics.band_h)
+        assert bell[2] == layout.name[2] and bell[1] == 0 and bell[3] == metrics.band_h
+        assert layout.name[0] <= bell[0] < bell[2]
+        for geometry in (GEOMETRY_MAIN, GEOMETRY_REPEAT, GEOMETRY_EQ):
+            assert zone_rects_for(geometry, width, height)[0].zone == TouchZone.BAND_BELL
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_the_bell_wins_the_name_it_overlaps_only_when_live(self, width, height):
+        metrics = metrics_for(width, height)
+        bell = band_bell_rect(layout_for(width, height, metrics=metrics).name, metrics.band_h)
+        cx, cy = (bell[0] + bell[2]) // 2, (bell[1] + bell[3]) // 2
+        assert hit_test(GEOMETRY_MAIN, cx, cy, width, height).zone == TouchZone.BAND_BELL
+        assert hit_test(GEOMETRY_MAIN, cx, cy, width, height, skip=BELL_ZONES).zone == TouchZone.NAME
+        assert zone_at(cx, cy, width, height) == TouchZone.NAME
+
+    def test_zones_for_leaves_the_bells_out(self):
+        assert not set(zones_for(160, 128)) & BELL_ZONES
+
+    @pytest.mark.parametrize("width,height", PROFILE_SIZES)
+    def test_the_artwork_bell_is_the_idle_corner_square(self, width, height):
+        (entry,) = zone_rects_for(GEOMETRY_ARTWORK_BELL, width, height)
+        assert (entry.zone, entry.rect) == (TouchZone.ARTWORK_BELL, idle_layout_for(width, height).info)
+
+    def test_every_bell_zone_is_listed(self):
+        assert BELL_ZONES == {
+            TouchZone.IDLE_BELL, TouchZone.BAND_BELL, TouchZone.DOTS_BELL, TouchZone.ARTWORK_BELL,
+        }
+
 
 class TestPurity:
     def test_module_imports_are_unchanged(self):
