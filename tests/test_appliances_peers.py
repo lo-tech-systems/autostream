@@ -25,7 +25,6 @@ from autostream_peer_registry import Sighting  # noqa: E402
 from autostream_players import ActionResult  # noqa: E402
 from autostream_protocol import PROTOCOL  # noqa: E402
 from autostream_state import Origin  # noqa: E402
-from autostream_state.live import annotate_outputs  # noqa: E402
 from autostream_state.outputs import get_authority  # noqa: E402
 from fake_peer_server import FakePeer  # noqa: E402
 from fake_store import FakeStore  # noqa: E402
@@ -321,7 +320,9 @@ class TestAnnotate:
         rig.start()
         rig.peer(2, "Hall", parts=playing_parts("Kitchen", "Lounge"))
         assert wait_for(lambda: "kitchen" in rig.usage())
-        rows = annotate_outputs([{"name": "Kitchen", "selected": False},
+        # The module under test, not the live read bound to whichever copy of it
+        # was imported last (another test imports a fresh copy).
+        rows = appliances.annotate_outputs([{"name": "Kitchen", "selected": False},
                                  {"name": "lounge", "selected": True},
                                  {"name": "Study", "selected": False}])
         assert [(r["remote_in_use"], r["remote_owner"]) for r in rows] == [

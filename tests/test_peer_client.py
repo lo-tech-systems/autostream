@@ -233,16 +233,20 @@ class TestAddressAndStop:
     def test_an_address_change_moves_the_stream_without_a_miss(self, rig):
         a, b = rig.peer(), rig.peer()
         c = rig.client(a)
-        assert ready(c) and wait_for(lambda: a.open_streams() == 1)
+        # The first event has been read, so the move finds a stream that has been heard.
+        assert ready(c) and wait_for(lambda: a.open_streams() == 1
+                                     and c.snapshot().access == pc.ACCESS_PLAYBACK)
         seen = []
         c.subscribe(lambda cl: seen.append(cl.snapshot().reachable))
         c.set_sighting(IP, b.port, PROTOCOL)
-        assert wait_for(lambda: b.connects)
+        assert wait_for(lambda: b.open_streams() == 1)
         assert b.connects[0]["since"] == f"{BOOT}-{a.version}"
         assert state_gets(b) == []
-        a.push({"session": {"active": True}})        # the old stream is no longer read
-        time.sleep(0.2)
-        assert c.snapshot().parts["session"] == {"active": False}
+        # The old stream is no longer read: an event on it is never merged, and
+        # the next one on the new stream is.
+        a.push({"session": {"active": True}})
+        b.push({"session": {"active": False, "from": "b"}})
+        assert wait_for(lambda: c.snapshot().parts["session"] == {"active": False, "from": "b"})
         assert False not in seen and c.snapshot().reachable
 
     def test_same_sighting_again_changes_nothing(self, rig):
