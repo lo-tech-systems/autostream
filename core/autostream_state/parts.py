@@ -126,6 +126,7 @@ class MonitorRuntimeInfo:
     log_level: str = "unknown"
     connected: bool = False
     last_seen_at: float = 0.0               # moves every cycle, so not in the digest
+    output_trim_db: Optional[float] = None  # the auto-trim the monitor has accumulated; moves with the audio, so not in the digest
 
 
 @dataclass(frozen=True)
@@ -215,6 +216,9 @@ class OutputUnitView:
     reported: Optional[OutputInfo]          # the last row; None while the row is away after a boot change
     connecting: bool = False                # wanted in a session and the player has it, but it is not playing yet
     auto_start: bool = False                # the unit matches a member of the Auto-Start set, or is a placeholder for one
+    hidden: bool = False                    # the name is in the hidden-speakers setting (compared casefolded)
+    pin_claim: str = ""                     # who is entering a PIN for it ("webui", "dial:<id>"), or ""
+    in_use_by: str = ""                     # the other appliance playing it, or "" (never while it is selected here)
 
     @property
     def offline(self) -> bool:
@@ -476,7 +480,7 @@ def _outputs_digest(p: OutputsPart) -> tuple:
         tuple(
             (u.id, u.name, u.shown_selected, u.volume, u.muted, u.availability,
              _unit_pin_fields(u), u.reported.type if u.reported is not None else "", u.connecting,
-             u.auto_start)
+             u.auto_start, u.hidden, u.pin_claim, u.in_use_by)
             for u in p.units
         ),
         p.connected, p.muted_all, p.silence_chosen,

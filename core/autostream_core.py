@@ -94,6 +94,7 @@ def _set_monitor_runtime_info(
     log_level: Optional[str] = None,
     connected: Optional[bool] = None,
     last_seen_at: Optional[float] = None,
+    output_trim_db: Optional[float] = None,
 ) -> None:
     """Update the published autostream_monitor runtime metadata. Called from
     the coordinator thread only."""
@@ -115,6 +116,7 @@ def _set_monitor_runtime_info(
             if last_seen_at is None
             else float(last_seen_at)
         ),
+        output_trim_db=cur.output_trim_db if output_trim_db is None else float(output_trim_db),
     ))
     pending.notify()
     if autostream_state.store().snapshot().monitor.connected != cur.connected:
@@ -531,6 +533,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     log_level=str(status.get("log_level") or "").strip() or "unknown",
                     connected=True,
                     last_seen_at=time.time(),
+                    output_trim_db=status.get("output_auto_trim_db"),
                 )
 
                 status_by_index = {

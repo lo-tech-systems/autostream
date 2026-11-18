@@ -26,6 +26,7 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
+import autostream_pin_pairing as pairing
 import autostream_runtime as runtime
 import autostream_state as state
 import autostream_state.outputs as outputs
@@ -2805,3 +2806,68 @@ class TestDefaultMatches:
         w.a.set_default_members([("A", "A", 20)], 20)
         merge(w, [row("A", "A", selected=True, volume_percent=0)])
         assert snap().default_matches is True
+
+
+class TestOutsideFields:
+    """hidden, pin_claim and in_use_by: what the part carries from outside the
+    authority, and when it publishes again."""
+
+    @pytest.fixture(autouse=True)
+    def fresh_pairing(self, monkeypatch):
+        pairing.STATE.reset()
+        self.now = [0.0]
+        monkeypatch.setattr(pairing.STATE, "_clock", lambda: self.now[0])
+        yield
+        pairing.STATE.reset()
+
+    def test_a_hidden_name_is_matched_casefolded(self, w):
+        merge(w, [row(1, "Kitchen"), row(2, "Lounge")])
+        w.a.set_hidden_outputs([" kitchen ", ""])
+        assert [u.hidden for u in snap().units] == [True, False]
+        w.a.set_hidden_outputs([])
+        assert not any(u.hidden for u in snap().units)
+
+    def test_a_speaker_in_use_elsewhere_names_that_appliance_unless_selected_here(self, w):
+        merge(w, [row(1, "Kitchen"), row(2, "Lounge", selected=True)])
+        w.a.select("2", Origin.USER)
+        w.a.set_remote_usage({"kitchen": "hall", "lounge": "hall"})
+        assert [u.in_use_by for u in snap().units] == ["hall", ""]
+        w.a.set_remote_usage({})
+        assert snap().unit("1").in_use_by == ""
+
+    def test_an_unchanged_setter_does_not_move_the_version(self, w):
+        merge(w, [row(1, "Kitchen")])
+        w.a.set_hidden_outputs(["Kitchen"])
+        w.a.set_remote_usage({"kitchen": "hall"})
+        v = state.store().snapshot().version
+        w.a.set_hidden_outputs(["kitchen"])
+        w.a.set_remote_usage({"kitchen": "hall"})
+        assert state.store().snapshot().version == v
+
+    def test_a_claim_shows_after_a_republish(self, w):
+        merge(w, [row(1)])
+        pairing.claim("1", "dial:a")
+        assert snap().unit("1").pin_claim == ""
+        w.a.republish()
+        assert snap().unit("1").pin_claim == "dial:a"
+        pairing.release("1")
+        w.a.republish()
+        assert snap().unit("1").pin_claim == ""
+
+    def test_a_lapsed_claim_is_published_again_by_the_next_step(self, w):
+        merge(w, [row(1)])
+        pairing.claim("1", "webui")
+        w.a.republish()
+        self.now[0] = pairing.PIN_CLAIM_S - 1
+        w.a.step(w.t[0])
+        assert snap().unit("1").pin_claim == "webui"
+        self.now[0] = pairing.PIN_CLAIM_S + 1
+        w.a.step(w.t[0])
+        assert snap().unit("1").pin_claim == ""
+
+    def test_the_worker_wakes_for_the_lapse(self, w):
+        merge(w, [row(1)])
+        idle = w.a._next_wait(w.t[0])
+        pairing.claim("1", "webui")
+        self.now[0] = pairing.PIN_CLAIM_S - 0.3
+        assert w.a._next_wait(w.t[0]) == pytest.approx(0.3) and idle > 0.3

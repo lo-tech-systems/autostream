@@ -160,6 +160,12 @@ def test_hiding_and_showing_an_output_is_case_insensitive_and_remembers_its_id(c
     assert store.snapshot().webui.hidden_outputs == ()
 
 
+def test_hiding_an_output_tells_the_output_authority(ctx):
+    with patch("autostream_live_config.get_authority") as authority:
+        _set(ctx, "output_visibility", {"output_name": "Speaker A", "visible": False})
+    authority.return_value.set_hidden_outputs.assert_called_once_with(("Speaker A",))
+
+
 def test_an_offset_is_stored_and_reaches_the_speaker_only_when_the_backend_can(ctx, store):
     live = BackendCapabilities(can_set_output_offset=True)
     with patch("autostream_live_config.update_live_owntone_runtime"), \

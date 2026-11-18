@@ -330,16 +330,18 @@ _default_set_lock = threading.Lock()  # a leaf: serialises the pushes only
 
 
 def _push_default_set(settings: Optional[SettingsStore]) -> None:
-    """Give the output authority the Auto-Start set and start volume the
-    store holds now. Always read from the store, so any order of commits ends
-    with the authority holding the latest."""
+    """Give the output authority the Auto-Start set, the start volume and the
+    hidden speaker names the store holds now. Always read from the store, so
+    any order of commits ends with the authority holding the latest."""
     if settings is None:
         return
     with _default_set_lock:
-        o = settings.snapshot().owntone
+        snap = settings.snapshot()
+        o = snap.owntone
         get_authority().set_default_members(
             [(m.id, m.name, m.volume) for m in o.default_outputs], o.volume_percent,
         )
+        get_authority().set_hidden_outputs(snap.webui.hidden_outputs)
 
 
 def update_live_owntone_runtime(
@@ -1816,6 +1818,8 @@ def _set_output_visibility(state: object, value: object, output_id: str) -> Outc
     except Exception:
         logging.exception("backend.setting.set: output visibility store update failed")
         return Outcome(ok=False, error="Internal error")
+
+    get_authority().set_hidden_outputs(settings.snapshot().webui.hidden_outputs)
 
     if output_id:
         try:

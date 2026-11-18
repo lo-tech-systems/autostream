@@ -102,6 +102,8 @@ class TestDigests:
         a = DIGESTS["monitor"](state.MonitorRuntimeInfo("b", "info", True, 1.0))
         b = DIGESTS["monitor"](state.MonitorRuntimeInfo("b", "info", True, 2.0))
         c = DIGESTS["monitor"](state.MonitorRuntimeInfo("b", "debug", True, 1.0))
+        t = DIGESTS["monitor"](state.MonitorRuntimeInfo("b", "info", True, 1.0, -2.5))
+        assert t == a and state.MonitorRuntimeInfo().output_trim_db is None
         assert a == b and a != c
 
     def test_inputs_digest_ignores_the_level_but_not_the_texts(self):
@@ -404,6 +406,9 @@ class TestOutputsPart:
             state.OutputsPart(units=(self.unit("a"),), connected=True, muted_all=True),
             state.OutputsPart(units=(self.unit("a"),), connected=True, silence_chosen=True),
             state.OutputsPart(units=(self.unit("a", auto_start=True),), connected=True),
+            state.OutputsPart(units=(self.unit("a", hidden=True),), connected=True),
+            state.OutputsPart(units=(self.unit("a", pin_claim="webui"),), connected=True),
+            state.OutputsPart(units=(self.unit("a", in_use_by="hall"),), connected=True),
             state.OutputsPart(units=(self.unit("a"),), connected=True, default_matches=True),
             state.OutputsPart(units=(self.unit("a"),), connected=True, default_members=(member,)),
             state.OutputsPart(units=(self.unit("a"),), connected=True,

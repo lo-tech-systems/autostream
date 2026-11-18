@@ -82,6 +82,13 @@ def script_tag(rel: str) -> str:
     return f'<script src="{html.escape(static_url(rel))}"></script>'
 
 
+def module_tag(rel: str) -> str:
+    """'<script type="module" src="/static/page/home/home_main.js?v=..."></script>'.
+    The ?v= is on the entry module only; the modules it imports are reached
+    by relative URLs, which carry no query."""
+    return f'<script type="module" src="{html.escape(static_url(rel))}"></script>'
+
+
 def style_tag(rel: str) -> str:
     """'<link rel="stylesheet" href="/static/theme.css?v=...">'"""
     return f'<link rel="stylesheet" href="{html.escape(static_url(rel))}">'

@@ -63,6 +63,7 @@ from autostream_players import (
     OutputInfo,
 )
 
+from . import live
 from .origin import Origin
 from .parts import DefaultMemberView, OutputsPart, OutputUnitView, StartFailure
 from .store import store
@@ -418,6 +419,9 @@ class OutputAuthority:
         self._members: tuple[_Member, ...] = ()
         self._start_volume = 20
         self._pending: set[str] = set()   # member keys still to add this session
+        self._hidden: frozenset[str] = frozenset()      # casefolded names the user hides
+        self._remote_usage: dict[str, str] = {}         # casefolded name -> the other appliance playing it
+        self._claims_published: dict[str, str] = {}     # unit id -> the PIN claim the part last carried
         self._start_failure: Optional[StartFailure] = None
         self._failure_seq = 0
         self._session_active = False
@@ -655,6 +659,38 @@ class OutputAuthority:
             pending = self._publish_locked(Origin.SYSTEM, None)
         pending.notify()
 
+    def set_hidden_outputs(self, names: Sequence[str]) -> None:
+        """The speaker names the user hides from the lists, compared casefolded."""
+        self._touched = True
+        hidden = frozenset(str(n).strip().casefold() for n in names or () if str(n).strip())
+        with self._lock:
+            if hidden == self._hidden:
+                return
+            self._hidden = hidden
+            pending = self._publish_locked(Origin.SYSTEM, None)
+        pending.notify()
+
+    def set_remote_usage(self, usage: dict) -> None:
+        """The speakers other appliances are playing: casefolded name -> that
+        appliance's hostname. A speaker selected here is never shown as in use
+        elsewhere."""
+        self._touched = True
+        usage = {str(k): str(v) for k, v in (usage or {}).items()}
+        with self._lock:
+            if usage == self._remote_usage:
+                return
+            self._remote_usage = usage
+            pending = self._publish_locked(Origin.SYSTEM, None)
+        pending.notify()
+
+    def republish(self) -> None:
+        """Publish the part again, for what it reads outside the authority (a
+        PIN claim made or released)."""
+        self._touched = True
+        with self._lock:
+            pending = self._publish_locked(Origin.SYSTEM, None)
+        pending.notify()
+
     def start_volume(self) -> int:
         """The level a speaker starts at when nothing else is asked: the
         configured start volume."""
@@ -761,6 +797,19 @@ class OutputAuthority:
             return r.session_state != "streaming"
         return not r.selected
 
+    def _with_outside_fields_locked(self, view: OutputUnitView, claims: dict) -> OutputUnitView:
+        """*view* with the fields the authority does not own: whether the user
+        hides the speaker, who is entering its PIN, and which other appliance is
+        playing it. Records a live claim in *claims*."""
+        key = view.name.casefold()
+        claim = live.pin_claim(view.id)
+        if claim:
+            claims[view.id] = claim
+        return dataclasses.replace(
+            view, hidden=key in self._hidden, pin_claim=claim,
+            in_use_by="" if view.shown_selected else self._remote_usage.get(key, ""),
+        )
+
     def _build_part_locked(self) -> OutputsPart:
         views = []
         matched: dict[str, _Member] = {}
@@ -770,16 +819,19 @@ class OutputAuthority:
                 matched[mu.id] = m
                 if mu.desired.selected:
                     self._pending.discard(m.key)
+        claims: dict[str, str] = {}
         for u in self._ordered_units_locked():
             d = u.desired
             level = d.remembered_level if d.muted and d.remembered_level is not None else d.volume
             name = u.reported.name if u.reported is not None else u.name
-            views.append(OutputUnitView(
+            view = OutputUnitView(
                 id=u.id, name=name, selected=d.selected, volume=level, muted=d.muted,
                 availability=u.availability, cause=d.cause, reported=u.reported,
                 connecting=self._connecting_locked(u), auto_start=u.id in matched,
-            ))
-        views.extend(self._placeholders_locked())
+            )
+            views.append(self._with_outside_fields_locked(view, claims))
+        views.extend(self._with_outside_fields_locked(v, claims) for v in self._placeholders_locked())
+        self._claims_published = claims
         return OutputsPart(
             default_members=self._member_views_locked(views),
             default_matches=self._default_matches_locked(views),
@@ -1350,6 +1402,9 @@ class OutputAuthority:
             wait = min(wait, max(0.0, self._read_retry_at - now))
         if self._next_safety_read is not None:
             wait = min(wait, max(0.0, self._next_safety_read - now))
+        lapse = live.pin_claim_lapse_in()
+        if lapse is not None:
+            wait = min(wait, lapse)
         policy = self._policy
         if policy is not None:
             try:
@@ -1796,6 +1851,8 @@ class OutputAuthority:
                 if u.absent_since is not None and now - u.absent_since >= ABSENT_KEEP_S:
                     del self._units[u.id]
                     changed = True
+            if any(live.pin_claim(uid) != who for uid, who in self._claims_published.items()):
+                changed = True      # a PIN claim has lapsed
             if self._connected:
                 changed = self._reconcile_locked(now, fx) or changed
             if changed:

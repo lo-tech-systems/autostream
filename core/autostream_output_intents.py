@@ -78,6 +78,7 @@ def _enable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
             requester = intent.context
             if requester:
                 pairing.claim(out_id, requester)
+                get_authority().republish()
             return {
                 "ok": False,
                 "pin_required": True,
@@ -135,6 +136,7 @@ def _output_pin_submit(intent: Intent, wait: float) -> Outcome:
         result = _failure(out_id, outcome)
     else:
         pairing.release(out_id)
+        get_authority().republish()
         if args.get("selected"):
             result = _enable(intent, wait, out_id, user)
         else:
@@ -301,6 +303,7 @@ def _mute_set(intent: Intent, wait: float) -> Outcome:
 
 def _claim_late_pin(unit_id: str, claimant: str) -> None:
     pairing.claim(unit_id, claimant)
+    get_authority().republish()
 
 
 set_pin_claim_handler(_claim_late_pin)

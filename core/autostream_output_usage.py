@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from autostream_state import live
+from autostream_state.outputs import get_authority
 from autostream_config import (
     OUTPUT_USAGE_POLL_INTERVAL_DEFAULT,
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
@@ -454,6 +455,7 @@ def _poll_once(interval: int) -> None:
         _expire_stale(now)
 
     if not targets:
+        _publish_usage()
         return
 
     cap = min(len(targets), 4)
@@ -473,10 +475,22 @@ def _poll_once(interval: int) -> None:
             except Exception as e:
                 logger.debug("%s: unexpected error from target fetch: %s", _LOG_PREFIX, e)
 
+    _publish_usage()
     for out_name, owner in all_appeared:
         logger.info("%s: %s now in use by %s", _LOG_PREFIX, out_name, owner)
     for out_name, owner in all_cleared:
         logger.info("%s: %s no longer in use by %s", _LOG_PREFIX, out_name, owner)
+
+
+def _publish_usage() -> None:
+    """Tell the output authority which speakers other appliances are playing
+    (casefolded name -> that appliance's name). It publishes only when the
+    mapping has changed."""
+    usage = {k: u.owner_name for k, u in get_usage_snapshot().items()}
+    try:
+        get_authority().set_remote_usage(usage)
+    except Exception:
+        logger.debug("%s: could not publish usage", _LOG_PREFIX, exc_info=True)
 
 
 def _is_poll_shutdown() -> bool:
@@ -590,6 +604,7 @@ def refresh_now(reason: str = "", timeout: float = 1.5) -> None:
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
+    _publish_usage()
     for out_name, owner in all_appeared:
         logger.info("%s: %s now in use by %s", _LOG_PREFIX, out_name, owner)
     for out_name, owner in all_cleared:

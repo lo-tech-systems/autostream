@@ -1084,3 +1084,29 @@ class TestAudioStatusPlayingFromSession:
 
         down = ListOutputsResult(ok=False, error="Connection refused")
         assert down.message == "Connection refused"
+
+
+class TestPublishToAuthority:
+    """_poll_once tells the output authority which speakers other appliances
+    play, casefolded name to hostname, on every pass."""
+
+    @pytest.fixture
+    def pushed(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(ou, "get_authority",
+                            lambda: type("A", (), {"set_remote_usage": lambda self, m: calls.append(m)})())
+        return calls
+
+    def test_a_poll_pushes_the_cache_and_a_later_one_pushes_its_expiry(self, pushed):
+        clock, advance = _fake_clock()
+        ou._clock = clock
+        target = ou._PlayingTarget(service_name="hall", ip="1.2.3.4", port=8080, name="hall",
+                                   audio_status=True, hostname="hall.local")
+        ou._target_provider = lambda: [target]
+        ou._http_fetcher = lambda url, timeout: {"playing": True, "outputs": ["Kitchen"]}
+        ou._poll_once(3)
+        assert pushed[-1] == {"kitchen": "hall"}
+        ou._target_provider = lambda: []
+        advance(60)
+        ou._poll_once(3)
+        assert pushed[-1] == {}

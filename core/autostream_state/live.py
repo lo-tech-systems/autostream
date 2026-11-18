@@ -169,6 +169,13 @@ def pin_claim(output_id: str) -> str:
     return pairing.holder(output_id)
 
 
+def pin_claim_lapse_in() -> Optional[float]:
+    """Seconds until the first live PIN claim lapses, or None when there is no
+    claim (autostream_pin_pairing.next_lapse_in)."""
+    import autostream_pin_pairing as pairing  # noqa: PLC0415
+    return pairing.next_lapse_in()
+
+
 def annotate_outputs(outputs: list[dict]) -> list[dict]:
     """The output dicts with remote-occupancy fields added (bound by autostream_output_usage)."""
     return _call_bound("annotate_outputs", outputs)

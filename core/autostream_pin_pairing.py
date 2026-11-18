@@ -106,6 +106,18 @@ class PairingState:
             self._note_failure()
             return ""
 
+    def next_lapse_in(self, now: Optional[float] = None) -> Optional[float]:
+        """Seconds until the first live claim lapses, or None when there is none."""
+        try:
+            if now is None:
+                now = self._clock()
+            with self._lock:
+                live = [t for _, t in self._claims.values() if (now - t) < PIN_CLAIM_S]
+            return max(0.0, min(live) + PIN_CLAIM_S - now) if live else None
+        except Exception:
+            self._note_failure()
+            return None
+
     def note_attempt(
         self, requester: str, output_id: str, now: Optional[float] = None,
     ) -> tuple[bool, int]:
@@ -169,6 +181,10 @@ def release(output_id: str) -> None:
 
 def holder(output_id: str, now: Optional[float] = None) -> str:
     return STATE.holder(output_id, now)
+
+
+def next_lapse_in(now: Optional[float] = None) -> Optional[float]:
+    return STATE.next_lapse_in(now)
 
 
 def note_attempt(requester: str, output_id: str, now: Optional[float] = None) -> tuple[bool, int]:

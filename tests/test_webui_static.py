@@ -37,6 +37,8 @@ def test_urls_and_tags_carry_the_version(root):
     v = webui_static.asset_version("page/home.js")
     assert webui_static.static_url("page/home.js") == f"/static/page/home.js?v={v}"
     assert webui_static.script_tag("page/home.js") == f'<script src="/static/page/home.js?v={v}"></script>'
+    assert webui_static.module_tag("page/home.js") == (
+        f'<script type="module" src="/static/page/home.js?v={v}"></script>')
     assert webui_static.style_tag("page/home.js") == (
         f'<link rel="stylesheet" href="/static/page/home.js?v={v}">')
 

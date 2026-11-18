@@ -750,6 +750,11 @@ def test_state_json_carries_every_part_as_plain_json(store):
     assert body["boot"] == snap.boot
     assert body["version"] == snap.version
     assert body["clients"] == 3
+    assert abs(body["time"] - time.time()) < 5
+    assert (body["parts"]["outputs"]["units"][0]["hidden"],
+            body["parts"]["outputs"]["units"][0]["pin_claim"],
+            body["parts"]["outputs"]["units"][0]["in_use_by"]) == (False, "", "")
+    assert body["parts"]["monitor"]["output_trim_db"] is None
     assert set(body["parts"]) == set(PART_NAMES)
     assert set(body["part_versions"]) <= set(PART_NAMES)
     assert list(body["parts"]["track"]["entries"]) == ["0"]

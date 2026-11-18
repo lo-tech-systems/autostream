@@ -17,6 +17,7 @@ import dataclasses
 import enum
 import json
 import math
+import time
 from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
@@ -62,8 +63,9 @@ def part_json(snap, name: str) -> bytes:
 
 def state_json(snap, *, clients: int, parts=None) -> dict:
     """The snapshot's parts as they are, with the boot id, the version, the
-    protocol number, the version at which each part last moved, and the number
-    of stream clients. *parts* names the parts to include; None is all, and none
+    protocol number, the server's wall clock in seconds, the version at which each
+    part last moved, and the number of stream clients. *parts* names the parts
+    to include; None is all, and none
     at all gives the appliance part alone, since it says who is asking and
     whether it is set up."""
     names = PART_NAMES if parts is None else (parts or ("appliance",))
@@ -71,6 +73,7 @@ def state_json(snap, *, clients: int, parts=None) -> dict:
         "boot": snap.boot,
         "version": snap.version,
         "protocol": PROTOCOL,
+        "time": time.time(),
         "clients": clients,
         "part_versions": {str(k): v for k, v in snap.part_versions.items()},
         "parts": {name: _jsonable(getattr(snap, name)) for name in names},
