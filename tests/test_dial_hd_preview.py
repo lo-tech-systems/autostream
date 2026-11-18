@@ -76,13 +76,6 @@ class TestActionHook:
         core.set_focus(LOUNGE)
         assert spy.shown == []
 
-    def test_the_log_never_carries_a_pin(self):
-        lines: list = []
-        hook = preview_tool.action_hook(Spy(), lines.append)
-        hook("set_output", (LOUNGE, "o1"), {"selected": True, "pin": "4821", "pin_entry": True})
-        assert len(lines) == 1 and "set_output" in lines[0] and "o1" in lines[0]
-        assert "4821" not in lines[0] and "'pin'" not in lines[0]
-
     def test_the_log_never_carries_a_pin_sent_as_an_intent(self):
         lines: list = []
         hook = preview_tool.action_hook(Spy(), lines.append)

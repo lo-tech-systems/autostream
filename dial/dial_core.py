@@ -77,7 +77,7 @@ from dial_core_state import (
     EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
     FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
     START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap,
-    pin_capable_outputs, PowerState, TickContext, TransportRequest, WarningState,
+    PowerState, TickContext, TransportRequest, WarningState,
     roster_entry, display_order, dots_active, eq_gain,
     reopen_for_pin, start_failure_action,
 )
@@ -415,50 +415,33 @@ class DialCore:
     def set_output(
         self, appliance_id: str, output_id: str, *,
         selected: bool | None = None, volume: int | None = None,
-        pin: str | None = None, pin_entry: bool = False,
     ) -> ActionResult:
         """Enable or disable an output, or set its level. The change shows at
         once (as the request's shown value) until the appliance's state has
         caught up with the reply. Refused when the appliance is unknown,
         lacks the capability or has refused this dial, or when the output is
-        not among the rows held or another appliance has taken it.
-
-        A *pin* is sent as a PIN submission that enables the output once the
-        speaker is paired; it is held only in the request body, never in the
-        state or the snapshot. *pin_entry* says the caller can show a keypad.
+        not among the rows held or another appliance has taken it. A PIN is
+        sent only through the HD page's `output.pin.submit` intent.
         The outcome is published on `outputs_request` and queued as an
         `OutputsEffect`."""
         roster = self._state.roster
         refusal = rq.appliance_refusal(roster, appliance_id, "dial_outputs")
         if refusal is not None:
             return refusal
-        if pin is not None:
-            refusal = rq.pin_refusal(pin)
-            if refusal is not None:
-                return refusal
         row = rq.output_row(self._snapshot.outputs, appliance_id, output_id)
         refusal = rq.row_refusal(row)
         if refusal is not None:
             return refusal
         # Only the controls refuse a set that changes nothing; the page's
         # intents forward it and the appliance answers.
-        if selected is None and volume is None and pin is None:
+        if selected is None and volume is None:
             return ActionResult(False, "wrong_state")
-        # Only the controls check the PIN capability's version. An appliance
-        # state reports version 2 whenever it has the outputs capability, so
-        # the capability check above refuses first and this is not reached
-        # in practice.
-        if pin is not None and not pin_capable_outputs(roster_entry(roster, appliance_id).dial_outputs_version):
-            return ActionResult(False, "no_capability")
-        shown = rq.output_shown(row, selected, volume, pin=pin is not None)
+        shown = rq.output_shown(row, selected, volume, pin=False)
         begin, token = self._begin_request(
-            "outputs_request", appliance_id, "output_set" if pin is None else "output_pin",
-            output_id=output_id, shown=shown,
+            "outputs_request", appliance_id, "output_set", output_id=output_id, shown=shown,
         )
         self._publish(begin)
-        intent = (rq.output_pin(output_id, pin) if pin is not None else rq.output_set(
-            output_id, selected=shown[0], volume=volume, pin_entry=pin_entry))
-        self._send(appliance_id, intent, token)
+        self._send(appliance_id, rq.output_set(output_id, selected=shown[0], volume=volume), token)
         return ActionResult(True, token=token)
 
     def step_output_volume(self, appliance_id: str, output_id: str, delta: int) -> ActionResult:

@@ -764,10 +764,6 @@ def test_six_band():
     assert [cs.six_band(v) for v in (0, 1, 2, 3)] == [False, False, True, True]
 
 
-def test_pin_capable_outputs():
-    assert [cs.pin_capable_outputs(v) for v in (0, 1, 2, 3)] == [False, False, True, True]
-
-
 def _failure(**fields):
     base = {"seq": 3, "boot": "b1", "unit_id": "1001", "name": "Speaker A",
             "reason": "refused", "mine": True, "age_s": 4}

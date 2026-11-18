@@ -51,15 +51,6 @@ class TestIntents:
     def test_output_set_without_a_level_sends_none(self):
         assert dict(rq.output_set("u1", selected=False).args) == {"id": "u1", "selected": False}
 
-    def test_pin_capable_only_with_pin_entry(self):
-        assert rq.output_set("u1", selected=True, pin_entry=True).extra_body == {"pin_capable": True}
-        assert rq.output_set("u1", selected=True, pin_entry=False).extra_body is None
-
-    def test_a_pin_submission_is_always_pin_capable(self):
-        i = rq.output_pin("u1", "1234")
-        assert (i.kind, i.name, dict(i.args), i.extra_body) == (
-            "output_pin", "output.pin.submit", {"id": "u1", "pin": "1234"}, {"pin_capable": True})
-
     def test_band_ids_write_their_own_fields(self):
         i = rq.eq_set({"peq3": 2, "peq6": -20})
         assert (i.kind, i.name) == ("eq_set", "output.eq.set")
@@ -246,8 +237,8 @@ class TestLane:
     def test_a_request_is_sent_with_its_arguments_and_extra_body(self, lane_parts):
         client, got = FakeClient(), Collector()
         lane = lane_parts({AID: client}, got)
-        i = rq.output_set("u1", selected=True, volume=20, pin_entry=True)
-        lane.enqueue(rq.LaneItem(AID, i.kind, i.name, i.args, i.extra_body, token=5.0))
+        i = rq.output_set("u1", selected=True, volume=20)
+        lane.enqueue(rq.LaneItem(AID, i.kind, i.name, i.args, {"pin_capable": True}, token=5.0))
         got.wait()
         assert client.calls == [("submit", "outputs.set", {"id": "u1", "selected": True, "volume": 20},
                                  {"pin_capable": True}, None, True)]
@@ -451,8 +442,7 @@ class TestValidators:
 
     def test_the_page_is_sent_the_appliances_names(self):
         assert rq.REFUSAL_NAMES == {
-            "unauthorized": "dial_not_authorized", "no_capability": "protocol_mismatch",
-            "not_polling": "wrong_state"}
+            "unauthorized": "dial_not_authorized", "no_capability": "protocol_mismatch"}
 
 
 def _intent(name, args=None, *, roster=None, held=None, focused=AID, appliance=AID):
@@ -559,17 +549,6 @@ class TestCoreIntents:
         rig.core.set_output(K, "u1", selected=True, volume=30)
         assert sent(rig, client)[0][1:3] == ("outputs.set", {"id": "u1", "selected": True, "volume": 30})
 
-    def test_pin_capable_only_with_pin_entry(self, rig):
-        client = kitchen(rig)
-        rig.core.set_output(K, "u1", selected=True, pin_entry=True)
-        assert sent(rig, client)[0][3] == {"pin_capable": True}
-
-    def test_a_pin_submission(self, rig):
-        client = kitchen(rig)
-        rig.core.set_output(K, "u1", pin="1234")
-        assert sent(rig, client)[0][1:] == ("output.pin.submit", {"id": "u1", "pin": "1234"}, {"pin_capable": True})
-        assert rig.core.snapshot().outputs_request.kind == "output_pin"
-
     def test_an_eq_band_and_a_step(self, rig):
         client = kitchen(rig)
         rig.core.step_eq(K, "peq3", 2)
@@ -615,11 +594,6 @@ class TestLocalRefusals:
     def test_a_speaker_in_use_elsewhere(self, rig):
         client = kitchen(rig, units=[pool_unit(in_use_by="Hall", in_use_id="x")])
         assert rig.core.set_output(K, "u1", selected=True).reason == "wrong_state"
-        assert client.sent() == []
-
-    def test_a_pin_of_the_wrong_shape(self, rig):
-        client = kitchen(rig)
-        assert rig.core.set_output(K, "u1", pin="12").reason == "wrong_state"
         assert client.sent() == []
 
     def test_a_protocol_mismatch_has_no_capability(self, rig):

@@ -38,13 +38,13 @@ class SlowFetch:
         self.gates.setdefault(url, threading.Event()).set()
 
 
-def test_a_slow_artwork_fetch_does_not_delay_a_queued_pin(rig):
+def test_a_slow_artwork_fetch_does_not_delay_a_queued_speaker_request(rig):
     slow = SlowFetch()
     rig.io.fetch_artwork = slow
     client = rig.add("Kitchen", peer("Kitchen", playing=True, track_entry=track(url=URL1), units=[unit()]))
     rig.fold()
     assert rig.wait(lambda: slow.started == [URL1])
-    assert rig.core.set_output(aid("Kitchen"), "u1", pin="1234").accepted
+    assert rig.core.set_output(aid("Kitchen"), "u1", selected=True).accepted
     assert rig.wait(lambda: client.sent(), timeout=2.0)
     assert rig.core.snapshot().artwork is None
     slow.release(URL1)

@@ -25,9 +25,8 @@ The two paths keep these differences on purpose:
     appliance's or the library's name where one says the same;
   * the controls address the focused appliance without checking it (outputs
     and EQ are held only for that one); every page intent must name it;
-  * the controls refuse a speaker set that changes nothing, and a PIN the
-    appliance's outputs version cannot take; the page's intents forward
-    both and the appliance answers;
+  * the controls refuse a speaker set that changes nothing; the page's
+    intents forward it and the appliance answers;
   * the controls normalise what they send (`bool`, `int`, a zero position);
     the page's arguments are forwarded as given;
   * a page `repeat.transport` records a stop whatever its action says;
@@ -71,18 +70,12 @@ class Intent:
     extra_body: Mapping | None = None
 
 
-def output_set(output_id: str, *, selected: bool, volume: int | None = None, pin_entry: bool = False) -> Intent:
-    """Enable or disable a speaker, or set its level. *pin_entry* says the
-    caller can show a keypad, so the appliance may ask this dial for a PIN."""
+def output_set(output_id: str, *, selected: bool, volume: int | None = None) -> Intent:
+    """Enable or disable a speaker, or set its level."""
     args: dict = {"id": output_id, "selected": bool(selected)}
     if volume is not None:
         args["volume"] = int(volume)
-    return Intent("output_set", "outputs.set", args, {"pin_capable": True} if pin_entry else None)
-
-
-def output_pin(output_id: str, pin: str) -> Intent:
-    """A PIN for a speaker. It is always sent as one this dial can answer."""
-    return Intent("output_pin", "output.pin.submit", {"id": output_id, "pin": pin}, {"pin_capable": True})
+    return Intent("output_set", "outputs.set", args)
 
 
 def eq_set(gains: Mapping[str, float]) -> Intent:
@@ -188,10 +181,8 @@ INTENTS = {
 # The intents `submit_intent` forwards; any other name is refused without a request.
 SUBMIT_INTENTS = frozenset(INTENTS)
 # The page is sent the appliance's or the library's name where one says the
-# same as the dial's own reason. Nothing the intent checks yields "not_polling"
-# today; it applies if a check for a missing EQ reading is added.
-REFUSAL_NAMES = {"unauthorized": "dial_not_authorized", "no_capability": "protocol_mismatch",
-                 "not_polling": "wrong_state"}
+# same as the dial's own reason.
+REFUSAL_NAMES = {"unauthorized": "dial_not_authorized", "no_capability": "protocol_mismatch"}
 
 
 def intent_refusal(roster, outputs, focused_id, appliance_id: str, name: str, args: dict) -> ActionResult | None:
