@@ -28,8 +28,8 @@ _L0 = """
 align_tone appliance_identity artwork auth bluetooth_client bluetooth_facts
 bluetooth_presentation commissioning config debounce dial_gpio dials federation
 licensing mdns mute_state nowplaying owntone owntone_mini pin_pairing
-playback_stats player_service players rpi runtime_state settings settings_schema
-start_buffer_cache system_stats sysutils wifi_network
+playback_stats player_service players rpi runtime runtime_state settings
+settings_schema start_buffer_cache system_stats sysutils wifi_network
 """.split()
 _L2 = "align appliances dial_push dial_warnings log_policy output_usage".split()
 _L3 = """
@@ -320,7 +320,6 @@ def l2_cycle(edges) -> list[str] | None:
 
 RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_align', 'autostream_core', 'get_playback_snapshot'),
-    ('A', 'autostream_align', 'autostream_core', 'get_task_pool'),
     ('A', 'autostream_appliance_gateway', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'OUTPUT_PEQ_BANDS'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'any_monitor_capturing'),
@@ -358,7 +357,6 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_api', 'autostream_core', 'get_session_source_input_index'),
     ('A', 'autostream_webui_api', 'autostream_core', 'get_session_state'),
     ('A', 'autostream_webui_api', 'autostream_core', 'input_rate_texts'),
-    ('A', 'autostream_webui_api', 'autostream_core', 'request_config_reload'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_bearing'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_belt'),
     ('A', 'autostream_webui_api', 'autostream_core', 'reset_input_stylus'),
@@ -388,14 +386,12 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_webui_page_airplay', 'autostream_core', 'sample_rate_warning_text'),
     ('A', 'autostream_webui_page_equaliser', 'autostream_core', 'OUTPUT_PEQ_BANDS'),
     ('A', 'autostream_webui_page_equaliser', 'autostream_core', 'get_live_monitor_output_rate'),
-    ('A', 'autostream_webui_page_first_boot', 'autostream_core', 'request_config_reload'),
     ('A', 'autostream_webui_page_first_boot', 'autostream_core', 'update_playback_input_config'),
     ('A', 'autostream_webui_page_service', 'autostream_core', 'get_playback_snapshot'),
     ('A', 'autostream_webui_page_setup', 'autostream_core', 'input_rate_texts'),
     ('A', 'autostream_webui_page_setup', 'autostream_core', 'update_live_owntone_runtime'),
     ('A', 'autostream_webui_page_setup', 'autostream_core', 'update_playback_input_config'),
     ('A', 'autostream_webui_post_handlers', 'autostream_core', 'apply_track_id_config_live'),
-    ('A', 'autostream_webui_post_handlers', 'autostream_core', 'request_config_reload'),
     ('A', 'autostream_webui_post_handlers', 'autostream_core', 'set_live_input_eq'),
     ('A', 'autostream_webui_post_handlers', 'autostream_core', 'set_live_input_gain'),
     ('A', 'autostream_webui_post_handlers', 'autostream_core', 'update_live_owntone_runtime'),
@@ -452,6 +448,7 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('C', 'autostream_webui_api', 'autostream_players', 'SETTING_UNCOMPRESSED_ALAC'),
     ('C', 'autostream_webui_api', 'autostream_players', 'SETTING_USER_AGENT'),
     ('C', 'autostream_webui_api', 'autostream_players', 'SETTING_USER_AGENT_MAX_LEN'),
+    ('C', 'autostream_webui_api', 'autostream_runtime', 'request_config_reload'),
     ('C', 'autostream_webui_api', 'autostream_settings', 'SettingsStore'),
     ('C', 'autostream_webui_api', 'autostream_start_buffer_cache', '*'),
     ('C', 'autostream_webui_common', 'autostream_config', 'load_config'),
@@ -468,6 +465,7 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('C', 'autostream_webui_page_align', 'autostream_player_service', 'get_capabilities'),
     ('C', 'autostream_webui_page_first_boot', 'autostream_player_service', 'list_outputs'),
     ('C', 'autostream_webui_page_first_boot', 'autostream_player_service', 'output_supported_config_modes'),
+    ('C', 'autostream_webui_page_first_boot', 'autostream_runtime', 'request_config_reload'),
     ('C', 'autostream_webui_page_first_boot', 'autostream_settings', 'SettingsStore'),
     ('C', 'autostream_webui_page_owntone', 'autostream_player_service', 'get_capabilities'),
     ('C', 'autostream_webui_page_owntone', 'autostream_player_service', 'get_setting'),
@@ -490,6 +488,7 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('C', 'autostream_webui_post_handlers', 'autostream_appliances', 'reconcile_appliance_announcement'),
     ('C', 'autostream_webui_post_handlers', 'autostream_config', 'load_config'),
     ('C', 'autostream_webui_post_handlers', 'autostream_player_service', 'config_airplay_mode_to_backend'),
+    ('C', 'autostream_webui_post_handlers', 'autostream_runtime', 'request_config_reload'),
     ('C', 'autostream_webui_post_handlers', 'autostream_settings', 'SettingsStore'),
     ('C', 'autostream_webui_state', 'autostream_align', 'AlignRun'),
     ('C', 'autostream_webui_state', 'autostream_settings', 'SettingsStore'),

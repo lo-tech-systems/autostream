@@ -536,6 +536,7 @@ class TestBuildOutputEqBands:
 # ---------------------------------------------------------------------------
 
 from contextlib import contextmanager as _contextmanager
+import autostream_runtime as runtime
 
 
 def _fake_connected(client):
@@ -1355,7 +1356,7 @@ class TestReplayAckAnnouncement:
                        replaying=False):
         core._set_repeat_status(_repeat_block(replaying=replaying))
         with patch.object(core, "_rearm_replay_identification"), \
-             patch.object(core._task_pool, "submit", return_value=True) as submit:
+             patch.object(runtime._task_pool, "submit", return_value=True) as submit:
             core.apply_repeat_ack(_repeat_ack(command, state))
         return submit
 
@@ -1386,7 +1387,7 @@ class TestReplayAckAnnouncement:
     def test_a_submit_failure_never_reaches_the_caller(self):
         core._set_repeat_status(_repeat_block())
         with patch.object(core, "_rearm_replay_identification"), \
-             patch.object(core._task_pool, "submit",
+             patch.object(runtime._task_pool, "submit",
                           side_effect=RuntimeError("pool down")):
             core.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying"))
 
@@ -1394,14 +1395,14 @@ class TestReplayAckAnnouncement:
         import threading
         release = threading.Event()
         started = threading.Event()
-        pool = core.TaskPool(max_workers=1)
+        pool = runtime.TaskPool(max_workers=1)
 
         def slow(_v):
             started.set()
             release.wait(5)
 
         try:
-            with patch.object(core, "_task_pool", pool), \
+            with patch.object(runtime, "_task_pool", pool), \
                  patch.object(core, "_announce_playing_if_active", slow):
                 core._announce_replay_playing()
                 assert started.wait(5)

@@ -14,7 +14,6 @@ and can be overridden with the AUTOSTREAM_MONITOR_SOCKET environment
 variable.
 """
 
-import concurrent.futures
 import contextlib
 import copy
 import os
@@ -31,6 +30,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
+import autostream_runtime as runtime
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
     DEFAULT_LOG_LEVEL,
@@ -105,20 +105,13 @@ from autostream_sysutils import (
 
 
 # --------------------------------------------------------------------------- #
-# Process termination                                                          #
-# --------------------------------------------------------------------------- #
-
-stop_flag = threading.Event()
-reload_flag = threading.Event()
-
-# --------------------------------------------------------------------------- #
 # Module-level locks/events, grouped by conceptual store (documentation only  #
 # -- the grouping below is descriptive; the locks/events themselves are not   #
 # consolidated into a single object).                                        #
 # --------------------------------------------------------------------------- #
 #
 # Process-wide signals (not tied to any store):
-#   stop_flag, reload_flag                    -- shutdown/reload requests
+#   stop_flag, reload_flag                    -- now in autostream_runtime
 #   (log_queue -- async log fan-out, bounded 1000 -- is function-local to
 #    the logging-setup call today, not a module-level global; listed here
 #    only because an earlier gap-analysis pass described it as module-level)
@@ -161,16 +154,6 @@ reload_flag = threading.Event()
 #                                                 state vs. _apply_track_id_service
 
 
-def request_config_reload() -> None:
-    """Signal the coordinator loop to tear down and re-initialise all monitors.
-
-    Called by the Web UI after a successful settings save.  The coordinator
-    picks this up within one poll interval and re-reads the INI without
-    restarting the process.
-    """
-    reload_flag.set()
-
-
 # Track all AudioMonitor instances so coordination logic can inspect them.
 # _monitors_lock must be held when reading or mutating all_monitors or when
 # taking a snapshot of its elements for use on a different thread (Web UI).
@@ -185,83 +168,6 @@ _track_id_service = None  # Optional[TrackIdentificationService]
 # Process-wide identification admission gate.  A non-blocking acquire is attempted
 # before every worker dispatch; at most one identification request runs globally.
 _track_id_request_gate = threading.Lock()
-
-
-class TaskPool:
-    """Small bounded thread pool with single-flight-per-key submission.
-
-    A fixed-size `ThreadPoolExecutor` backs the pool; `submit(key, fn, ...)`
-    is a no-op (returns False, nothing scheduled) when a task already
-    in flight under the same key -- callers that need "at most one
-    in-flight task per key" get it for free, rather than each new
-    backgrounded operation hand-rolling its own `threading.Thread(...)`
-    call and rate-limit/inflight bookkeeping.
-
-    Not itself a queue: a rejected (duplicate-key) submission is dropped,
-    not deferred -- matching every current call site's existing shape
-    (a rate-limited watchdog restart, a gate-admitted identification
-    worker), none of which need a submission to wait its turn.
-    """
-
-    def __init__(self, max_workers: int = 2) -> None:
-        self._executor = concurrent.futures.ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="taskpool",
-        )
-        self._inflight: dict[str, "concurrent.futures.Future"] = {}
-        self._lock = threading.Lock()
-
-    def submit(self, key: str, fn, *args, **kwargs) -> bool:
-        """Submit fn(*args, **kwargs) under single-flight key *key*.
-
-        Returns True if a task was scheduled, False if a task already
-        in flight under *key* (submission is then a no-op).
-        """
-        with self._lock:
-            existing = self._inflight.get(key)
-            if existing is not None and not existing.done():
-                return False
-
-            def _run() -> None:
-                try:
-                    fn(*args, **kwargs)
-                finally:
-                    # Single-flight-per-key guarantees no other submission
-                    # for this key can be accepted while _run is executing
-                    # (the check above only passes once the prior future is
-                    # done, which -- for a ThreadPoolExecutor future -- is
-                    # only true once _run itself has returned), so it is
-                    # always safe to unconditionally drop this key's entry
-                    # here rather than compare-and-clear against a future
-                    # reference not yet in scope.
-                    with self._lock:
-                        self._inflight.pop(key, None)
-
-            future = self._executor.submit(_run)
-            self._inflight[key] = future
-            return True
-
-    def is_inflight(self, key: str) -> bool:
-        with self._lock:
-            future = self._inflight.get(key)
-            return future is not None and not future.done()
-
-
-# Process-wide task pool: the one place backgrounded, single-flight-per-key
-# work is scheduled (currently: the OwnTone hang-watchdog restart, per-input
-# track identification, and -- via get_task_pool() below -- autostream_align's
-# "align-run" job). See TaskPool.
-_task_pool = TaskPool(max_workers=2)
-
-
-def get_task_pool() -> "TaskPool":
-    """Return the process-wide task pool.
-
-    External modules that need to schedule work under this pool's
-    single-flight-per-key contract (e.g. autostream_align.AlignRun, gap
-    35 Section 4.1) call this instead of reaching into the private
-    _task_pool global directly.
-    """
-    return _task_pool
 
 
 def _build_track_id_service(cfg) -> Optional[object]:
@@ -858,7 +764,7 @@ def _announce_replay_playing() -> None:
     if version is None or _playing_announced:
         return
     try:
-        _task_pool.submit(
+        runtime._task_pool.submit(
             "playing-announce", _announce_playing_if_active, version)
     except Exception:
         logging.debug("replay playing announcement not submitted", exc_info=True)
@@ -1657,31 +1563,6 @@ def _teardown_identification_after_replay_end(
 # UI POST path more invasively than this single marker call).
 
 
-class _RecoveryLog:
-    """Emits one WARNING when a failing condition clears, so an operator
-    reading WARN-level logs sees the recovery, not just the failure stream."""
-
-    def __init__(self, subject: str):
-        self._subject = subject
-        self._failing = False
-        self._count = 0
-        self._first_failure_at = 0.0
-
-    def fail(self, now: float) -> None:
-        if not self._failing:
-            self._failing = True
-            self._first_failure_at = now
-        self._count += 1
-
-    def ok(self, now: float) -> None:
-        if self._failing:
-            logging.warning(
-                "%s recovered after %d failure(s) (down for %.0fs)",
-                self._subject, self._count, now - self._first_failure_at)
-        self._failing = False
-        self._count = 0
-
-
 class _OwntoneReconcileTracker:
     """Detects "OwnTone restarted/lost state mid-session" and re-arms retry.
 
@@ -2053,7 +1934,7 @@ def _fire_owntone_hang_restart(base_url: str, stalled_seconds: float) -> None:
         except Exception:
             logging.exception("OwnTone-hang watchdog: restart-owntone raised")
 
-    if not _task_pool.submit("owntone-restart", _worker):
+    if not runtime._task_pool.submit("owntone-restart", _worker):
         logging.debug(
             "OwnTone-hang watchdog: restart-owntone already in flight; "
             "skipping duplicate request."
@@ -2232,7 +2113,7 @@ class _SelfHeal:
 
 
 def handle_signal(signum, frame):
-    stop_flag.set()
+    runtime.stop_flag.set()
 
 
 def _cleanup_discovery() -> None:
@@ -2264,7 +2145,7 @@ def _start_output_usage_poller(cfg) -> None:
     try:
         import autostream_output_usage as _ou
         _ou.configure(cfg.webui.output_usage_poll_interval_seconds)
-        _ou.start(shutdown_event=stop_flag)
+        _ou.start(shutdown_event=runtime.stop_flag)
     except Exception:
         logging.warning("output-usage: failed to start poller", exc_info=True)
 
@@ -3471,7 +3352,7 @@ class AudioMonitor:
         self._owntone_last_attempt: float = 0.0
         self._owntone_last_log: float = 0.0
         self._owntone_enabled_ok: bool = False
-        self._owntone_recovery_log = _RecoveryLog("OwnTone output-enable")
+        self._owntone_recovery_log = runtime.RecoveryLog("OwnTone output-enable")
         self._capture_start_no_output_retry_at: float = 0.0
         self._capture_start_no_output_log_at: float = 0.0
 
@@ -4239,7 +4120,7 @@ class AudioMonitor:
 
             # Scheduled on the process-wide task pool under a per-input
             # single-flight key -- same worker function, same args, just
-            # scheduled via _task_pool.submit() instead of a raw
+            # scheduled via runtime._task_pool.submit() instead of a raw
             # threading.Thread(...).start(). The
             # process-wide _track_id_request_gate above is still the true
             # admission control (at most one identification in flight across
@@ -4249,7 +4130,7 @@ class AudioMonitor:
             # _ti_inflight/_ti_inflight_token in its `finally`) is untouched.
             submitted = False
             try:
-                submitted = _task_pool.submit(
+                submitted = runtime._task_pool.submit(
                     f"track-id-{self.input_index}",
                     self._ti_worker,
                     bytes(pcm_bytes), rate, worker_token, dispatch_gen, held,
@@ -5084,13 +4965,13 @@ def _wait_for_bluetooth_loopback(capture_device: str) -> None:
 
     bt_client = BluetoothClient()
     deadline = time.monotonic() + BLUETOOTH_LOOPBACK_WAIT_SECONDS
-    while time.monotonic() < deadline and not stop_flag.is_set():
+    while time.monotonic() < deadline and not runtime.stop_flag.is_set():
         status = bt_client.status()
         if status is not None and "loopback_held" not in status:
             return   # older bluetooth service without the field; nothing to wait on
         if status is not None and status.get("loopback_held"):
             return
-        if stop_flag.wait(BLUETOOTH_LOOPBACK_POLL_SECONDS):
+        if runtime.stop_flag.wait(BLUETOOTH_LOOPBACK_POLL_SECONDS):
             return   # shutting down; the caller's own stop_flag checks take over
     logging.warning(
         "Bluetooth pump did not report holding the loopback within %.0fs; "
@@ -5474,7 +5355,7 @@ def _await_startup(
     fifo_path: Optional[str] = None
     monitors: Optional[list["AudioMonitor"]] = None
 
-    while not stop_flag.is_set():
+    while not runtime.stop_flag.is_set():
         if unconfigured(config_path):
             if start_webui is None:
                 logging.error("Configuration is incomplete; cannot start without a valid INI.")
@@ -5483,10 +5364,10 @@ def _await_startup(
                 "Configuration is incomplete or has an invalid device format; "
                 "starting in setup mode and waiting for Web UI changes.",
             )
-            while not stop_flag.is_set() and unconfigured(config_path):
+            while not runtime.stop_flag.is_set() and unconfigured(config_path):
                 _check_webui_thread(webui_thread)
                 time.sleep(1.0)
-            if stop_flag.is_set():
+            if runtime.stop_flag.is_set():
                 return _StartupResult(monitors=None, cfg=cfg, fifo_path=fifo_path, abort=True)
             cfg = settings.snapshot()
             continue
@@ -5636,7 +5517,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
     )
 
     # Outer loop: runs once normally; repeats after a config reload.
-    while not stop_flag.is_set():
+    while not runtime.stop_flag.is_set():
         client = MonitorClient(socket_path)
 
         # ── Startup / configuration phase ────────────────────────────────────
@@ -5647,7 +5528,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         if startup.abort:
             return
 
-        if stop_flag.is_set() or monitors is None:
+        if runtime.stop_flag.is_set() or monitors is None:
             client.close()
             break
 
@@ -5681,7 +5562,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         # connection: covers both the connect() retry and the get_status()
         # failure path below, since either one leaving the loop unable to
         # reach the daemon is the same observable outage to an operator.
-        monitor_daemon_recovery_log = _RecoveryLog("autostream_monitor connection")
+        monitor_daemon_recovery_log = runtime.RecoveryLog("autostream_monitor connection")
         # OwnTone-restart reconcile: same fresh-per-(re)start /
         # .reset()-on-reconnect lifecycle as session_tracker above -- a
         # stale pre-reload/pre-reconnect zero-selected-outputs streak must
@@ -5705,14 +5586,14 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         interval_table.register("stats_flush", DEFAULT_FLUSH_INTERVAL_SECONDS, _flush_stats)
 
         try:
-            while not stop_flag.is_set():
+            while not runtime.stop_flag.is_set():
 
                 # ── Web UI health check ───────────────────────────────────────
                 _check_webui_thread(webui_thread)
 
                 # ── Config reload requested by Web UI ────────────────────────
-                if reload_flag.is_set():
-                    reload_flag.clear()
+                if runtime.reload_flag.is_set():
+                    runtime.reload_flag.clear()
                     _reloading = True
                     logging.info("Config reload requested; tearing down monitors.")
                     break

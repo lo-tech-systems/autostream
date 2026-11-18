@@ -367,7 +367,7 @@ class AlignRun:
 
     @staticmethod
     def _get_task_pool():
-        from autostream_core import get_task_pool
+        from autostream_runtime import get_task_pool
         return get_task_pool()
 
     def _input_actively_streaming(self) -> bool:

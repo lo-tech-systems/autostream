@@ -142,7 +142,7 @@ class TestStartWebuiBackground:
 
         with (
             patch("autostream_webui.AuthManager"),
-            patch("autostream_webui.stop_flag") as sf,
+            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_dials.start_dial_scanner"),
             patch("autostream_appliances.reconcile_appliance_announcement"),
             patch("autostream_appliances.start_appliance_scanner"),
@@ -181,7 +181,7 @@ class TestStartWebuiBackground:
 
         with (
             patch("autostream_webui.AuthManager"),
-            patch("autostream_webui.stop_flag") as sf,
+            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_dials.start_dial_scanner"),
             patch("autostream_appliances.reconcile_appliance_announcement"),
             patch("autostream_appliances.start_appliance_scanner"),
@@ -219,7 +219,7 @@ class TestStartWebuiBackground:
 
         with (
             patch("autostream_webui.AuthManager"),
-            patch("autostream_webui.stop_flag") as sf,
+            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_dials.start_dial_scanner"),
             patch("autostream_appliances.reconcile_appliance_announcement"),
             patch("autostream_appliances.start_appliance_scanner"),
@@ -271,7 +271,7 @@ class TestRunAutostreamFinalSave:
             return _call_count[0] > 1
 
         with (
-            patch("autostream_core.stop_flag") as sf,
+            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_core.unconfigured", return_value=False),
             patch("autostream_core.MonitorClient") as mc,
             patch("autostream_core._install_signal_handlers"),
@@ -311,7 +311,7 @@ class TestRunAutostreamFinalSave:
             return _call_count[0] > 1
 
         with (
-            patch("autostream_core.stop_flag") as sf,
+            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_core.unconfigured", return_value=False),
             patch("autostream_core.MonitorClient") as mc,
             patch("autostream_core._install_signal_handlers"),
@@ -369,7 +369,7 @@ class TestRunAutostreamStartupFormatReconcile:
         mock_client.get_status.return_value = get_status_return
 
         with (
-            patch("autostream_core.stop_flag") as sf,
+            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_core.unconfigured", return_value=False),
             patch("autostream_core.MonitorClient", return_value=mock_client),
             patch("autostream_core._install_signal_handlers"),
@@ -453,7 +453,7 @@ class TestRunAutostreamStartupMonitorFormatReconcile:
         manager = MagicMock()
 
         with (
-            patch("autostream_core.stop_flag") as sf,
+            patch("autostream_runtime.stop_flag") as sf,
             patch("autostream_core.unconfigured", return_value=False),
             patch("autostream_core.MonitorClient", return_value=mock_client),
             patch("autostream_core._install_signal_handlers"),

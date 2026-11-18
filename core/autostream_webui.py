@@ -45,8 +45,8 @@ if __name__ == "__main__":
 from autostream_core import (
     get_available_monitor_devices,
     run_autostream,
-    stop_flag,
 )
+import autostream_runtime as runtime
 
 from autostream_bluetooth_client import BluetoothClient, bluetooth_installed
 
@@ -1502,7 +1502,7 @@ def _rate_follow_check(state, bluetooth_status: Optional[dict],
         and rate != last_cable_rate
         and _bluetooth_input_configured(state)
     ):
-        from autostream_core import request_config_reload
+        from autostream_runtime import request_config_reload
         logging.info(
             "Bluetooth transport rate changed %d Hz -> %d Hz; "
             "reloading monitor inputs to renegotiate the loopback.",
@@ -1541,7 +1541,7 @@ def _lockout_heal_check(state, bluetooth_status: Optional[dict],
         and cooldown_elapsed
         and _bluetooth_input_configured(state)
     ):
-        from autostream_core import request_config_reload
+        from autostream_runtime import request_config_reload
         logging.info(
             "Bluetooth loopback held at incompatible parameters with a "
             "Bluetooth input configured; reloading monitor inputs to "
@@ -1563,7 +1563,7 @@ def _scan_monitor_devices_loop() -> None:
     last_cable_rate: Optional[int] = None
     lockout_streak = 0
     last_heal_reload: Optional[float] = None
-    while not stop_flag.is_set():
+    while not runtime.stop_flag.is_set():
         bluetooth_status: Optional[dict] = None
         if bluetooth_installed():
             try:
@@ -1643,9 +1643,9 @@ def start_webui_background(
         from autostream_appliances import reconcile_appliance_announcement
         from autostream_federation import sweep_sessions
         from autostream_webui_common import _config_snapshot, get_app_version
-        while not stop_flag.is_set():
-            stop_flag.wait(60)
-            if stop_flag.is_set():
+        while not runtime.stop_flag.is_set():
+            runtime.stop_flag.wait(60)
+            if runtime.stop_flag.is_set():
                 break
             try:
                 sweep_sessions()
@@ -1674,10 +1674,9 @@ def start_webui_background(
             from autostream_webui_common import _config_snapshot, get_app_version
             from autostream_webui_api import apply_mdns_grace_period_startup
 
-            from autostream_core import stop_flag as _stop_flag
-            start_dial_scanner(shutdown_event=_stop_flag)
-            start_dial_warnings_watcher(shutdown_event=_stop_flag)
-            start_appliance_scanner(shutdown_event=_stop_flag)
+            start_dial_scanner(shutdown_event=runtime.stop_flag)
+            start_dial_warnings_watcher(shutdown_event=runtime.stop_flag)
+            start_appliance_scanner(shutdown_event=runtime.stop_flag)
             apply_mdns_grace_period_startup(STATE)
 
             scanner_thread = threading.Thread(

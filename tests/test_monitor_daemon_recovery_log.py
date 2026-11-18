@@ -29,6 +29,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_core as core
+import autostream_runtime as runtime
 
 
 def _minimal_cfg(tmp_path: Path) -> Path:
@@ -75,12 +76,12 @@ def _run_autostream_with_get_status_sequence(tmp_path, get_status_results, is_se
     mock_session_tracker_cls.return_value.update.return_value = (None, None, None, None)
 
     with contextlib.ExitStack() as stack:
-        sf = stack.enter_context(patch.object(core, "stop_flag"))
+        sf = stack.enter_context(patch.object(runtime, "stop_flag"))
         # reload_flag is a module-level Event that other tests may leave set;
         # a set flag would make the poll loop break into a config reload on
         # its first iteration instead of consuming the scripted get_status
         # sequence. Replace it so this harness is order-independent.
-        rf = stack.enter_context(patch.object(core, "reload_flag"))
+        rf = stack.enter_context(patch.object(runtime, "reload_flag"))
         rf.is_set.return_value = False
         stack.enter_context(patch.object(core, "unconfigured", return_value=False))
         stack.enter_context(patch.object(core, "MonitorClient", return_value=mock_client))

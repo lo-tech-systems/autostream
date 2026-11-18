@@ -51,6 +51,7 @@ from autostream_core import (
     set_user_silence_latch,
     user_silence_latch_active,
 )
+import autostream_runtime as runtime
 
 
 BASE_URL = "http://localhost:3689"
@@ -826,7 +827,7 @@ class TestMaybeRunOwntoneHangWatchdogWiring:
         fake_result = MagicMock(returncode=0, stderr="")
         with patch("autostream_core.list_outputs") as mock_list, \
              patch("autostream_core.run_admin_cmd", return_value=fake_result) as mock_admin, \
-             patch.object(core._task_pool, "submit") as mock_submit:
+             patch.object(runtime._task_pool, "submit") as mock_submit:
             mock_list.return_value = SimpleNamespace(ok=True)
             # Run the submitted worker function synchronously instead of on
             # the task pool's real background thread, so the assertion below
@@ -890,7 +891,7 @@ class TestSelfHealComposition:
         stalled_status = {"fifo": {"stalled_seconds": watchdog.STALL_THRESHOLD_SECONDS + 5}}
         with patch("autostream_core.list_outputs", return_value=SimpleNamespace(ok=True)), \
              patch("autostream_core.run_admin_cmd", side_effect=_fake_run_admin_cmd), \
-             patch.object(core._task_pool, "submit") as mock_submit:
+             patch.object(runtime._task_pool, "submit") as mock_submit:
             def _run_now(key, fn, *args, **kwargs):
                 fn(*args, **kwargs)
                 return True
@@ -944,13 +945,13 @@ class TestSelfHealComposition:
 
 class TestRecoveryLogPure:
     def test_no_warning_when_never_failed(self, caplog):
-        log = core._RecoveryLog("thing")
+        log = runtime.RecoveryLog("thing")
         with caplog.at_level("WARNING", logger="root"):
             log.ok(100.0)
         assert caplog.records == []
 
     def test_single_fail_then_ok_emits_one_warning(self, caplog):
-        log = core._RecoveryLog("thing")
+        log = runtime.RecoveryLog("thing")
         log.fail(100.0)
         with caplog.at_level("WARNING", logger="root"):
             log.ok(105.0)
@@ -959,7 +960,7 @@ class TestRecoveryLogPure:
         assert "thing recovered after 1 failure(s) (down for 5s)" in msg
 
     def test_repeated_fail_then_ok_counts_all_failures_since_first(self, caplog):
-        log = core._RecoveryLog("thing")
+        log = runtime.RecoveryLog("thing")
         log.fail(100.0)
         log.fail(101.0)
         log.fail(102.0)
@@ -970,14 +971,14 @@ class TestRecoveryLogPure:
         assert "recovered after 3 failure(s) (down for 10s)" in msg
 
     def test_ok_without_prior_fail_is_silent_and_resets(self, caplog):
-        log = core._RecoveryLog("thing")
+        log = runtime.RecoveryLog("thing")
         with caplog.at_level("WARNING", logger="root"):
             log.ok(100.0)
             log.ok(101.0)
         assert caplog.records == []
 
     def test_ok_resets_state_so_next_fail_ok_pair_is_independent(self, caplog):
-        log = core._RecoveryLog("thing")
+        log = runtime.RecoveryLog("thing")
         log.fail(100.0)
         with caplog.at_level("WARNING", logger="root"):
             log.ok(101.0)
@@ -993,7 +994,7 @@ class TestRecoveryLogPure:
         assert "recovered after 1 failure(s) (down for 2s)" in caplog.records[0].getMessage()
 
     def test_consecutive_oks_after_recovery_stay_silent(self, caplog):
-        log = core._RecoveryLog("thing")
+        log = runtime.RecoveryLog("thing")
         log.fail(100.0)
         with caplog.at_level("WARNING", logger="root"):
             log.ok(101.0)

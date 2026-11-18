@@ -34,7 +34,6 @@ from autostream_config import (
 )
 from autostream_core import (
     apply_track_id_config_live,
-    request_config_reload,
     set_live_input_eq,
     set_live_input_gain,
     update_live_owntone_runtime,
@@ -42,6 +41,7 @@ from autostream_core import (
     update_playback_input_config,
 )
 from autostream_player_service import config_airplay_mode_to_backend
+from autostream_runtime import request_config_reload
 from autostream_settings_schema import SETTINGS_SCHEMA, CrossFieldValidationError
 from autostream_sysutils import factory_reset_system, get_system_hostname, run_admin_cmd, set_system_hostname
 

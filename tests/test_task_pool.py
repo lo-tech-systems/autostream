@@ -18,6 +18,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_core as core
+import autostream_runtime as runtime
 
 
 def _wait_until(predicate, timeout=2.0, interval=0.01):
@@ -30,7 +31,7 @@ def _wait_until(predicate, timeout=2.0, interval=0.01):
 
 
 def test_submit_runs_the_task():
-    pool = core.TaskPool(max_workers=2)
+    pool = runtime.TaskPool(max_workers=2)
     done = threading.Event()
     result = {}
 
@@ -46,7 +47,7 @@ def test_submit_runs_the_task():
 
 
 def test_submit_passes_args_and_kwargs():
-    pool = core.TaskPool(max_workers=2)
+    pool = runtime.TaskPool(max_workers=2)
     done = threading.Event()
     captured = {}
 
@@ -61,7 +62,7 @@ def test_submit_passes_args_and_kwargs():
 
 
 def test_duplicate_key_while_inflight_is_rejected():
-    pool = core.TaskPool(max_workers=2)
+    pool = runtime.TaskPool(max_workers=2)
     release = threading.Event()
     started = threading.Event()
 
@@ -81,7 +82,7 @@ def test_duplicate_key_while_inflight_is_rejected():
 
 
 def test_key_becomes_available_again_after_task_completes():
-    pool = core.TaskPool(max_workers=2)
+    pool = runtime.TaskPool(max_workers=2)
     done = threading.Event()
 
     pool.submit("k1", lambda: done.set())
@@ -99,7 +100,7 @@ def test_key_becomes_available_again_after_task_completes():
 
 
 def test_different_keys_run_concurrently():
-    pool = core.TaskPool(max_workers=2)
+    pool = runtime.TaskPool(max_workers=2)
     both_started = threading.Event()
     starts = []
     release = threading.Event()
@@ -120,7 +121,7 @@ def test_different_keys_run_concurrently():
 
 
 def test_is_inflight_reflects_running_task():
-    pool = core.TaskPool(max_workers=2)
+    pool = runtime.TaskPool(max_workers=2)
     release = threading.Event()
     started = threading.Event()
 
@@ -138,7 +139,7 @@ def test_is_inflight_reflects_running_task():
 
 
 def test_exception_in_task_does_not_break_the_pool():
-    pool = core.TaskPool(max_workers=2)
+    pool = runtime.TaskPool(max_workers=2)
     done = threading.Event()
 
     def raises():
@@ -154,4 +155,4 @@ def test_exception_in_task_does_not_break_the_pool():
 
 
 def test_process_wide_task_pool_singleton_exists():
-    assert isinstance(core._task_pool, core.TaskPool)
+    assert isinstance(runtime._task_pool, runtime.TaskPool)

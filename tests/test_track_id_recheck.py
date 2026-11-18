@@ -41,6 +41,7 @@ from track_id.models import (
 )
 
 from test_track_id_core import _active_monitor, _make_client, _make_service
+import autostream_runtime as runtime
 
 
 ART_URL = "https://art.example/kind-of-blue.jpg"
@@ -88,7 +89,7 @@ class _Rig:
         monkeypatch.setattr(core, "all_monitors", [mon])
         monkeypatch.setattr(core, "get_session_state", lambda: {})
         monkeypatch.setattr(
-            core._task_pool, "submit",
+            runtime._task_pool, "submit",
             lambda key, fn, *args, **kwargs: self.pending.append((fn, args)) or True,
         )
 

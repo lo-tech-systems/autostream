@@ -19,14 +19,15 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_core as core_mod  # noqa: E402
-import autostream_webui as webui_mod  # noqa: E402
+import autostream_webui as webui_mod
+import autostream_runtime as runtime  # noqa: E402
 
 STATE_SENTINEL = object()
 
 
 def _patch(monkeypatch, configured: bool):
     calls = []
-    monkeypatch.setattr(core_mod, "request_config_reload", lambda: calls.append(1))
+    monkeypatch.setattr(runtime, "request_config_reload", lambda: calls.append(1))
     monkeypatch.setattr(
         webui_mod, "_bluetooth_input_configured", lambda state: configured,
     )

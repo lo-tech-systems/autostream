@@ -34,7 +34,8 @@ from autostream_commissioning import (
     is_technically_complete,
     mark_commissioning_complete,
 )
-from autostream_core import request_config_reload, update_playback_input_config
+from autostream_core import update_playback_input_config
+from autostream_runtime import request_config_reload
 from autostream_player_service import list_outputs, output_supported_config_modes
 from autostream_sysutils import get_system_hostname, set_system_hostname
 from autostream_webui_api import send_json

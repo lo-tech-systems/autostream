@@ -930,7 +930,7 @@ class TestRepeatAndLoopCallSites:
         assert ('ChangeWatch("track", lambda: track_digest('
                 'get_active_track_identification_snapshot()))' in src)
         assert (src.index("dial_hint_watches = (")
-                < src.index("\n    while not stop_flag.is_set():"))
+                < src.index("\n    while not runtime.stop_flag.is_set():"))
 
     def test_the_loops_digests_read_the_cached_state(self):
         import autostream_core as core

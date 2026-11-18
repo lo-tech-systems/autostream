@@ -25,6 +25,7 @@ if _core not in sys.path:
 
 import autostream_core as _core_mod
 from autostream_core import _check_webui_thread
+import autostream_runtime as runtime
 
 
 # ---------------------------------------------------------------------------
@@ -81,8 +82,8 @@ class TestCoordinatorExceptionHandler:
         tracker.save = MagicMock(side_effect=lambda: cleanup_calls.append("saved"))
 
         # Patch just enough to reach the coordinator and then fail.
-        with patch.object(_core_mod, "stop_flag") as mock_flag, \
-             patch.object(_core_mod, "reload_flag") as mock_reload, \
+        with patch.object(runtime, "stop_flag") as mock_flag, \
+             patch.object(runtime, "reload_flag") as mock_reload, \
              patch.object(_core_mod, "_playback_tracker", tracker), \
              patch.object(_core_mod, "all_monitors", {}), \
              patch.object(_core_mod, "_monitors_lock", threading.Lock()):
@@ -226,7 +227,7 @@ class TestScannerWrappers:
         mock_stop.assert_called_once()
 
     def test_webui_passes_stop_flag_to_both_scanners(self, tmp_path):
-        """start_webui_background() passes autostream_core.stop_flag to both scanner starts."""
+        """start_webui_background() passes autostream_runtime.stop_flag to both scanner starts."""
         cfg_path = tmp_path / "autostream.json"
         cfg_path.write_text('{"general":{}}')
         try:
@@ -266,11 +267,11 @@ class TestScannerWrappers:
 
         import autostream_core as _core
         assert "dial_event" in captured, "start_dial_scanner was not called"
-        assert captured["dial_event"] is _core.stop_flag, (
+        assert captured["dial_event"] is runtime.stop_flag, (
             "start_dial_scanner must receive stop_flag as shutdown_event"
         )
         assert "appliance_event" in captured, "start_appliance_scanner was not called"
-        assert captured["appliance_event"] is _core.stop_flag, (
+        assert captured["appliance_event"] is runtime.stop_flag, (
             "start_appliance_scanner must receive stop_flag as shutdown_event"
         )
 
@@ -328,7 +329,7 @@ class TestOutputUsageStartup:
         settings.save_now.return_value = True
 
         calls = []
-        with patch.object(_core_mod, "stop_flag") as mock_flag, \
+        with patch.object(runtime, "stop_flag") as mock_flag, \
              patch.object(_core_mod, "_install_signal_handlers"), \
              patch.object(_core_mod, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level"), \
@@ -368,7 +369,7 @@ class TestStartupWifiWatcherForwarding:
         settings.snapshot.return_value = cfg
         settings.save_now.return_value = True
 
-        with patch.object(_core_mod, "stop_flag") as mock_flag, \
+        with patch.object(runtime, "stop_flag") as mock_flag, \
              patch.object(_core_mod, "_install_signal_handlers"), \
              patch.object(_core_mod, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level") as m_apply, \
@@ -402,7 +403,7 @@ class TestStartupWifiWatcherForwarding:
         settings.snapshot.return_value = cfg
         settings.save_now.return_value = True
 
-        with patch.object(_core_mod, "stop_flag") as mock_flag, \
+        with patch.object(runtime, "stop_flag") as mock_flag, \
              patch.object(_core_mod, "_install_signal_handlers"), \
              patch.object(_core_mod, "setup_logging"), \
              patch("autostream_log_policy.apply_startup_log_level",

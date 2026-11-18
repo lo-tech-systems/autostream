@@ -1,0 +1,8 @@
+# Names that moved from the coordinator and the Web UI into autostream_runtime.
+autostream_core.stop_flag -> autostream_runtime.stop_flag  alias=runtime
+autostream_webui.stop_flag -> autostream_runtime.stop_flag  alias=runtime
+autostream_core.reload_flag -> autostream_runtime.reload_flag  alias=runtime
+autostream_core.request_config_reload -> autostream_runtime.request_config_reload  alias=runtime
+autostream_core.TaskPool -> autostream_runtime.TaskPool  alias=runtime
+autostream_core._task_pool -> autostream_runtime._task_pool  alias=runtime
+autostream_core._RecoveryLog -> autostream_runtime.RecoveryLog  alias=runtime

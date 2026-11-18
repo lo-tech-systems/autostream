@@ -102,6 +102,7 @@ from autostream_dials import (
     dial_speaks_v2,
 )
 from autostream_dial_push import notify_state_changed
+from autostream_runtime import request_config_reload
 from autostream_dial_warnings import current_warnings, poke as poke_dial_warnings, warnings_payload
 from autostream_core import (
     any_monitor_capturing,
@@ -114,7 +115,6 @@ from autostream_core import (
     get_repeat_status,
     get_session_state,
     input_rate_texts,
-    request_config_reload,
     sample_rate_warning_text,
     reset_input_belt,
     reset_input_bearing,

@@ -37,6 +37,7 @@ from track_id.models import (
     disabled_snapshot,
     waiting_snapshot,
 )
+import autostream_runtime as runtime
 
 
 # ---------------------------------------------------------------------------
@@ -318,7 +319,7 @@ class TestDispatchScheduling:
             return True
 
         mon._ti_next_attempt = 1.0  # past deadline → trigger immediately
-        with patch.object(core._task_pool, "submit", fake_submit):
+        with patch.object(runtime._task_pool, "submit", fake_submit):
             mon.maybe_trigger_track_identification(client, time.time())
 
         assert mon._ti_snapshot.state == STATE_ANALYSING
@@ -461,7 +462,7 @@ class TestDispatchScheduling:
         mon._apply_track_id_service(svc)
         mon._ti_next_attempt = 1.0
 
-        with patch.object(core._task_pool, "submit", side_effect=RuntimeError("pool full")):
+        with patch.object(runtime._task_pool, "submit", side_effect=RuntimeError("pool full")):
             mon.maybe_trigger_track_identification(client, time.time())
 
         # Gate must be released and inflight cleared despite the exception.
@@ -503,7 +504,7 @@ class TestDispatchScheduling:
         mon._ti_next_attempt = 1.0
 
         # Suppress the actual worker so maybe_trigger completes synchronously.
-        with patch.object(core._task_pool, "submit", return_value=True):
+        with patch.object(runtime._task_pool, "submit", return_value=True):
             mon.maybe_trigger_track_identification(_make_client(), time.time())
 
         # Release the gate the dispatch acquired (no real worker to release it).
