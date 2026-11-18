@@ -2206,7 +2206,7 @@ if __name__ == "__main__":
 
     # Check CPU (gated: dial sets APP_CHECK_CPU=no; autostream defaults to yes)
     if os.environ.get('APP_CHECK_CPU', 'yes') == 'yes':
-        from autostream_rpi import check_cpu
+        from autostream_licensing import check_cpu
         check_cpu()
 
     # Migrate legacy /opt/autostream/ssid into /etc/autostream-network.json when

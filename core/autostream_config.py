@@ -121,7 +121,7 @@ def normalize_audio_path(value: object, *, high_perf: bool) -> str:
 
     Invalid/unrecognised input clamps to "balanced". "max" additionally
     demotes to "balanced" when *high_perf* is False -- BEST-tier monitor SRC
-    is unaffordable on A53-class hardware (see autostream_rpi.
+    is unaffordable on A53-class hardware (see autostream_system_stats.
     is_high_performance_pi()). Pure: callers supply the hardware
     classification rather than this function probing it, so every consumer
     (monitor-args composition, owntone resample-quality push, webui render)
@@ -810,7 +810,7 @@ def parse_config(
     kept optional and keyword-only rather than threaded through every
     existing caller (SettingsStore.snapshot(), load_and_parse(), the many
     direct parse_config(data) call sites in tests): when omitted, it is
-    computed lazily via autostream_rpi.is_high_performance_pi() (a cheap,
+    computed lazily via autostream_system_stats.is_high_performance_pi() (a cheap,
     already-uncached device-tree read, same idiom as get_raspberry_pi_model()
     itself). Tests and any caller that already knows the hardware class may
     pass it explicitly to avoid the extra read or to force a hardware class.
@@ -819,7 +819,7 @@ def parse_config(
         state = {}
 
     if high_perf is None:
-        from autostream_rpi import is_high_performance_pi as _is_high_performance_pi
+        from autostream_system_stats import is_high_performance_pi as _is_high_performance_pi
         high_perf = _is_high_performance_pi()
 
     general_d = data.get("general") or {}

@@ -197,7 +197,7 @@ class TestStageCodeTree:
             if p.is_file() and p.name != "MANIFEST"
         )
         assert paths == on_disk
-        for expected in ("dial_main.py", "autostream_rpi.py", "wifi_loop.py",
+        for expected in ("dial_main.py", "autostream_system_stats.py", "wifi_loop.py",
                          "autostream_dial_control.py", "autostream_wifi_watcher",
                          "autostream_protocol.py", "autostream_peer_http.py",
                          "autostream_peer_registry.py", "autostream_peer_client.py",
@@ -216,7 +216,7 @@ class TestStageCodeTree:
         modes = {ln.split("\t")[2]: ln.split("\t")[0]
                  for ln in (nxt / "MANIFEST").read_text(encoding="utf-8").splitlines()}
         assert modes["autostream_wifi_watcher"] == "0755"
-        assert modes["autostream_rpi.py"] == "0644"
+        assert modes["autostream_system_stats.py"] == "0644"
 
     def test_nothing_live_is_touched_and_old_staging_is_discarded(self, env):
         live = env.put("opt/autostream/dial_main.py", "live version")

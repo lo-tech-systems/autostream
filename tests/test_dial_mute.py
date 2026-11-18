@@ -246,9 +246,9 @@ class TestDialMainButtonCallback:
              patch("dial_main.start_volume_worker"), \
              patch("dial_main.get_playing_targets", return_value=[]), \
              patch("dial_core.enqueue_mute", side_effect=fake_enqueue_mute), \
-             patch("autostream_rpi.setup_rotary_encoder", return_value=MagicMock(),
+             patch("autostream_dial_gpio.setup_rotary_encoder", return_value=MagicMock(),
                    create=True), \
-             patch("autostream_rpi.setup_button", side_effect=fake_setup_button,
+             patch("autostream_dial_gpio.setup_button", side_effect=fake_setup_button,
                    create=True):
             # We can't run main() to completion, so test the sub-section directly:
             # The button callback must call enqueue_mute

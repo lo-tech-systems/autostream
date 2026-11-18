@@ -191,7 +191,7 @@ def render_home(
         for p in (
             patch("webui.common._config_snapshot",
                   return_value=_parsed_config(show_input_detail, show_master_volume, control_other)),
-            patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
+            patch("autostream_appliance_identity.get_appliance_id", return_value="0" * 20),
             patch("webui.browser.home.get_system_hostname", return_value="autostream"),
             patch("webui.browser.home.state_for_page", return_value=state_body()),
             patch("webui.browser.home.get_setting", return_value=MagicMock(ok=True, value="2250")),

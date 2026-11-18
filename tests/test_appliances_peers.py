@@ -97,7 +97,7 @@ class FakeRegistry:
 @pytest.fixture
 def rig(monkeypatch):
     monkeypatch.setattr(pc, "BACKOFF_STEPS", (0.05, 0.1))
-    monkeypatch.setattr("autostream_rpi.get_appliance_id", lambda: LOCAL)
+    monkeypatch.setattr("autostream_appliance_identity.get_appliance_id", lambda: LOCAL)
     made = []
 
     def factory(**kw):
@@ -333,7 +333,7 @@ class TestResolve:
 
 class TestStart:
     def test_nothing_starts_without_an_appliance_id(self, monkeypatch):
-        monkeypatch.setattr("autostream_rpi.get_appliance_id", lambda: None)
+        monkeypatch.setattr("autostream_appliance_identity.get_appliance_id", lambda: None)
         made = []
         monkeypatch.setattr(appliances, "PeerRegistry", lambda **kw: made.append(kw))
         appliances.start(runtime.Lifecycle(threading.Event()), None)

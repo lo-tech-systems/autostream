@@ -4,11 +4,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 CPU-locked licensing: records the CPU serial expected for this install
 (``CPU_INFO``) and checks the running device's CPU serial against it.
-
-Split out of ``core/autostream_rpi.py``, which re-exports these names for
-existing importers. A standalone product concept with no natural home in
-another domain module -- named plainly here rather than folded into one.
-Pure code motion -- no logic changed from the original module.
 """
 
 from __future__ import annotations

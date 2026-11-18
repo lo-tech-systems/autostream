@@ -81,7 +81,7 @@ from autostream_players import (
     SETTING_UNCOMPRESSED_ALAC,
     SETTING_USER_AGENT,
 )
-from autostream_rpi import is_high_performance_pi
+from autostream_system_stats import is_high_performance_pi
 from autostream_settings import SettingsStore, writable_store
 from autostream_settings_schema import (
     CrossFieldValidationError,

@@ -6,14 +6,6 @@ Raspberry Pi PSU/CPU/system fact readers: PSU undervoltage warning text,
 CPU temperature, CPU busy percentage, the Pi model string, the CPU
 serial number, and the audio-path SRC-tier hardware classification built
 on that model string.
-
-Split out of ``core/autostream_rpi.py``, which re-exports these names for
-existing importers. This is one of four unrelated concerns the original
-module mixed together -- appliance identity derivation
-(``autostream_appliance_identity.py``), CPU licensing
-(``autostream_licensing.py``), and dial GPIO helpers
-(``autostream_dial_gpio.py``) are the other three. Pure code motion -- no
-logic changed from the original module.
 """
 
 from __future__ import annotations

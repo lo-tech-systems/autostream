@@ -1706,17 +1706,16 @@ install_code_tree() {
     local -a own=()
     [[ "${EUID:-$(id -u)}" -eq 0 ]] && own=(-o root -g root)
     mkdir -p "${dest}"
-    # autostream_rpi.py is a re-export shim over the four modules its concerns
-    # were split into; it imports all four at import time, so a dial-only
-    # install must deploy them alongside it or dial_main's
-    # setup_rotary_encoder/setup_button import (and wifi_watcher's check_cpu
-    # import) fails at startup. dial_display imports the shared artwork fetch
+    # A dial-only install must deploy the system-stats, identity, licensing
+    # and GPIO modules or dial_main's setup_rotary_encoder/setup_button import
+    # (and wifi_watcher's check_cpu import) fails at startup. dial_display
+    # imports the shared artwork fetch
     # from autostream_artwork; without it the dial cannot start. The Wi-Fi
     # recovery helper is deployed alongside the watcher so the recovery
     # executable's import resolves on every install/update. The dial reads
     # and controls the appliances through the peer library (protocol, HTTP,
     # registry and client) and maps EQ bands with autostream_eq_bands.
-    for name in autostream_rpi autostream_system_stats autostream_appliance_identity \
+    for name in autostream_system_stats autostream_appliance_identity \
                 autostream_licensing autostream_dial_gpio autostream_sysutils \
                 autostream_mdns autostream_artwork autostream_wifi_network \
                 autostream_logging autostream_protocol autostream_peer_http \

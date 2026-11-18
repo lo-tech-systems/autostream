@@ -378,7 +378,7 @@ SHIPPED_ENTRIES: dict[str, str] = {
         "autostream_owntone_mini.py", "autostream_peer_client.py", "autostream_peer_http.py",
         "autostream_peer_registry.py", "autostream_pin_pairing.py",
         "autostream_playback_stats.py", "autostream_player_service.py",
-        "autostream_players.py", "autostream_rpi.py", "autostream_runtime_state.py",
+        "autostream_players.py", "autostream_runtime_state.py",
         "autostream_settings.py", "autostream_settings_schema.py",
         "autostream_start_buffer_cache.py", "autostream_system_stats.py",
         "autostream_sysutils.py", "autostream_webui.py", "autostream_webui_api.py",
@@ -399,8 +399,8 @@ SHIPPED_ENTRIES: dict[str, str] = {
 
 
 class TestShippedNames:
-    def test_the_recorded_list_has_sixty_one_modules(self):
-        assert sum(1 for n in SHIPPED_ENTRIES if n.endswith(".py")) == 61
+    def test_the_recorded_list_has_sixty_modules(self):
+        assert sum(1 for n in SHIPPED_ENTRIES if n.endswith(".py")) == 60
 
     @pytest.mark.parametrize("name,kind", sorted(SHIPPED_ENTRIES.items()))
     def test_no_current_entry_reuses_a_shipped_name_as_the_other_kind(self, name, kind):

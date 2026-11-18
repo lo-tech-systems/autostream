@@ -83,11 +83,11 @@ class TestParseConfigAudioPath:
 
     def test_high_perf_none_computed_lazily(self):
         data = {"general": {"audio_path": "max"}}
-        with patch("autostream_rpi.is_high_performance_pi", return_value=False):
+        with patch("autostream_system_stats.is_high_performance_pi", return_value=False):
             result = cfgmod.parse_config(data)
         assert result.general.audio_path == "balanced"
 
-        with patch("autostream_rpi.is_high_performance_pi", return_value=True):
+        with patch("autostream_system_stats.is_high_performance_pi", return_value=True):
             result = cfgmod.parse_config(data)
         assert result.general.audio_path == "max"
 

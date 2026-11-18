@@ -216,7 +216,7 @@ class TestStaticSystemFactsAudit:
                 "version_codename": "trixie",
              }), \
              patch.object(su, "get_nginx_version", return_value="nginx/1.22.1"), \
-             patch("autostream_rpi.get_raspberry_pi_model",
+             patch("autostream_system_stats.get_raspberry_pi_model",
                    return_value="Raspberry Pi 4 Model B Rev 1.5"), \
              patch.object(su.logger, "info") as m_info:
             facts = su.audit_static_system_facts()

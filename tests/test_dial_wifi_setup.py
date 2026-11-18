@@ -79,7 +79,7 @@ def _load_wifi_watcher(env_overrides: dict | None = None) -> types.ModuleType:
         with patch.dict("sys.modules", {
             "flask": stub_flask,
             "autostream_sysutils": stub_sysutils,
-            "autostream_rpi": MagicMock(),
+            "autostream_licensing": MagicMock(),
         }):
             mod.__spec__ = spec
             exec(compile(source, str(WIFI_WATCHER_PATH), "exec"), mod.__dict__)  # noqa: S102

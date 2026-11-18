@@ -16,7 +16,7 @@ from typing import Optional
 from autostream_appliances import resolve
 from autostream_state.live import get_setting
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
-import autostream_rpi as rpi
+import autostream_appliance_identity as identity
 from autostream_sysutils import get_system_hostname, reboot_system
 from webui.components import slider_html
 from webui.protocol.state import state_for_page
@@ -167,7 +167,7 @@ def send_airplay_page(
         lic_html, lic_spacer = build_top_banner_html(entries=(snap.parts.get("warnings") or {}).get("entries") or [])
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     preset_volume = max(0, min(100, int(parsed.owntone.volume_percent or 20)))
-    _local_id = str(rpi.get_appliance_id() or "")
+    _local_id = str(identity.get_appliance_id() or "")
     _selector = appliance_selector_entries(_local_id, get_system_hostname())
     if peer is not None:
         _top_right_html = build_appliance_selector_html(_selector, peer.sighting.id, "home")
@@ -313,7 +313,7 @@ def _route_get_remote_page(handler, state):
     if not _APPLIANCE_ID_RE.match(aid):
         handler.send_error(404, "Not found")
         return
-    local_id = rpi.get_appliance_id() or ""
+    local_id = identity.get_appliance_id() or ""
     if aid == local_id:
         # Canonical redirect for bound appliance
         _redirect(handler, "/equaliser" if sub == "equaliser" else "/")

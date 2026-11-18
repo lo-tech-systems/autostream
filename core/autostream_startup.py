@@ -34,7 +34,7 @@ from autostream_player_service import (
     reconcile_pipe_format_with_backend,
     sync_monitor_args_for_audio_path,
 )
-from autostream_rpi import is_high_performance_pi
+from autostream_system_stats import is_high_performance_pi
 
 
 def handle_signal(signum, frame):

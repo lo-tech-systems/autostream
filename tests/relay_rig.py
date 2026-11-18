@@ -52,7 +52,7 @@ class RelayRig:
                             lambda state: self.control)
         monkeypatch.setattr(relay, "resolve", self._resolve)
         monkeypatch.setattr(home_page, "resolve", self._resolve)
-        monkeypatch.setattr(relay.rpi, "get_appliance_id", lambda: OWN_ID)
+        monkeypatch.setattr(relay.identity, "get_appliance_id", lambda: OWN_ID)
 
     def _resolve(self, appliance_id: str):
         if appliance_id != PEER_ID:

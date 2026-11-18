@@ -215,7 +215,7 @@ class TestRemotePageGuard:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False):
             handler.do_GET()
         codes = [c for (c,) in [handler.send_response.call_args_list[i][0]
@@ -228,7 +228,7 @@ class TestRemotePageGuard:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("webui.browser.home.send_airplay_page") as stub:
             handler.do_GET()
@@ -242,7 +242,7 @@ class TestRemotePageGuard:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=True), \
              patch("webui.browser.home.resolve", return_value=peer), \
              patch("webui.browser.home.send_airplay_page") as stub:
@@ -256,7 +256,7 @@ class TestRemotePageGuard:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False), \
              patch("webui.browser.equaliser.send_equaliser_page") as stub:
             handler.do_GET()
@@ -272,7 +272,7 @@ class TestRemotePageGuard:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=False):
             handler.do_GET()
         # Should get a redirect (302 to /) regardless of the guard
@@ -325,7 +325,7 @@ class TestLocalHomeControlFlag:
         parsed.webui.hidden_outputs = []
         parsed.webui.dark_mode = False
 
-        with patch("webui.common._config_snapshot", return_value=parsed),              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),              patch("webui.browser.home.get_system_hostname", return_value="autostream"),              patch("webui.browser.home.get_setting", return_value=MagicMock(ok=True, value="2250")),              patch("webui.browser.home.build_top_banner_html", return_value=("", "")):
+        with patch("webui.common._config_snapshot", return_value=parsed),              patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID),              patch("webui.browser.home.get_system_hostname", return_value="autostream"),              patch("webui.browser.home.get_setting", return_value=MagicMock(ok=True, value="2250")),              patch("webui.browser.home.build_top_banner_html", return_value=("", "")):
             _send_airplay_page(handler, state, auth)
 
         return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))

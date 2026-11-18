@@ -496,9 +496,9 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
         for name, value in values.items():
             monkeypatch.setattr(module, name, value)
 
-    import autostream_rpi as rpi
+    import autostream_appliance_identity as identity
     import webui.common as web_common
-    setattrs(rpi, get_appliance_id=lambda: APPLIANCE_ID)
+    setattrs(identity, get_appliance_id=lambda: APPLIANCE_ID)
     import webui.system.updates as updates
     setattrs(web_common, _config_snapshot=lambda state: cfg)
     setattrs(updates, get_app_version=lambda: FIXED_APP_VERSION)

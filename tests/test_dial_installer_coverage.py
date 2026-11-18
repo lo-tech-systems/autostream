@@ -142,7 +142,7 @@ def _import_closure(starts: list[Path]) -> dict[str, Path]:
 class TestImportClosure:
     def test_installer_names_are_parsed(self):
         names = _installer_module_names()
-        assert {"autostream_rpi", "autostream_artwork", "wifi_loop"} <= names
+        assert {"autostream_dial_gpio", "autostream_artwork", "wifi_loop"} <= names
 
     def test_everything_the_dial_imports_is_installed(self):
         installed = _installer_module_names()

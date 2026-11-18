@@ -79,8 +79,8 @@ def _load_script(name: str) -> ModuleType:
 
 class TestDialDeploymentManifest:
     """The dial installer must deploy core/autostream_sysutils.py and
-    core/autostream_rpi.py explicitly so that wifi_watcher can import them
-    on a fresh installation that does not co-install the host service.
+    core/autostream_system_stats.py explicitly so that wifi_watcher can import
+    them on a fresh installation that does not co-install the host service.
     """
 
     def test_sysutils_deployed_from_core(self):
@@ -89,10 +89,10 @@ class TestDialDeploymentManifest:
             "wifi_watcher imports autostream_sysutils at runtime"
         )
 
-    def test_rpi_deployed_from_core(self):
-        assert "autostream_rpi" in _dial_loop_modules("core"), (
-            "Dial installer must deploy core/autostream_rpi.py; "
-            "autostream_sysutils imports autostream_rpi at runtime"
+    def test_system_stats_deployed_from_core(self):
+        assert "autostream_system_stats" in _dial_loop_modules("core"), (
+            "Dial installer must deploy core/autostream_system_stats.py; "
+            "autostream_sysutils imports autostream_system_stats at runtime"
         )
 
     def test_platform_python_files_not_referenced(self):
@@ -101,7 +101,6 @@ class TestDialDeploymentManifest:
         fail loudly on a clean checkout)."""
         content = DIAL_INSTALLER.read_text(encoding="utf-8")
         assert "platform/autostream_sysutils.py" not in content
-        assert "platform/autostream_rpi.py" not in content
 
     def test_update_support_deployed_by_dial_helpers(self):
         content = DIAL_HELPERS.read_text(encoding="utf-8")

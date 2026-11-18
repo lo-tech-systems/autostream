@@ -948,7 +948,7 @@ def main() -> None:
 
     # Import GPIO helpers lazily — non-Pi hosts can still run the HTTP service.
     try:
-        from autostream_rpi import setup_rotary_encoder, setup_button  # type: ignore[import]
+        from autostream_dial_gpio import setup_rotary_encoder, setup_button  # type: ignore[import]
     except ImportError:
         setup_rotary_encoder = None  # type: ignore[assignment]
         setup_button = None  # type: ignore[assignment]

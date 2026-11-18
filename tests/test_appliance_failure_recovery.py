@@ -83,7 +83,7 @@ class TestCanonicalEqualiserRedirect:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
+             patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         assert any(v == "/equaliser" for k, v in locations if k == "Location")
 
@@ -96,6 +96,6 @@ class TestCanonicalEqualiserRedirect:
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
+             patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID):
             handler.do_GET()
         assert any(v == "/" for k, v in locations if k == "Location")

@@ -97,7 +97,7 @@ class TestMainPageBanner:
 
         patches = [
             patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
-            patch("autostream_rpi.get_appliance_id", return_value="local-id"),
+            patch("autostream_appliance_identity.get_appliance_id", return_value="local-id"),
             patch("webui.browser.home.get_system_hostname", return_value="autostream"),
             fake_levels([]),
             fake_playback(_make_playback_snapshot()),
@@ -141,7 +141,7 @@ class TestEqualiserPageBannerAbsent:
         handler._csrf_token = "tok"
 
         with patch("webui.browser.equaliser.build_top_banner_html", return_value=("", "")), \
-             patch("autostream_rpi.get_appliance_id", return_value="local-id"):
+             patch("autostream_appliance_identity.get_appliance_id", return_value="local-id"):
             send_equaliser_page(handler, state)
 
         store.close(save=False)

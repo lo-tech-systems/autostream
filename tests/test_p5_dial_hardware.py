@@ -1,7 +1,7 @@
 """P5 — Dial hardware runtime tests.
 
 What runs here (offline, no GPIO, no Pi hardware):
-  - setup_rotary_encoder / setup_button (autostream_rpi): gpiozero absent,
+  - setup_rotary_encoder / setup_button (autostream_dial_gpio): gpiozero absent,
     init failure, successful init — verify callbacks, pins, debounce, pull-up,
     wrap=False, and max_steps=0.
   - DialLED: gpio=None no-ops; gpiozero absent no-ops; mock LED on/off/blink.
@@ -45,40 +45,40 @@ sys.path.insert(0, str(CORE_DIR))
 
 
 # ---------------------------------------------------------------------------
-# setup_rotary_encoder — shared GPIO helper (autostream_rpi)
+# setup_rotary_encoder — shared GPIO helper (autostream_dial_gpio)
 # ---------------------------------------------------------------------------
 
 class TestSetupRotaryEncoderGpioAbsent:
     """setup_rotary_encoder returns None when gpiozero is unavailable."""
 
     def test_returns_none_without_gpiozero(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         with patch.dict(sys.modules, {"gpiozero": None}):
-            result = rpi.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
+            result = gpio.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
         assert result is None
 
     def test_returns_none_when_gpiozero_raises(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         fake_gpio.RotaryEncoder.side_effect = RuntimeError("lgpio device open failed")
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            result = rpi.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
+            result = gpio.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
         assert result is None
 
     def test_does_not_raise_on_init_failure(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         fake_gpio.RotaryEncoder.side_effect = Exception("gpio error")
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_rotary_encoder(17, 18, lambda: None, lambda: None)  # must not raise
+            gpio.setup_rotary_encoder(17, 18, lambda: None, lambda: None)  # must not raise
 
     def test_logs_warning_on_gpio_failure(self, caplog):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         fake_gpio.RotaryEncoder.side_effect = RuntimeError("no device")
         with caplog.at_level(logging.WARNING), \
              patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
+            gpio.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
         assert any("encoder" in r.message.lower() for r in caplog.records), (
             "No warning logged when encoder GPIO init failed"
         )
@@ -88,13 +88,13 @@ class TestSetupRotaryEncoderWithFakeGpio:
     """setup_rotary_encoder configures pins, callbacks, wrap, max_steps."""
 
     def _make_with_fake_encoder(self, on_cw, on_ccw, clk=17, dt=18):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_enc = MagicMock()
         FakeEncoder = MagicMock(return_value=fake_enc)
         fake_gpio = MagicMock()
         fake_gpio.RotaryEncoder = FakeEncoder
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            enc = rpi.setup_rotary_encoder(clk, dt, on_cw, on_ccw)
+            enc = gpio.setup_rotary_encoder(clk, dt, on_cw, on_ccw)
         return enc, fake_enc, FakeEncoder
 
     def test_returns_encoder_instance(self):
@@ -114,7 +114,7 @@ class TestSetupRotaryEncoderWithFakeGpio:
         assert fake_enc.when_rotated_counter_clockwise is ccw_fn
 
     def test_encoder_created_with_correct_gpio_pins(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         created_args: list = []
 
@@ -124,14 +124,14 @@ class TestSetupRotaryEncoderWithFakeGpio:
 
         fake_gpio.RotaryEncoder = fake_encoder_cls
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_rotary_encoder(23, 24, lambda: None, lambda: None)
+            gpio.setup_rotary_encoder(23, 24, lambda: None, lambda: None)
 
-        # autostream_rpi passes clk and dt as positional args
+        # autostream_dial_gpio passes clk and dt as positional args
         assert created_args[0][0] == 23
         assert created_args[0][1] == 24
 
     def test_encoder_wrap_false(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         created_kwargs: list = []
 
@@ -141,12 +141,12 @@ class TestSetupRotaryEncoderWithFakeGpio:
 
         fake_gpio.RotaryEncoder = fake_encoder_cls
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
+            gpio.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
 
         assert created_kwargs[0].get("wrap") is False
 
     def test_encoder_max_steps_zero(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         created_kwargs: list = []
 
@@ -156,7 +156,7 @@ class TestSetupRotaryEncoderWithFakeGpio:
 
         fake_gpio.RotaryEncoder = fake_encoder_cls
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
+            gpio.setup_rotary_encoder(17, 18, lambda: None, lambda: None)
 
         assert created_kwargs[0].get("max_steps") == 0
 
@@ -176,44 +176,44 @@ class TestSetupRotaryEncoderWithFakeGpio:
 
 
 # ---------------------------------------------------------------------------
-# setup_button — shared GPIO helper with debounce (autostream_rpi)
+# setup_button — shared GPIO helper with debounce (autostream_dial_gpio)
 # ---------------------------------------------------------------------------
 
 class TestSetupButton:
     def test_returns_none_without_gpiozero(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         with patch.dict(sys.modules, {"gpiozero": None}):
-            result = rpi.setup_button(22, lambda: None)
+            result = gpio.setup_button(22, lambda: None)
         assert result is None
 
     def test_returns_none_when_gpiozero_raises(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         fake_gpio.Button.side_effect = RuntimeError("GPIO init failed")
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            result = rpi.setup_button(22, lambda: None)
+            result = gpio.setup_button(22, lambda: None)
         assert result is None
 
     def test_does_not_raise_on_init_failure(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         fake_gpio.Button.side_effect = Exception("gpio error")
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_button(22, lambda: None)  # must not raise
+            gpio.setup_button(22, lambda: None)  # must not raise
 
     def test_press_callback_wired(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fired = []
         press_fn = lambda: fired.append(1)
         fake_btn = MagicMock()
         fake_gpio = MagicMock()
         fake_gpio.Button.return_value = fake_btn
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_button(22, press_fn)
+            gpio.setup_button(22, press_fn)
         assert fake_btn.when_pressed is press_fn
 
     def test_pull_up_enabled(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         created_kwargs: list = []
 
@@ -223,12 +223,12 @@ class TestSetupButton:
 
         fake_gpio.Button = fake_btn_cls
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_button(22, lambda: None)
+            gpio.setup_button(22, lambda: None)
 
         assert created_kwargs[0].get("pull_up") is True
 
     def test_default_bounce_time(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         created_kwargs: list = []
 
@@ -238,12 +238,12 @@ class TestSetupButton:
 
         fake_gpio.Button = fake_btn_cls
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_button(22, lambda: None)
+            gpio.setup_button(22, lambda: None)
 
         assert created_kwargs[0].get("bounce_time") == 0.1
 
     def test_custom_bounce_time(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         created_kwargs: list = []
 
@@ -253,12 +253,12 @@ class TestSetupButton:
 
         fake_gpio.Button = fake_btn_cls
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_button(22, lambda: None, bounce_time=0.2)
+            gpio.setup_button(22, lambda: None, bounce_time=0.2)
 
         assert created_kwargs[0].get("bounce_time") == 0.2
 
     def test_gpio_pin_passed(self):
-        import autostream_rpi as rpi
+        import autostream_dial_gpio as gpio
         fake_gpio = MagicMock()
         created_args: list = []
 
@@ -268,7 +268,7 @@ class TestSetupButton:
 
         fake_gpio.Button = fake_btn_cls
         with patch.dict(sys.modules, {"gpiozero": fake_gpio}):
-            rpi.setup_button(22, lambda: None)
+            gpio.setup_button(22, lambda: None)
 
         assert created_args[0][0] == 22
 

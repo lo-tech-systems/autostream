@@ -1,4 +1,4 @@
-"""Priority 8 — autostream_rpi health and CPU tests.
+"""Priority 8 — system health and CPU tests.
 
 Covers PSU throttle-bit parsing, current/historic undervoltage, CPU temperature
 (sysfs and vcgencmd fallback), CPU serial parsing, license cache, and

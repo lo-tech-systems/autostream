@@ -27,7 +27,9 @@ import threading
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-import autostream_rpi as rpi
+import autostream_appliance_identity as identity
+import autostream_licensing
+import autostream_system_stats
 import autostream_state
 from autostream_auth import pin_is_set
 from autostream_commissioning import is_commissioning_required
@@ -128,7 +130,7 @@ def _read(read: Callable, keep, what: str):
 
 def _gather(src: _Sources, last: AppliancePart) -> AppliancePart:
     return AppliancePart(
-        id=_read(lambda: rpi.get_appliance_id() or "", last.id, "appliance id"),
+        id=_read(lambda: identity.get_appliance_id() or "", last.id, "appliance id"),
         hostname=_read(lambda: format_hostname(get_system_hostname()), last.hostname, "hostname"),
         version=_read(lambda: str(src.app_version() or ""), last.version, "version"),
         configured=_read(
@@ -145,7 +147,7 @@ def _dials_needing_update() -> int:
 
 
 def _unlicensed() -> bool:
-    return bool(rpi.LICENSE_CHECK and not rpi.cpu_is_licensed())
+    return bool(autostream_licensing.LICENSE_CHECK and not autostream_licensing.cpu_is_licensed())
 
 
 def _gather_warnings(src: _Sources, snap) -> Inputs:
@@ -153,7 +155,7 @@ def _gather_warnings(src: _Sources, snap) -> Inputs:
     quiet value, so only its own warning goes."""
     held = src.held
     cpu_status, cpu_temp = _read(
-        lambda: rpi.get_cpu_thermal_status(held.cpu_status), ("ok", None), "CPU temperature")
+        lambda: autostream_system_stats.get_cpu_thermal_status(held.cpu_status), ("ok", None), "CPU temperature")
     held.cpu_status = cpu_status
     sd_percent = _read(sdcard_health_display, None, "microSD health")
     held.sd_level = sd_level(sd_percent, held.sd_level)

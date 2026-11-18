@@ -4,11 +4,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 GPIO helpers for dial hardware: rotary encoder and button setup via
 gpiozero.
-
-Split out of ``core/autostream_rpi.py``, which re-exports these names for
-existing importers. Dial-hardware GPIO wiring belongs with a dial adapter,
-not system/CPU facts. Pure code motion -- no logic changed from the
-original module.
 """
 
 from __future__ import annotations

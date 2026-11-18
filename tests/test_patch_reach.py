@@ -408,16 +408,15 @@ def findings(core_dir: Path, tests_dir: Path) -> set[tuple[str, int, str, str]]:
 # ---------------------------------------------------------------------------
 
 PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
-    ('test_audio_path.py', 1, 'autostream_rpi', 'is_high_performance_pi'),
+    ('test_audio_path.py', 1, 'autostream_system_stats', 'is_high_performance_pi'),
     ('test_audio_path.py', 2, 'autostream_player_service', 'save_setting'),
-    ('test_audio_path.py', 2, 'autostream_rpi', 'is_high_performance_pi'),
+    ('test_audio_path.py', 2, 'autostream_system_stats', 'is_high_performance_pi'),
     ('test_dial_registry.py', 1, 'autostream_sysutils', 'atomic_write_file'),
     ('test_dial_registry.py', 2, 'autostream_sysutils', 'atomic_write_file'),
     ('test_player_service.py', 1, 'autostream_sysutils', 'atomic_write_file'),
     ('test_player_service.py', 2, 'autostream_sysutils', 'atomic_write_file'),
     ('test_start_buffer_cache.py', 2, 'autostream_player_service', 'get_setting'),
-    ('test_sysutils.py', 1, 'autostream_rpi', 'get_raspberry_pi_model'),
-    ('test_sysutils.py', 2, 'autostream_rpi', 'get_raspberry_pi_model'),
+    ('test_sysutils.py', 2, 'autostream_system_stats', 'get_raspberry_pi_model'),
     ('test_wp2_settings_ownership.py', 2, 'autostream_settings', 'SettingsStore'),
     ('test_wp7_owntone_autosave.py', 2, 'autostream_player_service', 'get_setting'),
     ('test_wp8b_first_boot_pages.py', 1, 'webui.browser.first_boot', 'mark_configured'),

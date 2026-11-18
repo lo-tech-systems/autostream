@@ -37,10 +37,10 @@ def _make_module():
     """
     import types
 
-    # Stub autostream_rpi
-    rpi_stub = types.ModuleType("autostream_rpi")
-    rpi_stub.get_appliance_id = lambda: "a1b2c3d4e5f6a1b2c3d4"
-    rpi_stub.get_dial_id = lambda: None
+    # Stub autostream_appliance_identity
+    identity_stub = types.ModuleType("autostream_appliance_identity")
+    identity_stub.get_appliance_id = lambda: "a1b2c3d4e5f6a1b2c3d4"
+    identity_stub.get_dial_id = lambda: None
 
     # Stub autostream_mdns
     mdns_stub = types.ModuleType("autostream_mdns")
@@ -58,21 +58,21 @@ def _make_module():
     mdns_stub.MdnsBrowser = _FakeBrowser
 
     # Save originals
-    orig_rpi  = sys.modules.get("autostream_rpi")
+    orig_identity  = sys.modules.get("autostream_appliance_identity")
     orig_mdns = sys.modules.get("autostream_mdns")
 
     # Install stubs and force-reimport
-    sys.modules["autostream_rpi"]  = rpi_stub
+    sys.modules["autostream_appliance_identity"]  = identity_stub
     sys.modules["autostream_mdns"] = mdns_stub
     sys.modules.pop("autostream_appliances", None)
     try:
         import autostream_appliances as m
     finally:
         # Restore stub entries; leave autostream_appliances pointing to m
-        if orig_rpi is None:
-            sys.modules.pop("autostream_rpi", None)
+        if orig_identity is None:
+            sys.modules.pop("autostream_appliance_identity", None)
         else:
-            sys.modules["autostream_rpi"] = orig_rpi
+            sys.modules["autostream_appliance_identity"] = orig_identity
         if orig_mdns is None:
             sys.modules.pop("autostream_mdns", None)
         else:
@@ -126,10 +126,10 @@ class TestReconcileApplianceAnnouncement:
     def test_no_local_id_advertise_true_calls_remove(self):
         """When local identity unavailable and advertise=True, remove-service is called."""
         m = _make_module()
-        import autostream_rpi
+        import autostream_appliance_identity
         calls = []
 
-        with patch("autostream_appliances.rpi.get_appliance_id", return_value=None), \
+        with patch("autostream_appliances.identity.get_appliance_id", return_value=None), \
              patch("autostream_appliances._run_admin", side_effect=lambda args: (calls.append(args), 0)[1]):
             ok = m.reconcile_appliance_announcement("v1.0", True)
 
@@ -140,7 +140,7 @@ class TestReconcileApplianceAnnouncement:
         m = _make_module()
         calls = []
 
-        with patch("autostream_appliances.rpi.get_appliance_id", return_value=None), \
+        with patch("autostream_appliances.identity.get_appliance_id", return_value=None), \
              patch("autostream_appliances._run_admin", side_effect=lambda args: (calls.append(args), 0)[1]):
             ok = m.reconcile_appliance_announcement("v1.0", False)
 

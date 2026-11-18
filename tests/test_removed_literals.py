@@ -79,6 +79,7 @@ REMOVED_MODULES = {
     "webui.peer.federation": "webui.peer.relay",
     "webui.dial.api": "the client protocol",
     "autostream_announce": "autostream_session_flag",
+    "autostream_rpi": "autostream_system_stats, autostream_appliance_identity, autostream_licensing or autostream_dial_gpio",
 }
 
 # (path, method) route rows that must not exist.

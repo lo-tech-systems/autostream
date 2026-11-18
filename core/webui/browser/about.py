@@ -28,7 +28,7 @@ from autostream_bluetooth_client import (
     BLUETOOTH_SERVICE_VERSION,
     BluetoothClient,
 )
-from autostream_rpi import get_cpu_busy_percent, get_cpu_temperature_c
+from autostream_system_stats import get_cpu_busy_percent, get_cpu_temperature_c
 from autostream_state import store
 from autostream_state.live import get_owntone_runtime_info, get_vibra_runtime_info
 from autostream_sysutils import (

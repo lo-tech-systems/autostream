@@ -342,7 +342,7 @@ def audit_static_system_facts() -> StaticSystemFacts:
 
     os_info = get_os_release_info()
     try:
-        from autostream_rpi import get_raspberry_pi_model
+        from autostream_system_stats import get_raspberry_pi_model
         rpi_model = get_raspberry_pi_model()
     except Exception:
         rpi_model = "unknown"

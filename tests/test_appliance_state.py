@@ -36,13 +36,13 @@ def sources(monkeypatch):
         "commissioning": False, "pin": True,
         "throttled": 0, "cpu": ("ok", None), "sd": None, "dials": 0, "unlicensed": False,
     }
-    monkeypatch.setattr(appliance_state.rpi, "get_appliance_id", lambda: values["id"])
+    monkeypatch.setattr(appliance_state.identity, "get_appliance_id", lambda: values["id"])
     monkeypatch.setattr(appliance_state, "get_system_hostname", lambda: values["host"])
     monkeypatch.setattr(appliance_state, "is_commissioning_required",
                         lambda config, st: values["commissioning"])
     monkeypatch.setattr(appliance_state, "pin_is_set", lambda st: values["pin"])
     monkeypatch.setattr(appliance_state, "_read_get_throttled_value", lambda: values["throttled"])
-    monkeypatch.setattr(appliance_state.rpi, "get_cpu_thermal_status", lambda previous: values["cpu"])
+    monkeypatch.setattr(appliance_state.autostream_system_stats, "get_cpu_thermal_status", lambda previous: values["cpu"])
     monkeypatch.setattr(appliance_state, "sdcard_health_display", lambda: values["sd"])
     monkeypatch.setattr(appliance_state, "_dials_needing_update", lambda: values["dials"])
     monkeypatch.setattr(appliance_state, "_unlicensed", lambda: values["unlicensed"])
@@ -235,7 +235,7 @@ class TestWarningsPass:
             seen.append(previous)
             return ("high", 70.0)
 
-        monkeypatch.setattr(appliance_state.rpi, "get_cpu_thermal_status", read)
+        monkeypatch.setattr(appliance_state.autostream_system_stats, "get_cpu_thermal_status", read)
         src = make_src()
         appliance_state._run_pass(src)
         appliance_state._run_pass(src)

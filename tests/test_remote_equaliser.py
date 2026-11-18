@@ -169,7 +169,7 @@ class TestCurveSampleRate:
             gain_db=0.0, auto_trim_enabled=False,
             peq1_db=0.0, peq2_db=0.0, peq3_db=0.0, peq4_db=0.0, peq5_db=0.0, peq6_db=0.0)
         with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
+             patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.browser.equaliser.get_system_hostname", return_value="bound-host"):
             if "rate" in patches:
                 with patch("webui.browser.equaliser.get_live_monitor_output_rate",

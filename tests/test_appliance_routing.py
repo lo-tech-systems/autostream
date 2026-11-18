@@ -129,7 +129,7 @@ class TestRemotePageWithControlOff:
         handler.send_header = lambda k, v: headers.append((k, v))
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", viewed_state()), \
-             patch("autostream_rpi.get_appliance_id", return_value="0" * 20), \
+             patch("autostream_appliance_identity.get_appliance_id", return_value="0" * 20), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("webui.browser.home.send_airplay_page") as remote_page:
             handler.do_GET()

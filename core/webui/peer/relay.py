@@ -28,7 +28,7 @@ import weakref
 from typing import Optional
 from urllib.parse import parse_qs, urlsplit
 
-import autostream_rpi as rpi
+import autostream_appliance_identity as identity
 from autostream_appliances import resolve
 from autostream_intents import Role
 from autostream_protocol import PROTOCOL
@@ -231,7 +231,7 @@ def serve_peer_events(handler, state, peer_id: str) -> None:
     if refusal is not None:
         _refuse(503, refusal, retryable=True)
     try:
-        serve_events(handler, PeerSource(client), "peer:" + (rpi.get_appliance_id() or "0" * 20))
+        serve_events(handler, PeerSource(client), "peer:" + (identity.get_appliance_id() or "0" * 20))
     finally:
         hub.exit(address)
 

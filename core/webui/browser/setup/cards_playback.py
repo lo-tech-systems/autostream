@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import html
 
-from autostream_rpi import is_high_performance_pi
+from autostream_system_stats import is_high_performance_pi
 from webui.common import settings_card_html
 from webui.browser.setup import cards_inputs, context
 

@@ -444,7 +444,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
 
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
-        patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
+        patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID),
         patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels([]),
         fake_playback(playback),
@@ -629,7 +629,7 @@ def _render_equaliser_page(*, repeat_enabled: bool = True) -> str:
 
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
-        patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
+        patch("autostream_appliance_identity.get_appliance_id", return_value=_LOCAL_ID),
         patch("webui.browser.equaliser.get_system_hostname", return_value="autostream"),
         patch("webui.browser.equaliser.build_top_banner_html", return_value=("", "")),
     ]

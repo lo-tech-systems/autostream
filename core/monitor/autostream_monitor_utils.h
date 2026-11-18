@@ -215,7 +215,7 @@ struct SrcAutoDetectResult
 // (big out-of-order cores -> higher SRC quality here, vs. small in-order
 // cores -> the fast AAC coder there) and is independent of the autostream
 // Python hardware classifier (is_high_performance_pi(), core/
-// autostream_rpi.py), which keys on the device-tree model string instead of
+// autostream_system_stats.py), which keys on the device-tree model string instead of
 // CPU part ids. The two classifiers must agree in spirit (both should call
 // a Pi 4/5 "high tier") but are deliberately separate mechanisms with no
 // shared code -- this one has no device-tree dependency, that one has no

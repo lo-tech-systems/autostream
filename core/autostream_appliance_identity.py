@@ -6,12 +6,8 @@ Appliance / Dial identity derivation: a stable public identifier for each,
 derived from the CPU serial number by one-way hashing (namespaced SHA-256,
 truncated to 20 lowercase hex chars), with a persistent-file fallback when
 the serial is unavailable. The raw CPU serial is never stored or returned;
-only the derived hash is exposed.
-
-Split out of ``core/autostream_rpi.py``, which re-exports these names for
-existing importers. This is security-relevant (serial hashing), so the
-move is byte-for-byte -- no edits beyond adjusting the import of
-``get_cpu_serial`` to its new home in ``autostream_system_stats.py``.
+only the derived hash is exposed. This is security-relevant (serial
+hashing); the CPU serial itself is read by ``autostream_system_stats.py``.
 """
 
 from __future__ import annotations

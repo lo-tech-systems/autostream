@@ -177,9 +177,9 @@ class TestOptionalGpioSetup:
         mock_encoder_setup = MagicMock(return_value="encoder-handle")
         mock_button_setup = MagicMock(return_value="button-handle")
 
-        fake_rpi = MagicMock()
-        fake_rpi.setup_rotary_encoder = mock_encoder_setup
-        fake_rpi.setup_button = mock_button_setup
+        fake_gpio = MagicMock()
+        fake_gpio.setup_rotary_encoder = mock_encoder_setup
+        fake_gpio.setup_button = mock_button_setup
 
         class _QuickEvent(threading.Event):
             def wait(self, timeout=None):
@@ -189,8 +189,8 @@ class TestOptionalGpioSetup:
         real_import = builtins.__import__
 
         def _fake_import(name, *args, **kwargs):
-            if name == "autostream_rpi":
-                return fake_rpi
+            if name == "autostream_dial_gpio":
+                return fake_gpio
             return real_import(name, *args, **kwargs)
 
         with patch("dial_main._configure_logging"), \
@@ -1315,16 +1315,16 @@ class TestTouchConstruction:
         mock_encoder_setup = MagicMock(return_value="encoder-handle")
         mock_button_setup = MagicMock(return_value="button-handle")
 
-        fake_rpi = MagicMock()
-        fake_rpi.setup_rotary_encoder = mock_encoder_setup
-        fake_rpi.setup_button = mock_button_setup
+        fake_gpio = MagicMock()
+        fake_gpio.setup_rotary_encoder = mock_encoder_setup
+        fake_gpio.setup_button = mock_button_setup
 
         import builtins
         real_import = builtins.__import__
 
         def _fake_import(name, *args, **kwargs):
-            if name == "autostream_rpi":
-                return fake_rpi
+            if name == "autostream_dial_gpio":
+                return fake_gpio
             return real_import(name, *args, **kwargs)
 
         class _QuickEvent(threading.Event):
@@ -2353,16 +2353,16 @@ class TestMutePressEntryPointsStayLockFreeAndNetworkFree:
             captured["on_press"] = on_press
             return MagicMock()
 
-        fake_rpi = MagicMock()
-        fake_rpi.setup_rotary_encoder = MagicMock(return_value=None)
-        fake_rpi.setup_button = fake_setup_button
+        fake_gpio = MagicMock()
+        fake_gpio.setup_rotary_encoder = MagicMock(return_value=None)
+        fake_gpio.setup_button = fake_setup_button
 
         import builtins
         real_import = builtins.__import__
 
         def _fake_import(name, *args, **kwargs):
-            if name == "autostream_rpi":
-                return fake_rpi
+            if name == "autostream_dial_gpio":
+                return fake_gpio
             return real_import(name, *args, **kwargs)
 
         class _QuickEvent(threading.Event):
@@ -2688,9 +2688,9 @@ class TestPresenceConfirmationWiring:
 
         mock_encoder_setup = MagicMock(return_value="encoder-handle")
         mock_button_setup = MagicMock(return_value="button-handle")
-        fake_rpi = MagicMock()
-        fake_rpi.setup_rotary_encoder = mock_encoder_setup
-        fake_rpi.setup_button = mock_button_setup
+        fake_gpio = MagicMock()
+        fake_gpio.setup_rotary_encoder = mock_encoder_setup
+        fake_gpio.setup_button = mock_button_setup
 
         class _QuickEvent(threading.Event):
             def wait(self, timeout=None):
@@ -2700,8 +2700,8 @@ class TestPresenceConfirmationWiring:
         real_import = builtins.__import__
 
         def _fake_import(name, *args, **kwargs):
-            if name == "autostream_rpi":
-                return fake_rpi
+            if name == "autostream_dial_gpio":
+                return fake_gpio
             return real_import(name, *args, **kwargs)
 
         patches = [

@@ -17,7 +17,7 @@ import threading
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
-import autostream_rpi as rpi
+import autostream_appliance_identity as identity
 from autostream_peer_client import PeerClient, PeerPool, PeerSnapshot, roster_view
 from autostream_peer_registry import PeerRegistry, Sighting
 from autostream_state import Origin, PeersPart, store
@@ -55,7 +55,7 @@ def start(life, settings) -> None:
     when this appliance has no id: without it a peer cannot be told from this
     appliance."""
     global _registry, _pool, _pool_handle, _thread
-    own_id = rpi.get_appliance_id()
+    own_id = identity.get_appliance_id()
     if own_id is None:
         logging.warning("appliances: local identity unavailable; not starting")
         return
@@ -184,7 +184,7 @@ def resolve(appliance_id: str) -> Resolution:
     "control_off" one that does not allow other appliances to control it."""
     if not _20HEX_RE.match(appliance_id):
         return Resolution("invalid")
-    own_id = rpi.get_appliance_id()
+    own_id = identity.get_appliance_id()
     if own_id and appliance_id == own_id:
         return Resolution("bound")
     with _lock:
@@ -235,7 +235,7 @@ def reconcile_appliance_announcement(version: str, advertise: bool) -> bool:
 
     Returns True on success, False on admin command failure.
     """
-    app_id = rpi.get_appliance_id()
+    app_id = identity.get_appliance_id()
     with _ANNOUNCE_LOCK:
         if app_id is not None:
             control = "on" if advertise else "off"

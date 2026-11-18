@@ -23,7 +23,7 @@ from types import SimpleNamespace
 
 from autostream_state.live import get_live_monitor_output_rate
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
-import autostream_rpi as rpi
+import autostream_appliance_identity as identity
 from autostream_sysutils import get_system_hostname
 from webui import static
 from webui.protocol.state import state_for_page
@@ -282,8 +282,8 @@ def send_equaliser_page(handler, state: WebUIState, peer=None) -> None:
     csrf_token = getattr(handler, "_csrf_token", None) or ""
     dark_mode = parsed.webui.dark_mode if parsed is not None else False
 
-    _selector = appliance_selector_entries(str(rpi.get_appliance_id() or ""), get_system_hostname())
-    _local_id = str(rpi.get_appliance_id() or "")
+    _selector = appliance_selector_entries(str(identity.get_appliance_id() or ""), get_system_hostname())
+    _local_id = str(identity.get_appliance_id() or "")
 
     if parsed is not None:
         _show_hostname = parsed.webui.show_hostname_on_home

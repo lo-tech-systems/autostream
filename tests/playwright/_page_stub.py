@@ -128,7 +128,7 @@ def _render_equaliser(*, eq_fs: int = 96000, parts: dict | None = None, **_fakes
         with ExitStack() as stack:
             for p in (
                 *_banner_patches("webui.browser.equaliser"),
-                patch("autostream_rpi.get_appliance_id", return_value=LOCAL_APPLIANCE_ID),
+                patch("autostream_appliance_identity.get_appliance_id", return_value=LOCAL_APPLIANCE_ID),
                 patch("webui.browser.equaliser.get_system_hostname", return_value="autostream"),
                 patch("webui.browser.equaliser.state_for_page", return_value=_home_stub.state_body()),
             ):

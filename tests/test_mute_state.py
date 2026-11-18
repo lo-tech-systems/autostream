@@ -378,7 +378,7 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
     from contextlib import ExitStack
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
-        patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
+        patch("autostream_appliance_identity.get_appliance_id", return_value="0" * 20),
         patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels(input_levels),
         fake_playback(playback),

@@ -548,7 +548,6 @@ import autostream_state as state
 import autostream_input_status as input_status
 import autostream_selfheal as selfheal
 import autostream_startup as startup
-import autostream_rpi as rpi
 
 
 def _inputs():
