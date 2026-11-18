@@ -86,10 +86,10 @@ class TestRows:
     def test_sd_failing_and_low(self):
         bad = only(w.derive(make(sd_percent=8, sd_level="failing")))
         assert (bad.severity, bad.message, bad.link, bad.title) == (
-            "critical", "8% life left, replace now", "/about", "microSD card")
+            "critical", "8% life left, replace now", "/about#system", "microSD card")
         low = only(w.derive(make(sd_percent=18, sd_level="low")))
-        assert (low.severity, low.message) == (
-            "warning", "18% life left, replace soon")
+        assert (low.severity, low.message, low.link) == (
+            "warning", "18% life left, replace soon", "/about#system")
 
     def test_sd_unknown_says_nothing(self):
         assert w.derive(make(sd_percent=None, sd_level="low")) == ()

@@ -111,7 +111,7 @@ var pageData = (function () {
           if ((id === 'input1' || id === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.start();
           if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }
-        // Deep links from the Home page banners (dial update, sample rate).
+        // Deep links from the Home page's warning cards (dial update, sample rate).
         window.addEventListener('DOMContentLoaded', function() {
           if (location.hash === '#dials') openPanel('dials');
           if (location.hash === '#input1') openPanel('input1');

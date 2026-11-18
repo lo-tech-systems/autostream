@@ -106,7 +106,7 @@ severe first, at most 16. Each entry:
 | `subject` | The input's label for per-input kinds, otherwise `""`. |
 | `title` | At most 40 characters. |
 | `message` | At most 32 characters. |
-| `link` | The Web UI page that deals with it (`/service`, `/setup#input2`, `/setup#dials`, `/setup`, `/about`), or `null`. |
+| `link` | The Web UI page that deals with it (`/service`, `/setup#input2`, `/setup#dials`, `/setup`, `/about#system`), or `null`. |
 
 ### `outputs`
 

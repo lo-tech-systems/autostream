@@ -131,6 +131,21 @@ class TestAbout:
         finally:
             server.shutdown()
 
+    def test_the_system_fragment_opens_the_system_panel(self, page: "Page"):
+        server, base = start_server(_page_stub.render("about"))
+        try:
+            errors = _watch_errors(page)
+            stub.API["/api/about/system"] = {"ok": True, "builds": {}, "device": {}, "os": {}, "services": []}
+            page.goto(f"{base}/#system")
+            expect(page.locator("#about-panel-system")).to_have_class(re.compile(r"\bactive\b"))
+            expect(page.locator("#aboutSlideTrack")).to_have_class(re.compile(r"\bpanel-open\b"))
+            page.goto(f"{base}/")
+            expect(page.locator("#about-panel-system")).not_to_have_class(re.compile(r"\bactive\b"))
+            expect(page.locator("#aboutSlideTrack")).not_to_have_class(re.compile(r"\bpanel-open\b"))
+            assert errors == []
+        finally:
+            server.shutdown()
+
     def test_the_copy_button_copies_the_licence_text_from_the_island(self, page: "Page"):
         text = "Licence line one </script> & more"
         server, base = start_server(_page_stub.render("about", license_text=text))

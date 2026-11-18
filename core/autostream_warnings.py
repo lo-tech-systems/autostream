@@ -180,9 +180,9 @@ def _card(level: str, percent: Optional[int]) -> list[WarningEntry]:
         return []
     if level == "failing":
         return [_entry("sd_health", "critical", "sd_health", "microSD card",
-                       f"{percent}% life left, replace now", "/about")]
+                       f"{percent}% life left, replace now", "/about#system")]
     return [_entry("sd_health", "warning", "sd_health", "microSD card",
-                   f"{percent}% life left, replace soon", "/about")]
+                   f"{percent}% life left, replace soon", "/about#system")]
 
 
 def _no_input(playback) -> list[WarningEntry]:
