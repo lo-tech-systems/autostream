@@ -125,8 +125,10 @@ def _item_state(snap, item: str) -> Optional[str]:
     return None
 
 
-def _maintenance_warnings() -> list[DialWarning]:
-    snapshot = store().snapshot().playback
+def _derive_warnings(snap) -> list[DialWarning]:
+    """The maintenance warnings for one state snapshot: a pure function of
+    its playback part."""
+    snapshot = snap.playback
     overdue: list[DialWarning] = []
     due: list[DialWarning] = []
     for index, snap in sorted(snapshot.inputs.items()):
@@ -165,8 +167,12 @@ def _psu_warnings() -> list[DialWarning]:
     return []
 
 
+def _maintenance_provider() -> list[DialWarning]:
+    return _derive_warnings(store().snapshot())
+
+
 WARNING_PROVIDERS: tuple[Callable[[], list[DialWarning]], ...] = (
-    _maintenance_warnings,
+    _maintenance_provider,
     _psu_warnings,
 )
 

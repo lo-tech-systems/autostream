@@ -31,6 +31,7 @@ for _sub in ("core", "dial"):
         sys.path.insert(0, _p)
 
 from fake_store import fake_playback
+from autostream_state import store
 import autostream_dial_warnings as dw
 from autostream_playback_stats import make_fallback_input_snapshot
 import dial_core_state
@@ -50,7 +51,7 @@ def _playback(*snaps):
 
 def _maintenance(*snaps):
     with fake_playback(_playback(*snaps)):
-        return dw._maintenance_warnings()
+        return dw._derive_warnings(store().snapshot())
 
 
 class TestMaintenanceRows:
