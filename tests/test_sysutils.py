@@ -112,6 +112,52 @@ class TestAtomicWriteFile:
         # destination must be the target path
         assert Path(replace_calls[0][1]) == target
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes not enforced on Windows")
+    def test_explicit_mode_applies_to_a_new_file(self, tmp_path):
+        target = tmp_path / "new.txt"
+        su.atomic_write_file(target, lambda fh: fh.write("x"), mode=0o600)
+        assert oct(target.stat().st_mode)[-3:] == "600"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes not enforced on Windows")
+    def test_explicit_mode_overrides_an_existing_files_mode(self, tmp_path):
+        target = tmp_path / "existing.txt"
+        target.write_text("old")
+        os.chmod(target, 0o644)
+        su.atomic_write_file(target, lambda fh: fh.write("new"), mode=0o600)
+        assert oct(target.stat().st_mode)[-3:] == "600"
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes not enforced on Windows")
+    def test_writer_sees_the_mode_already_set(self, tmp_path):
+        target = tmp_path / "new.txt"
+        seen = []
+        su.atomic_write_file(
+            target, lambda fh: seen.append(os.fstat(fh.fileno()).st_mode & 0o777), mode=0o600,
+        )
+        assert seen == [0o600]
+
+    def test_failing_explicit_chmod_raises_and_leaves_no_temp_file(self, tmp_path):
+        target = tmp_path / "output.txt"
+        made = []
+        real_mkstemp = su.tempfile.mkstemp
+
+        def tracking_mkstemp(*args, **kwargs):
+            fd, name = real_mkstemp(*args, **kwargs)
+            made.append(fd)
+            return fd, name
+
+        writer = MagicMock()
+        with patch("autostream_sysutils.tempfile.mkstemp", side_effect=tracking_mkstemp), \
+             patch("os.chmod", side_effect=PermissionError("no")), \
+             patch("os.close") as close:
+            with pytest.raises(PermissionError):
+                su.atomic_write_file(target, writer, mode=0o600)
+
+        writer.assert_not_called()
+        close.assert_called_once_with(made[0])
+        assert not list(tmp_path.glob(".*.tmp"))
+        assert not target.exists()
+        os.close(made[0])
+
 
 # ---------------------------------------------------------------------------
 # run_cmd: timeout and exception normalization

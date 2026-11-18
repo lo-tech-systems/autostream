@@ -31,6 +31,7 @@ def atomic_write_file(
     writer: Callable[[IO], None],
     *,
     preserve_mode: bool = True,
+    mode: Optional[int] = None,
 ) -> None:
     """Write to *path* atomically: temp file -> writer() -> fsync -> os.replace.
 
@@ -42,14 +43,19 @@ def atomic_write_file(
     If *preserve_mode* is True (the default) and the destination file already
     exists, its permission bits are copied to the temporary file before the
     rename so the replacement inherits the same mode.
+
+    If *mode* is given, the temporary file gets exactly those permission bits
+    before *writer* runs (so the content is never readable more widely), and
+    *preserve_mode* is ignored. A failure to set it is raised, because a mode
+    asked for by name is a security property.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    mode: Optional[int] = None
-    if preserve_mode:
+    kept_mode: Optional[int] = None
+    if preserve_mode and mode is None:
         try:
-            mode = path.stat().st_mode
+            kept_mode = path.stat().st_mode
         except FileNotFoundError:
             pass
         except Exception:
@@ -61,15 +67,25 @@ def atomic_write_file(
         dir=str(path.parent),
     )
     tmp = Path(tmp_name)
+    if mode is not None:
+        try:
+            os.chmod(tmp, mode)
+        except Exception:
+            os.close(fd)
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             writer(fh)
             fh.flush()
             os.fsync(fh.fileno())
 
-        if mode is not None:
+        if kept_mode is not None:
             try:
-                os.chmod(tmp, mode)
+                os.chmod(tmp, kept_mode)
             except Exception:
                 logger.warning("atomic_write_file: could not apply mode to %s", tmp)
 
