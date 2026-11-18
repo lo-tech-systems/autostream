@@ -32,7 +32,8 @@ view](#the-hd-page-is-a-second-view).
 | `dial_core_state.py` | The snapshot dataclasses and the pure decisions made over them (focus resolution, walk order, volume target choice, picker rows, warning attribution). No I/O, no threads, no locks, no clock reads. |
 | `dial_artwork.py` | The artwork download the core's artwork thread runs, with its size and time limits and a rate-limited failure log. |
 | `dial_warning_text.py` | The warning table and its fixed strings (No-WiFi, SD health, update cards) and the builder for appliance-supplied warnings. Pure data, no drawing. |
-| `dial_warnings.py` | The warning manager: registration, snooze persistence, severity ordering. |
+| `dial_warnings.py` | The warning manager: registration, which status is due, which warning a view would open. |
+| `dial_warning_bell.py` | What a warning bell holds: the dial's own warnings, one appliance's, or the whole set, worst first. Pure. |
 | `dial_display.py` | `DialDisplay`: the SPI view. Screen policy, the repaint thread, composing and pushing frames, panel sleep and wake, the artwork reveal slide, the pressed channel and the touch surface. |
 | `dial_display_compositor.py`, `dial_display_image.py`, `dial_display_profiles.py`, `dial_display_adafruit.py` | Drawing, image policy, panel profiles and the hardware backend. |
 | `dial_touch*.py` | Touch drivers, filtering and the zone layout. The touch source calls core actions through the view's taps. |
