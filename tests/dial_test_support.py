@@ -29,6 +29,9 @@ from dial_display_profiles import DEFAULT_PROFILE_KEY
 from dial_mdns import PlayingTarget
 from dial_warnings import WarningManager
 
+# The built-in warning descriptors by id.
+WARNING_BY_ID = {d.id: d for d in WARNING_DESCRIPTORS}
+
 
 @dataclasses.dataclass(frozen=True)
 class RosterEntry:

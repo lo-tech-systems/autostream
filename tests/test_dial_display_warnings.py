@@ -29,6 +29,7 @@ from dial_info import INFO_LABELS  # noqa: E402
 from dial_network import LINK_CONNECTED, LINK_DOWN, NetworkView  # noqa: E402
 from dial_sdhealth import STATUS_VALID, SdHealthView  # noqa: E402
 from dial_test_support import (  # noqa: E402
+    WARNING_BY_ID,
     _roster_entry,
     apply_update_view,
     make_display,
@@ -46,7 +47,7 @@ from dial_test_support import (  # noqa: E402
 from dial_touch_layout import CARD_BUTTON_ZONES  # noqa: E402
 from dial_warning_text import appliance_warning_key  # noqa: E402
 import dial_warning_text as dwt  # noqa: E402
-from dial_display import WARNING_DESCRIPTORS  # noqa: E402
+from dial_warning_text import WARNING_DESCRIPTORS  # noqa: E402
 from dial_warnings import KIND_STATUS, WarningManager  # noqa: E402
 from dial_display_test_support import _view  # noqa: E402
 
@@ -637,7 +638,6 @@ class TestGenericWarningCapabilities:
                 warnings=WarningManager(WARNING_DESCRIPTORS + (notice,), clock=clock.now),
             )
             for p in (
-                patch.dict(dwt.WARNING_BY_ID, {notice.id: notice}),
                 patch.dict(dd.SCREEN_POLICIES, {notice.screen: dd._status_policy_row(notice)}),
             ):
                 p.start()
@@ -904,10 +904,10 @@ class TestUpdateWarnings:
     def test_update_card_has_no_buttons_and_the_inert_surface(self):
         from dial_touch import _GEOMETRY_FOR_SURFACE
         from dial_touch_layout import GEOMETRY_NONE
-        desc = dwt.WARNING_BY_ID["update"]
+        desc = WARNING_BY_ID["update"]
         assert desc.buttons == ()
         assert desc.interrupting is True and desc.auto_clear_after_s is None
-        assert desc.priority > dwt.WARNING_BY_ID["update_result"].priority
+        assert desc.priority > WARNING_BY_ID["update_result"].priority
         assert _GEOMETRY_FOR_SURFACE[dd.SCREEN_POLICIES["update"].surface[0]] == GEOMETRY_NONE
 
     def test_reboot_phase_switches_to_restarting_without_requesting_reboot(self, rig):

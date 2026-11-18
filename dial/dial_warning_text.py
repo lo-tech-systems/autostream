@@ -201,7 +201,6 @@ WARNING_DESCRIPTORS: tuple[WarningDescriptor, ...] = (
         interrupting=True, auto_clear_after_s=UPDATE_RESULT_SECONDS,
     ),
 )
-WARNING_BY_ID: dict[str, WarningDescriptor] = {d.id: d for d in WARNING_DESCRIPTORS}
 
 
 # ---------------------------------------------------------------------------

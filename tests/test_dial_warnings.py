@@ -14,6 +14,7 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
+from dial_test_support import WARNING_BY_ID
 from dial_warning_text import WARNING_DESCRIPTORS
 from dial_warnings import (
     ACTION_CLOSE,
@@ -270,14 +271,13 @@ class TestTheTable:
             assert desc.severity_for(None) in ("info", "warning", "critical")
 
     def test_the_sd_card_is_critical_below_the_critical_percent(self):
-        from dial_warning_text import SDHEALTH_CRITICAL_PERCENT, WARNING_BY_ID
+        from dial_warning_text import SDHEALTH_CRITICAL_PERCENT
         severity_for = WARNING_BY_ID["sdhealth"].severity_for
         assert severity_for(SDHEALTH_CRITICAL_PERCENT - 1) == "critical"
         assert severity_for(SDHEALTH_CRITICAL_PERCENT) == "warning"
         assert severity_for(None) == "warning"
 
     def test_the_dial_update_message_names_the_appliances(self):
-        from dial_warning_text import WARNING_BY_ID
         message_for = WARNING_BY_ID["update_dial"].message_for
         assert message_for(("Lounge",)) == "Lounge needs a newer dial"
         assert message_for(("Lounge", "Kitchen")) == "Lounge, Kitchen need a newer dial"

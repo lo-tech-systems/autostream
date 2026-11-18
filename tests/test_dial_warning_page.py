@@ -19,7 +19,7 @@ if _DIAL not in sys.path:
 from dial_appliance_warnings import SEVERITY_WARNING  # noqa: E402
 from dial_warning_bell import Bell, BellEntry  # noqa: E402
 from dial_warning_page import WarningsPageState, status_card  # noqa: E402
-from dial_warning_text import WARNING_BY_ID  # noqa: E402
+from dial_test_support import WARNING_BY_ID  # noqa: E402
 from dial_warnings import ACTION_CLOSE, ACTION_NEXT, ACTION_RESTART  # noqa: E402
 
 

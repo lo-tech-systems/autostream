@@ -17,7 +17,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core"), str(REPO_ROOT / "te
 import dial_appliance_warnings as aw
 import dial_mdns
 from autostream_protocol import PROTOCOL
-from dial_test_support import RosterEntry
+from dial_test_support import WARNING_BY_ID, RosterEntry
 from dial_pool_support import Rig, aid, peer
 from dial_warning_text import appliance_warning_key
 
@@ -81,7 +81,6 @@ class TestProtocolWarning:
         assert warning.title.startswith("Update xxx")
 
     def test_a_long_name_is_fitted_to_the_message_of_the_dial_warning(self):
-        from dial_warning_text import WARNING_BY_ID
         names = aw.newer_appliance_names((entry("x" * 300, proto=5),), OWN)
         assert len(WARNING_BY_ID["update_dial"].message_for(names)) <= aw.APPLIANCE_WARNING_MESSAGE_MAX
 

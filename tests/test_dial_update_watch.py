@@ -14,6 +14,7 @@ _DIAL = str(REPO_ROOT / "dial")
 if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
+from dial_test_support import WARNING_BY_ID  # noqa: E402
 from dial_update_watch import (  # noqa: E402
     UpdateView,
     UpdateWatcher,
@@ -180,8 +181,8 @@ def test_update_card_text_fits_without_truncation(name, width, height, mm_per_px
     result_w = (result.message[2] - result.message[0]) - 2 * metrics.pad
     cell_w = (result.cells[0][2] - result.cells[0][0]) - 2 * metrics.pad
 
-    update = dwt.WARNING_BY_ID["update"]
-    update_result = dwt.WARNING_BY_ID["update_result"]
+    update = WARNING_BY_ID["update"]
+    update_result = WARNING_BY_ID["update_result"]
     assert fits(dwt.UPDATING_TEXT, readout_font, notice_w)
     for view in update_views:
         assert fits(update.title_for(view), readout_font, notice_w), view
