@@ -236,7 +236,6 @@ class TouchStateMachine:
         self._phase = _PHASE_IDLE
         self._overlay_visible = False
         self._contact_down = False
-        self._pending_xy: tuple[int, int] | None = None
         self._armed_zone: TouchZone | None = None
         # index alongside _armed_zone — only meaningful for LIST_ROW (the
         # row index within the current page); None for every other zone.
@@ -308,7 +307,6 @@ class TouchStateMachine:
         # zones were not on screen, so acting on it would fire a control the
         # user could not see. A second, deliberate press does the work.
         self._phase = _PHASE_IDLE
-        self._pending_xy = None
         self._reset_dismiss(now)
         return []
 
@@ -549,7 +547,6 @@ class TouchStateMachine:
 
     def _on_press(self, event, now: float) -> list[TouchAction]:
         self._contact_down = True
-        self._pending_xy = (event.x, event.y)
         if self._is_asleep():
             # The panel is dark: this contact only wakes it. Nothing is on
             # screen to press, so it must not arm, flash, step or reveal,
@@ -575,7 +572,6 @@ class TouchStateMachine:
 
     def _on_repeat(self, event, now: float) -> list[TouchAction]:
         self._contact_down = True
-        self._pending_xy = (event.x, event.y)
         # Any contact sample holds the overlay open, armed or not — a finger
         # resting after a reveal-only touch must not have the zones vanish
         # from under it.
