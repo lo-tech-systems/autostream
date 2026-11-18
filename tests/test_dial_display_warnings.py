@@ -512,7 +512,7 @@ class TestBellOnThePlayingScreen:
     gate, and the bell carried in the overlay the compositor draws."""
 
     def _playing(self, **overrides):
-        import test_dial_display as td
+        import dial_display_test_support as td
         from dial_test_support import _target
         display, fb, gt = make_display(targets=[_target()], **overrides)
         display.enable()
@@ -574,7 +574,7 @@ class TestBellOnThePlayingScreen:
             assert compose.call_args.args[2].bell == BellBadge("warning", 1)
 
     def test_the_compact_resting_artwork_reports_the_bell_only_on_main(self):
-        import test_dial_display as td
+        import dial_display_test_support as td
         from dial_test_support import _target
         display, fb, gt = td._make_compact_display(targets=[_target()])
         display.enable()
