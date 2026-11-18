@@ -886,3 +886,34 @@ def test_reopen_for_pin_keeps_the_identity_and_moves_the_window():
         100.0, "1001", "a" * 20, "output_set")
     assert cs.awaiting_pin(reopened, 150.0 + cs.PIN_WINDOW_S - 1)
     assert not cs.awaiting_pin(reopened, 150.0 + cs.PIN_WINDOW_S)
+
+
+class TestALateWrongPin:
+    def test_a_wrong_pin_after_an_accepted_pin_reply_reopens_the_keypad(self):
+        assert _action(_report(reason="pin_invalid"),
+                       request=_set_request("accepted", kind="output_pin")) == cs.FAILURE_PIN
+
+    @pytest.mark.parametrize("request_", [
+        _set_request("pending", kind="output_pin"),
+        _set_request("rejected", kind="output_pin"),
+        _set_request("accepted", kind="output_pin", output_id="1002"),
+        _set_request("accepted", kind="output_pin", appliance_id="b" * 20),
+    ])
+    def test_any_other_wrong_pin_is_marked(self, request_):
+        assert _action(_report(reason="pin_invalid"), request=request_) == cs.FAILURE_MARK
+
+    def test_it_reopens_with_the_new_pin_line(self):
+        request = cs.TransportRequest("a" * 20, "output_pin", 100.0, "accepted", 101.0, None, "1001", 0)
+        reopened = cs.reopen_for_pin(request, 150.0, "pin_invalid_new")
+        assert (reopened.state, reopened.error, reopened.kind) == ("rejected", "pin_invalid_new", "output_pin")
+        assert cs.awaiting_pin(reopened, 151.0)
+        assert "pin_invalid_new" in cs.PIN_ERRORS
+
+    def test_a_wrong_pin_reply_with_a_new_pin_is_folded_as_such(self):
+        import dial_core_requests as rq
+        from autostream_peer_client import PeerReply
+        request = cs.TransportRequest("a" * 20, "output_pin", 100.0, "pending", 100.0, None, "1001", 0)
+        reply = PeerReply(False, "PIN was rejected", 5, "b1", {"pin_invalid": True, "new_pin": True}, None)
+        assert rq.fold_reply(request, reply, 101.0).error == "pin_invalid_new"
+        reply = PeerReply(False, "PIN was rejected", 5, "b1", {"pin_invalid": True}, None)
+        assert rq.fold_reply(request, reply, 101.0).error == "PIN was rejected"

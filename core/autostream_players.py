@@ -438,8 +438,12 @@ class PlayerBackend(ABC):
         reads muted, with volume_percent the level it returns to."""
 
     @abstractmethod
-    def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
-        """Submit an authorization PIN for an output."""
+    def submit_output_pin(self, output_id: str, pin: str, *, select: bool = False,
+                          volume_percent: Optional[int] = None,
+                          muted: Optional[bool] = None) -> ActionResult:
+        """Submit an authorization PIN for an output. With *select*, the
+        speaker is switched on once paired, at that level and mute, in one
+        request."""
 
     @abstractmethod
     def play(self) -> ActionResult:

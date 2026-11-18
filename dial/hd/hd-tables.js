@@ -59,13 +59,16 @@ export const OFFLINE_REFUSAL = "No connection to the dial.";
 
 export const PIN_TEXT = {
     instruction: (name) => "Enter the PIN shown on the screen of " + name + ".", busy: "Pairing...",
-    wrong: "That PIN was not accepted. Try again.", wait: (n) => "Wait " + n + " seconds before retry", paired: "Paired"
+    wrong: "That PIN was not accepted. Try again.", wait: (n) => "Wait " + n + " seconds before retry", paired: "Paired",
+    wrongNew: "That PIN was not accepted. A new PIN is showing on the TV."
 };
 // What a rejected speaker request says on the keypad card; the card's own
 // reasons for being (a PIN wanted, a wait with its own line) say nothing.
 export const SET_FAILURES = {
     pin_invalid: PIN_TEXT.wrong,
     invalid_pin: PIN_TEXT.wrong,
+    pin_invalid_new: PIN_TEXT.wrongNew,
+    pin_claimed: "Someone is entering a PIN for that speaker.",
     output_in_use: "That speaker is in use by another appliance.",
     encoder_capacity: "The appliance cannot encode another stream.",
     unreachable: "The appliance did not answer.",

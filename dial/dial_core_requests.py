@@ -255,10 +255,15 @@ def fold_reply(request: TransportRequest, reply, now: float) -> TransportRequest
     the appliance's own error name, or the library's for a transport outcome
     (unreachable, timeout, bad_reply, backoff, protocol_mismatch), and drops
     the shown value so the screen goes back at once. A rate limit also
-    carries the seconds it asks for."""
+    carries the seconds it asks for. A wrong PIN after which the speaker
+    shows a new one (the reply says new_pin) is rejected as pin_invalid_new."""
     if reply.ok:
         return dataclasses.replace(request, state="accepted", changed_at=now, error=None, retry_after_s=0)
     error = reply.error or "bad_reply"
+    result = getattr(reply, "result", None)
+    if isinstance(result, Mapping) and result.get("pin_invalid") is True and result.get("new_pin") is True:
+        # A wrong PIN sent with its switch-on: the speaker now shows a new PIN
+        error = "pin_invalid_new"
     return dataclasses.replace(
         request, state="rejected", changed_at=now, error=error, shown=None,
         retry_after_s=retry_after(reply) if error == "rate_limited" else 0,

@@ -94,8 +94,8 @@ class FakeBackend:
         self._record("stop_and_disable_all", timeout=timeout)
         return self._next()
 
-    def submit_output_pin(self, output_id, pin, timeout):
-        self._record("submit_output_pin", output_id, pin, timeout=timeout)
+    def submit_output_pin(self, output_id, pin, timeout, **kw):
+        self._record("submit_output_pin", output_id, pin, timeout=timeout, **kw)
         return self._next()
 
     def set_output_hold(self, output_id, held, timeout):

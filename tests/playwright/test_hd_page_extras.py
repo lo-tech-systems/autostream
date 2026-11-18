@@ -2384,7 +2384,7 @@ class TestSpeakerPin:
         tap_keys(page, "4096")
         tap_keys(page, ["ok", "ok"])
         page.wait_for_timeout(200)
-        assert sent == [("output.pin.submit", {"id": "o2", "pin": "4096"})]
+        assert sent == [("output.pin.submit", {"id": "o2", "pin": "4096", "selected": True})]
         assert shown_boxes(page) == ["", "", "", ""]
         hd.show(hs.SCENARIOS["pin_busy"])
         expect(page.locator("#card-message")).to_have_text("Pairing...")
@@ -2431,6 +2431,20 @@ class TestSpeakerPin:
         tap_keys(page, "2222")
         expect(pin_key(page, "ok")).to_be_enabled()
         expect(page.locator("#card-pin-error")).to_have_text(WRONG_PIN)
+
+    def test_a_wrong_pin_that_brought_up_a_new_one_says_so_and_ok_sends_it_with_the_select(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        sent = watch_intents(page)
+        open_page(page, hd)
+        tap_keys(page, "1111")
+        pin_key(page, "ok").click()
+        page.wait_for_timeout(200)
+        pins = [args for name, args in sent if name == "output.pin.submit"]
+        assert pins and pins[-1]["pin"] == "1111" and pins[-1]["selected"] is True
+        hd.show(hs.Scenario("pin_invalid_new", hs._pin_snapshot(
+            hs.pin_request("rejected", "pin_invalid_new", "output_pin"))))
+        expect(page.locator("#card-pin-error")).to_have_text(
+            "That PIN was not accepted. A new PIN is showing on the TV.")
 
     def test_a_rate_limited_outcome_counts_down_with_the_keypad_disabled(self, page, hd):
         hd.show(hs.SCENARIOS["pin_rate_limited"])

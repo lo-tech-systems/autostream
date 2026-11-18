@@ -46,6 +46,11 @@ def _enable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
         # else; a volume change on a speaker that is on is always allowed.
         if unit.in_use_by:
             return {"ok": False, "id": out_id, "error": "output_in_use", "owner": unit.in_use_by}
+    claim = unit.pin_claim
+    if not already_on and unit.availability == "password" and claim and claim != intent.context:
+        # Someone else is typing this speaker's PIN; a start now would
+        # replace the PIN on its screen
+        return {"ok": False, "id": out_id, "error": "pin_claimed", "pin_claim": claim}
 
     volume = args.get("volume")
     authority = get_authority()
@@ -138,7 +143,11 @@ def _output_pin_submit(intent: Intent, wait: float) -> Outcome:
     if not allowed:
         result = {"ok": False, "error": "rate_limited", "retry_after_s": retry_after, "id": out_id}
         return Outcome(ok=False, error="rate_limited", result=result)
-    applied = get_authority().submit_pin(out_id, args["pin"], requester=intent.requester)
+    authority = get_authority()
+    if args.get("selected") and authority.starts_are_async():
+        result = _pin_with_select(intent, wait, out_id)
+        return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
+    applied = authority.submit_pin(out_id, args["pin"], requester=intent.requester)
     outcome = _first(wait_outcome(applied, wait))
     if not outcome.ok and outcome.error_code == "pin_invalid":
         result = {"ok": False, "id": out_id, "pin_invalid": True, "error": outcome.error}
@@ -152,6 +161,38 @@ def _output_pin_submit(intent: Intent, wait: float) -> Outcome:
         else:
             result = {"ok": True, "id": out_id}
     return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
+
+
+def _pin_with_select(intent: Intent, wait: float, out_id: str) -> dict:
+    """A PIN and the start it unlocks in one request, to a player that
+    answers at once and reports the pairing by events. A wrong PIN means the
+    player has already asked the speaker for a new one, so the reply says
+    so; a verdict still to come is answered as pending, keeping the claim,
+    since it may yet be a wrong PIN."""
+    args = intent.args
+    authority = get_authority()
+    volume = args.get("volume")
+    volume = authority.start_volume() if volume is None else volume
+    applied = authority.submit_pin(
+        out_id, args["pin"], select=True, volume=volume,
+        requester=intent.requester, claimant=intent.context,
+    )
+    if applied.refused is not None:
+        return {"ok": False, "id": out_id, "error": applied.refused}
+    outcome = _first(wait_outcome(applied, wait))
+    if not outcome.ok and outcome.error_code == "pin_invalid":
+        return {"ok": False, "id": out_id, "pin_invalid": True, "new_pin": True, "error": outcome.error}
+    if not outcome.ok:
+        # The pairing ended another way (it timed out, or the speaker refused):
+        # the next switch-on asks for a new PIN
+        pairing.release(out_id)
+        authority.republish()
+        return _failure(out_id, outcome)
+    if outcome.pending:
+        return {"ok": True, "id": out_id, "pending": True}
+    pairing.release(out_id)
+    authority.republish()
+    return {"ok": True, "id": out_id}
 
 
 def _deselect_all(intent: Intent, wait: float) -> Outcome:

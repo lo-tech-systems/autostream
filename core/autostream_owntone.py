@@ -436,7 +436,11 @@ class OwnToneBackend(OwnToneHttpBackendBase):
             _MUTED.note_written(base, oid, volume)
         return result
 
-    def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
+    def submit_output_pin(self, output_id: str, pin: str, *, select: bool = False,
+                          volume_percent: Optional[int] = None, muted: Optional[bool] = None) -> ActionResult:
+        if select:
+            # OwnTone takes the PIN and the select as two requests
+            return self._unsupported_action("select")
         pin_text = str(pin or "").strip()
         if not pin_text:
             return ActionResult(ok=False, error="Missing PIN", error_code="missing_pin")

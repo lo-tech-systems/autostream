@@ -627,11 +627,25 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
     def set_output_muted(self, output_id: str, muted: bool) -> ActionResult:
         return self._put_output_fields(output_id, {"muted": bool(muted)})
 
-    def submit_output_pin(self, output_id: str, pin: str) -> ActionResult:
+    def submit_output_pin(self, output_id: str, pin: str, *, select: bool = False,
+                          volume_percent: Optional[int] = None, muted: Optional[bool] = None) -> ActionResult:
         pin_text = str(pin or "").strip()
         if not pin_text:
             return ActionResult(ok=False, error="Missing PIN", error_code="missing_pin")
-        return self._put_output_fields(output_id, {"pin": pin_text}, allow_pin_invalid=True)
+        payload: dict[str, Any] = {"pin": pin_text}
+        if select:
+            # The pairing and the start it unlocks in one request: the daemon
+            # starts the speaker at this level and mute once it is paired
+            payload["selected"] = True
+            if volume_percent is not None:
+                try:
+                    volume = int(volume_percent)
+                except Exception:
+                    volume = 0
+                payload["volume"] = max(0, min(100, volume))
+            if muted is not None:
+                payload["muted"] = bool(muted)
+        return self._put_output_fields(output_id, payload, allow_pin_invalid=True)
 
     def play(self) -> ActionResult:
         return self._put_json("/api/player/play", None, success_statuses=(204,))

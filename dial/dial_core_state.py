@@ -260,8 +260,9 @@ POWER_IDLE = PowerState("idle", 0.0)
 PIN_RE = re.compile(r"^[0-9]{4,8}\Z")
 # How long after a pairing outcome the screen may still be answering it.
 PIN_WINDOW_S = 90.0
-# Reply ids that mean the speaker is asking for a PIN.
-PIN_ERRORS = frozenset({"pin_required", "pin_invalid"})
+# Reply ids that mean the speaker is asking for a PIN; pin_invalid_new is a
+# wrong PIN after which the speaker shows a new one.
+PIN_ERRORS = frozenset({"pin_required", "pin_invalid", "pin_invalid_new"})
 # The kinds of request the outputs lane carries.
 OUTPUT_KINDS = frozenset({"output_set", "output_pin"})
 
@@ -397,7 +398,10 @@ def start_failure_action(
          state "accepted": PIN;
          state "rejected": MARK (the reply already asked);
        otherwise MARK. No age or focus rule applies here;
-    4. reason "pin_invalid": MARK (the keypad re-asks from the PIN reply);
+    4. reason "pin_invalid": PIN when request is this dial's "output_pin"
+       for that unit on that appliance and was accepted (its reply said the
+       verdict was still to come), else MARK (the keypad re-asks from the
+       PIN reply);
     5. report.age_s > START_FAILURE_MAX_AGE_S: MARK;
     6. otherwise: NOTICE."""
     if report is None or (seen is not None and seen[0] == report.boot and seen[1] >= report.seq):
@@ -412,19 +416,23 @@ def start_failure_action(
             return FAILURE_DEFER
         return FAILURE_PIN if request.state == "accepted" else FAILURE_MARK
     if report.reason == "pin_invalid":
+        if (request is not None and request.appliance_id == appliance_id and request.kind == "output_pin"
+                and request.output_id == report.unit_id and request.state == "accepted"):
+            return FAILURE_PIN
         return FAILURE_MARK
     if report.age_s > START_FAILURE_MAX_AGE_S:
         return FAILURE_MARK
     return FAILURE_NOTICE
 
 
-def reopen_for_pin(request: TransportRequest, now: float) -> TransportRequest:
+def reopen_for_pin(request: TransportRequest, now: float, error: str = "pin_required") -> TransportRequest:
     """The accepted output request as one that ended asking for a PIN now:
-    state "rejected", error "pin_required", changed_at now (so the PIN window
-    runs from now), shown None. Everything else kept, the token
-    (requested_at) and output_id included."""
+    state "rejected", *error* ("pin_required", or "pin_invalid_new" for a
+    PIN refused after its reply, when the speaker shows a new one),
+    changed_at now (so the PIN window runs from now), shown None.
+    Everything else kept, the token (requested_at) and output_id included."""
     return replace(
-        request, state="rejected", error="pin_required", changed_at=now, shown=None,
+        request, state="rejected", error=error, changed_at=now, shown=None,
     )
 
 

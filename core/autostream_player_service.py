@@ -1530,8 +1530,12 @@ def set_output_muted(base_url: str, output_id: str, muted: bool, *, timeout: flo
     return resolve_backend(base_url, timeout=timeout).backend.set_output_muted(output_id, muted)
 
 
-def submit_output_pin(base_url: str, output_id: str, pin: str, *, timeout: float = 3.0) -> ActionResult:
-    return resolve_backend(base_url, timeout=timeout).backend.submit_output_pin(output_id, pin)
+def submit_output_pin(base_url: str, output_id: str, pin: str, *, timeout: float = 3.0, select: bool = False,
+                      volume_percent: Optional[int] = None, muted: Optional[bool] = None) -> ActionResult:
+    backend = resolve_backend(base_url, timeout=timeout).backend
+    if not select:
+        return backend.submit_output_pin(output_id, pin)
+    return backend.submit_output_pin(output_id, pin, select=True, volume_percent=volume_percent, muted=muted)
 
 
 def play(base_url: str, *, timeout: float = 3.0) -> ActionResult:

@@ -218,7 +218,8 @@ class OutputBackend(Protocol):
 
     def stop_and_disable_all(self, timeout: float) -> ActionResult: ...
 
-    def submit_output_pin(self, output_id: str, pin: str, timeout: float) -> ActionResult: ...
+    def submit_output_pin(self, output_id: str, pin: str, timeout: float, *, select: bool = False,
+                          volume_percent: Optional[int] = None, muted: Optional[bool] = None) -> ActionResult: ...
 
     def set_output_hold(self, output_id: str, held: bool, timeout: float) -> ActionResult: ...
 
@@ -250,8 +251,12 @@ class PlayerServiceBackend:
     def stop_and_disable_all(self, timeout: float) -> ActionResult:
         return player_service.stop_and_disable_all(self.base_url, timeout=timeout)
 
-    def submit_output_pin(self, output_id: str, pin: str, timeout: float) -> ActionResult:
-        return player_service.submit_output_pin(self.base_url, output_id, pin, timeout=timeout)
+    def submit_output_pin(self, output_id: str, pin: str, timeout: float, *, select: bool = False,
+                          volume_percent: Optional[int] = None, muted: Optional[bool] = None) -> ActionResult:
+        if not select:
+            return player_service.submit_output_pin(self.base_url, output_id, pin, timeout=timeout)
+        return player_service.submit_output_pin(self.base_url, output_id, pin, timeout=timeout, select=True,
+                                                volume_percent=volume_percent, muted=muted)
 
     def set_output_hold(self, output_id: str, held: bool, timeout: float) -> ActionResult:
         return player_service.set_output_hold(self.base_url, output_id, held, timeout=timeout)
@@ -1008,36 +1013,7 @@ class OutputAuthority:
             u = self._units.get(unit_id)
             if u is None:
                 return self._refused("unknown_output")
-            if cause in (Origin.USER, Origin.POLICY, Origin.DEVICE):
-                self._pending.clear()
-            d = u.desired
-            if self._muted_all_locked():
-                # Joining a muted session: the speaker starts silent, keeping
-                # its level for a later restore.
-                if not d.muted:
-                    d.mute_token = self._next_token_locked()
-                    d.mute_joined = True
-                d.muted = True
-            if vol is not None:
-                d.volume = vol
-            if not d.selected:
-                u.select_seq += 1
-                d.held = False
-            d.selected = True
-            u.retry_allowed = cause != Origin.USER
-            self._new_attempt_locked(u)
-            u.claimant = claimant
-            u.failure_reported = False
-            u.start_pending_until = 0.0
-            u.retry_at = None
-            u.retry_n = 0
-            u.retry_limit = None
-            u.group_hold_backoff = RETRY_MIN_S
-            u.held_until = 0.0
-            u.reselect_retry = False
-            u.diff_since.clear()
-            u.requester = requester
-            self._stamp(u, cause, now)
+            self._begin_select_locked(u, cause, vol, requester, claimant, now)
             batch = _Batch(1)
             self._enqueue(_Write(
                 "select", unit_id, u.desired_seq,
@@ -1046,6 +1022,42 @@ class OutputAuthority:
             ))
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, batch.future)
+
+    def _begin_select_locked(self, u: UnitState, cause: Origin, vol: Optional[int],
+                             requester: Optional[str], claimant: Optional[str], now: float) -> None:
+        """The desired state of a speaker switched on by *cause*: selected, at
+        *vol* when given, muted when it joins a muted selection, and a fresh
+        start whose result is still to show."""
+        if cause in (Origin.USER, Origin.POLICY, Origin.DEVICE):
+            self._pending.clear()
+        d = u.desired
+        if self._muted_all_locked():
+            # Joining a muted session: the speaker starts silent, keeping
+            # its level for a later restore.
+            if not d.muted:
+                d.mute_token = self._next_token_locked()
+                d.mute_joined = True
+            d.muted = True
+        if vol is not None:
+            d.volume = vol
+        if not d.selected:
+            u.select_seq += 1
+            d.held = False
+        d.selected = True
+        u.retry_allowed = cause != Origin.USER
+        self._new_attempt_locked(u)
+        u.claimant = claimant
+        u.failure_reported = False
+        u.start_pending_until = 0.0
+        u.retry_at = None
+        u.retry_n = 0
+        u.retry_limit = None
+        u.group_hold_backoff = RETRY_MIN_S
+        u.held_until = 0.0
+        u.reselect_retry = False
+        u.diff_since.clear()
+        u.requester = requester
+        self._stamp(u, cause, now)
 
     @staticmethod
     def _new_attempt_locked(u: UnitState) -> None:
@@ -1482,13 +1494,33 @@ class OutputAuthority:
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future)
 
-    def submit_pin(self, unit_id: str, pin: str, *, requester: Optional[str] = None) -> Applied:
-        """A write only: the PIN goes to the player, desired state is untouched."""
+    def submit_pin(self, unit_id: str, pin: str, *, requester: Optional[str] = None, select: bool = False,
+                   volume: Optional[int] = None, claimant: Optional[str] = None) -> Applied:
+        """Without *select*, a write only: the PIN goes to the player and the
+        desired state is untouched. With *select* (a player that answers at
+        once), the speaker is wanted on as the user's select would make it,
+        and the PIN and that start go in one request, whose outcome waits for
+        the player's verdict on the PIN."""
         self._touched = True
-        batch = _Batch(1)
-        self._enqueue(_Write("pin", unit_id, 0, {"pin": pin}, [(batch, 0)]))
-        self._after_intent()
-        return Applied(version=store().snapshot().version, outcome=batch.future)
+        if not select:
+            batch = _Batch(1)
+            self._enqueue(_Write("pin", unit_id, 0, {"pin": pin}, [(batch, 0)]))
+            self._after_intent()
+            return Applied(version=store().snapshot().version, outcome=batch.future)
+        now = self._clock()
+        vol = None if volume is None else _clamp(volume)
+        with self._lock:
+            u = self._units.get(unit_id)
+            if u is None:
+                return self._refused("unknown_output")
+            self._begin_select_locked(u, Origin.USER, vol, requester, claimant, now)
+            batch = _Batch(1)
+            self._enqueue(_Write(
+                "pin", unit_id, u.desired_seq, {"pin": pin, "select": True, "volume": vol, "cause": Origin.USER},
+                [(batch, 0)], requester=requester, claimant=claimant,
+            ))
+            pending = self._publish_locked(Origin.USER, requester)
+        return self._finish_intent(pending, batch.future)
 
     def note_session(self, active: bool) -> None:
         """Session edges. A session end clears the user's "silence" choice,
@@ -2444,7 +2476,9 @@ class OutputAuthority:
         if not u.pin_sinks:
             return
         if ev.state in ("failed", "password"):
-            code = "pin_invalid" if ev.reason == "pin_invalid" else (ev.reason or "failed")
+            # A pairing that ran out of time is named as a notice names it, so
+            # it is not taken for a request that went unanswered
+            code = {"timeout": "timed_out", "": "failed", "none": "failed"}.get(ev.reason, ev.reason)
             outcome = WriteOutcome(ok=False, error_code=code, error=code)
         elif ev.pin_pending is False:
             outcome = WriteOutcome(ok=True)
@@ -2534,6 +2568,9 @@ class OutputAuthority:
             self._inflight -= 1
             outcome = self._record_locked(w, results, self._clock(), fx)
             pending = self._publish_locked(Origin.BACKEND, None)
+        if outcome is None:
+            # Parked on the unit: an event or the timer completes the waiters
+            return [pending], fx.run
         return [pending], (lambda: (fx.run(), self._complete(w, outcome)))
 
     def _build_locked(self, w: _Write, include: Optional[bool]):
@@ -2600,7 +2637,16 @@ class OutputAuthority:
             return lambda b: [b.set_selected_outputs([], timeout=WRITE_TIMEOUT_S)]
         if kind == "pin":
             pin = w.params.get("pin", "")
-            return lambda b: [b.submit_output_pin(uid, pin, timeout=WRITE_TIMEOUT_S)]
+            if not w.params.get("select"):
+                return lambda b: [b.submit_output_pin(uid, pin, timeout=WRITE_TIMEOUT_S)]
+            if u is None or u.reported is None:
+                return None
+            # The start the PIN unlocks carries the level and mute a select would
+            asked = w.params.get("volume")
+            level = _clamp(u.desired.volume if asked is None else asked)
+            muted = u.desired.muted
+            return lambda b: [b.submit_output_pin(uid, pin, select=True, volume_percent=level, muted=muted,
+                                                  timeout=WRITE_TIMEOUT_S)]
         if kind == "hold":
             # The hold as it is wanted now: a hold and its end queued close
             # together send the latest twice, which the player takes as one.
@@ -2610,11 +2656,16 @@ class OutputAuthority:
             return lambda b: [b.set_output_hold(uid, held, timeout=WRITE_TIMEOUT_S)]
         return None
 
-    def _record_locked(self, w: _Write, results: list, now: float, fx: _Effects) -> WriteOutcome:
+    def _record_locked(self, w: _Write, results: list, now: float, fx: _Effects) -> Optional[WriteOutcome]:
+        """The outcome of a write the player answered, recorded in the unit;
+        None when its outcome waits for a later event (a PIN sent with its
+        select to a player that answers at once)."""
         r = results[0] if results else ActionResult(ok=True)
         u = self._units.get(w.unit_id) if w.unit_id is not None else None
         if w.kind == "select":
             return self._record_select_locked(w, r, u, now, fx)
+        if w.kind == "pin" and w.params.get("select"):
+            return self._record_pin_select_locked(w, r, u, now, fx)
         if w.kind == "hold" and not r.ok and u is not None and u.desired.held:
             # The player could not hold it after all (its session changed
             # since its row was read): it plays on, and so it reads.
@@ -2682,6 +2733,28 @@ class OutputAuthority:
         if u is not None:
             self._select_outcome_locked(u, "failed", "refused", w.requester, None, stale, now, fx)
         return WriteOutcome(ok=False, error_code=code, error=r.message)
+
+    def _record_pin_select_locked(self, w: _Write, r: ActionResult, u: Optional[UnitState],
+                                  now: float, fx: _Effects) -> Optional[WriteOutcome]:
+        """A PIN sent with its select. The player accepted it: the pairing
+        runs, and the event that ends it answers the request (parked here
+        until then, or until PIN_OUTCOME_S passes). A refusal is a failed
+        start, as a select's would be; any 400 to a PIN reads as a wrong PIN."""
+        stale = u is None or u.desired_seq != w.seq
+        if r.ok and u is not None and self._async_outputs_cap:
+            if not stale:
+                u.own_write_at = now
+                u.start_pending_until = now + START_PENDING_S
+                u.pin_sinks.extend(w.sinks)
+                u.pin_deadline = now + PIN_OUTCOME_S
+                fx.republish = True
+                return None
+            r_now = u.reported
+            if u.outcome_applied and r_now is not None and r_now.session_state in ("failed", "password"):
+                # The verdict came as an event before this answer
+                code = {"timeout": "timed_out", "none": "failed"}.get(r_now.session_failure, r_now.session_failure)
+                return WriteOutcome(ok=False, error_code=code, error=code)
+        return self._record_select_locked(w, r, u, now, fx)
 
     def _select_outcome_locked(self, u: UnitState, code: str, notice: str, requester: Optional[str],
                                claimant: Optional[str], stale: bool, now: float, fx: _Effects) -> None:

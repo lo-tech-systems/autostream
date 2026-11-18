@@ -228,7 +228,9 @@ function onPinKey(key) {
     let digits = p.digits;
     if (key === "ok") {
         if (!p.canSubmit) { return; }
-        submit("output.pin.submit", { id: p.outputId, pin: digits });
+        // The keypad opens only for a speaker the person tried to switch on: the
+        // PIN goes with that switch-on, so a wrong one brings up a new PIN
+        submit("output.pin.submit", { id: p.outputId, pin: digits, selected: true });
         digits = "";
     } else if (PIN_EDITS[key]) {
         digits = PIN_EDITS[key](digits);

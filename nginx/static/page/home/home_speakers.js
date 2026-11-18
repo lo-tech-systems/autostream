@@ -20,6 +20,7 @@ let drag = null;               // the master slider's drag: { base, snaps }
 let promptActive = false;
 const busy = new Set();        // speakers with a request in flight
 const dismissed = new Set();   // speakers whose PIN prompt was cancelled
+const wrongPin = new Set();    // speakers whose PIN was refused after its request was answered
 const handled = {};            // speaker id -> when its own switch showed the CPU-limit notice
 const names = {};              // speaker id -> name, as last drawn
 
@@ -64,9 +65,10 @@ function pinDialog(name, note, wait = 0) {
 }
 
 // One PIN attempt is one request that pairs the speaker and switches it on.
-async function pinFlow(id, name, volume) {
+// A wrong PIN sent with its switch-on makes the speaker show a new PIN.
+async function pinFlow(id, name, volume, first = '') {
   hold('sel:' + id, false, null);
-  let note = '';
+  let note = first;
   for (;;) {
     const pin = await pinDialog(name || 'this speaker', note);
     if (!pin) return false;
@@ -75,12 +77,21 @@ async function pinFlow(id, name, volume) {
     const res = r.result || {};
     if (r.ok) { hold('sel:' + id, true, r.version); return true; }
     note = '';
-    if (res.pin_invalid) note = REFUSAL.pin_invalid;
+    if (res.pin_invalid) { wrongPin.delete(id); note = res.new_pin ? REFUSAL.pin_invalid_new : REFUSAL.pin_invalid; }
     else if (r.error === 'rate_limited') {
       const s = Math.max(1, parseInt(r.retry_after_s ?? res.retry_after_s, 10) || 1);
       if (!(await pinDialog(name || 'this speaker', '', s))) return false;
     } else if (!res.pin_required) return false;
   }
+}
+
+// A PIN refused after its request was answered (the verdict came later) is
+// news once: the dialog that opens for the new PIN says so.
+function noteLateWrongPin(view) {
+  const f = (view.parts.outputs || {}).start_failure;
+  if (!f || f.reason !== 'pin_invalid' || seen.first || (seen.boot === view.boot && f.seq <= seen.seq)) return;
+  // A dialog still open for it hears the verdict in its own reply
+  if (!busy.has(f.unit_id)) wrongPin.add(f.unit_id);
 }
 
 // A speaker asking for a PIN that nobody else is entering gets the dialog.
@@ -92,7 +103,8 @@ function maybePrompt(rows) {
   promptActive = true;
   busy.add(t.id);
   const sl = $('vol_slider_' + t.id);
-  pinFlow(t.id, t.name, sl ? clamp(sl.value) : ctx.prefs.preset_volume)
+  const first = wrongPin.delete(t.id) ? REFUSAL.pin_invalid_new : '';
+  pinFlow(t.id, t.name, sl ? clamp(sl.value) : ctx.prefs.preset_volume, first)
     .then((ok) => { if (!ok) dismissed.add(t.id); })
     .finally(() => { promptActive = false; busy.delete(t.id); ctx.redraw(); });
 }
@@ -245,6 +257,7 @@ export function drawSpeakers(view) {
   ph.textContent = text;
   ph.hidden = !text;
   drawMaster(p);
+  noteLateWrongPin(view);
   maybePrompt(rows);
   notice(view);
 }

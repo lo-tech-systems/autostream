@@ -1008,10 +1008,11 @@ class DialCore:
                 lines.append(f"{name} could not start {report.name} ({report.reason})")
             elif action == FAILURE_PIN:
                 request = state.outputs_request
-                state.outputs_request = reopen_for_pin(request, now)
+                error = "pin_invalid_new" if report.reason == "pin_invalid" else "pin_required"
+                state.outputs_request = reopen_for_pin(request, now, error)
                 effects.append(OutputsEffect(
-                    appliance_id, request.output_id or "", "output_set", "rejected",
-                    "pin_required", request.requested_at, True,
+                    appliance_id, request.output_id or "", request.kind, "rejected",
+                    error, request.requested_at, True,
                 ))
                 lines.append(f"{name} could not start {report.name} ({report.reason})")
 

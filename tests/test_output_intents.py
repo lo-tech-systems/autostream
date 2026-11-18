@@ -59,8 +59,8 @@ def player(monkeypatch):
         rec.calls.append(("update_output", out_id, kwargs))
         return answer()
 
-    def submit_output_pin(base_url, out_id, pin, timeout=None):
-        rec.calls.append(("submit_output_pin", out_id, pin))
+    def submit_output_pin(base_url, out_id, pin, timeout=None, **kw):
+        rec.calls.append(("submit_output_pin", out_id, pin, kw) if kw else ("submit_output_pin", out_id, pin))
         return answer()
 
     def set_output_muted(base_url, out_id, muted, timeout=None):
@@ -943,3 +943,92 @@ class TestPushDefaultSet:
         assert live.update_live_owntone_runtime(settings=store) is True
         assert [m.name for m in snap().default_members] == ["Hall"]
         assert get_authority().start_volume() == 18
+
+
+# ---------------------------------------------------------------------------
+# The PIN and its start in one request, on a player that answers at once
+# ---------------------------------------------------------------------------
+
+class TestPinWithSelectOnAnAsyncPlayer:
+    @pytest.fixture
+    def a(self, player):
+        a = get_authority()
+        async_hello(a)
+        arrange(group_row(ID, name="Kitchen"))
+        pairing.claim(ID, "webui")
+        return a
+
+    def pin(self, **extra):
+        return {"id": ID, "op": "pin", "pin": "1234", "selected": True, "volume": 40, **extra}
+
+    def settle_later(self, a, *events):
+        """Deliver *events* on another thread once the request is parked."""
+        def run():
+            assert _wait_for(lambda: a._units[ID].pin_sinks)
+            for ev in events:
+                a.on_device_event(ev)
+            a.step()
+        t = threading.Thread(target=run, daemon=True)
+        t.start()
+        return t
+
+    def test_pin_with_select_is_one_write_on_an_async_player(self, a, player):
+        t = self.settle_later(a, state_event(ID, "stopped", selected=True, pin_pending=False))
+        assert change(self.pin()) == {"ok": True, "id": ID}
+        t.join(5)
+        assert player.calls == [("submit_output_pin", ID, "1234",
+                                 {"select": True, "volume_percent": 40, "muted": False})]
+        assert pairing.holder(ID) == ""
+        assert snap().unit(ID).selected is True
+
+    def test_a_wrong_pin_by_event_replies_pin_invalid_with_new_pin(self, a, player):
+        t = self.settle_later(a, state_event(ID, "password", "pin_invalid", selected=False, pin_pending=True))
+        r = change(self.pin())
+        t.join(5)
+        assert r["ok"] is False and r["pin_invalid"] is True and r["new_pin"] is True
+        assert pairing.holder(ID) == "webui"
+        assert snap().unit(ID).selected is False
+
+    def test_a_late_outcome_replies_pending_and_keeps_the_claim(self, a, player):
+        r = submit(Intent("output.pin.submit", {"id": ID, "pin": "1234", "selected": True}, Origin.USER,
+                          "webui", context="webui"), wait=0.05)
+        assert r.result == {"ok": True, "id": ID, "pending": True}
+        assert pairing.holder(ID) == "webui"
+
+    def test_a_timed_out_pairing_closes_with_its_reason(self, a, player):
+        t = self.settle_later(a, state_event(ID, "password", "timeout", selected=False, pin_pending=True))
+        r = change(self.pin())
+        t.join(5)
+        assert r == {"ok": False, "id": ID, "error": "timed_out"}
+        assert pairing.holder(ID) == ""
+        assert snap().start_failure.reason == "timed_out"
+
+    def test_without_the_capability_the_two_step_flow_stands(self, player):
+        arrange(group_row(ID, name="Kitchen"))
+        assert change(self.pin()) == {"ok": True, "id": ID}
+        assert [c[0] for c in player.calls] == ["submit_output_pin", "update_output"]
+        assert len(player.calls[0]) == 3
+
+
+class TestPinClaimOccupancy:
+    def prompt(self, a, who):
+        a.merge_for_tests([group_row(ID, "password", name="Kitchen", pin_pending=True)], boot="b0")
+        pairing.claim(ID, who)
+        a.republish()
+
+    def test_a_select_during_another_clients_pin_entry_sends_nothing(self, player):
+        a = get_authority()
+        arrange(group_row(ID, name="Kitchen"))
+        self.prompt(a, "dial:abc")
+        r = submit(Intent("outputs.set", {"id": ID, "selected": True}, Origin.USER, "webui", context="webui"))
+        assert r.result == {"ok": False, "id": ID, "error": "pin_claimed", "pin_claim": "dial:abc"}
+        assert player.calls == []
+
+    def test_the_claimants_own_select_is_sent(self, player):
+        a = get_authority()
+        arrange(group_row(ID, name="Kitchen"))
+        self.prompt(a, "dial:abc")
+        r = submit(Intent("outputs.set", {"id": ID, "selected": True}, Origin.USER, "dial:abc",
+                          context="dial:abc"))
+        assert r.ok is True
+        assert [c[0] for c in player.calls] == ["update_output"]

@@ -3495,3 +3495,80 @@ class TestRealThreadsWithEvents:
             stop.set()
             t.join(5)
         assert wait_for(lambda: live.a._items.empty())
+
+
+class TestPinWithSelect:
+    def pin_calls(self, w):
+        return [c for c in w.fb.calls if c[0] == "submit_output_pin"]
+
+    def test_a_pin_with_select_sets_desired_and_queues_one_write(self, ew):
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=35, requester="webui", claimant="webui")
+        u = snap().unit("1")
+        assert u.selected is True and u.volume == 35 and u.cause is Origin.USER
+        assert self.pin_calls(ew) == [("submit_output_pin", ("1", "1234"),
+                                       dict(timeout=3.0, select=True, volume_percent=35, muted=False))]
+        assert len(ew.fb.calls) == 1
+        assert wait_outcome(applied, 0.05) == (WriteOutcome(ok=True, pending=True),)
+
+    def test_an_unknown_speaker_is_refused(self, ew):
+        assert ew.a.submit_pin("9", "1234", select=True).refused == "unknown_output"
+        assert ew.fb.calls == []
+
+    def test_its_204_parks_the_outcome_until_the_event(self, ew):
+        applied = ew.a.submit_pin("1", "0000", select=True, volume=30, claimant="webui")
+        assert not applied.outcome.done()
+        assert unit_state(ew).pin_sinks and unit_state(ew).pin_deadline == T0 + outputs.PIN_OUTCOME_S
+        send(ew, "1", "password", "pin_invalid", selected=False, pin_pending=True, at_s=1)
+        out = applied.outcome.result(1)[0]
+        assert (out.ok, out.error_code) == (False, "pin_invalid")
+        assert snap().unit("1").selected is False and snap().start_failure.reason == "pin_invalid"
+        assert unit_state(ew).pin_sinks == []
+
+    def test_a_right_pin_settles_on_stopped_without_pin_pending(self, ew):
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        send(ew, "1", "stopped", selected=True, pin_pending=False, at_s=1)
+        assert applied.outcome.result(1) == (WriteOutcome(ok=True),)
+        send(ew, "1", "connecting", selected=True, pin_pending=False, at_s=1.2)
+        send(ew, "1", "streaming", selected=True, pin_pending=False, at_s=2)
+        assert snap().unit("1").availability == "ok" and snap().start_failure is None
+
+    def test_a_running_authorise_does_not_settle_it(self, ew):
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        send(ew, "1", "connecting", selected=False, pin_pending=True, at_s=1)
+        assert not applied.outcome.done()
+        send(ew, "1", "connecting", selected=True, at_s=1.5)
+        assert not applied.outcome.done()
+
+    def test_parked_outcomes_expire_as_pending(self, ew):
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        at(ew, outputs.PIN_OUTCOME_S - 1)
+        assert not applied.outcome.done()
+        at(ew, outputs.PIN_OUTCOME_S + 0.1)
+        assert applied.outcome.result(1) == (WriteOutcome(ok=True, pending=True),)
+
+    def test_a_timed_out_authorise_answers_timed_out(self, ew):
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        send(ew, "1", "password", "timeout", selected=False, pin_pending=True, at_s=4)
+        out = applied.outcome.result(1)[0]
+        assert (out.ok, out.error_code) == (False, "timed_out")
+        assert snap().unit("1").selected is False and snap().start_failure.reason == "timed_out"
+
+    def test_a_verdict_before_the_204_answers_the_request(self, ew):
+        def wrong_first(uid, pin, fields):
+            ew.a.on_device_event(state_event("1", "password", "pin_invalid", selected=False, pin_pending=True))
+            ew.a.step(now=ew.t[0])
+
+        original = ew.fb.submit_output_pin
+
+        def submit(output_id, pin, timeout, **kw):
+            wrong_first(output_id, pin, kw)
+            return original(output_id, pin, timeout, **kw)
+
+        ew.fb.submit_output_pin = submit
+        out = ew.a.submit_pin("1", "0000", select=True, volume=30).outcome.result(1)[0]
+        assert (out.ok, out.error_code) == (False, "pin_invalid")
+
+    def test_a_refused_pin_reverts_like_a_refused_select(self, ew):
+        ew.fb.results = [error("pin_invalid", "PIN was rejected")]
+        out = ew.a.submit_pin("1", "0000", select=True, volume=30).outcome.result(1)[0]
+        assert out.error_code == "pin_invalid" and snap().unit("1").selected is False

@@ -15,6 +15,8 @@ export const REFUSAL = {
     text: 'Unable to enable ' + (name || 'this output') + ': the appliance\'s CPU cannot encode another stream at the selected quality. Disable another output or choose a lighter audio mode.',
   }),
   pin_invalid: 'That PIN was not accepted. Try again.',
+  pin_invalid_new: 'That PIN was not accepted. A new PIN is showing on the TV.',
+  pin_claimed: 'Someone is entering a PIN for that speaker.',
   nothing_selected: 'Turn on at least one speaker first.',
   settings_unavailable: 'The speakers could not be saved just now. Try again in a moment.',
 };

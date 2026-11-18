@@ -708,6 +708,27 @@ class TestSubmitPinContract:
         assert mock_put.call_args[0][0] == "http://localhost:3689/api/outputs/1"
         assert mock_put.call_args[1].get("json") == {"pin": "1234"}
 
+    def test_a_pin_with_select_is_one_put_with_level_and_mute(self):
+        r = _resp(status=204, content=b"")
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
+            result = _mini().submit_output_pin("1", "1234", select=True, volume_percent=130, muted=True)
+        assert result.ok is True
+        assert mock_put.call_count == 1
+        assert mock_put.call_args[1].get("json") == {"pin": "1234", "selected": True, "volume": 100, "muted": True}
+        with patch("autostream_players._session.put", return_value=r) as mock_put:
+            _mini().submit_output_pin("1", "1234", select=True)
+        assert mock_put.call_args[1].get("json") == {"pin": "1234", "selected": True}
+        # Any 400 to a PIN is a wrong PIN
+        with patch("autostream_players._session.put", return_value=_resp(status=400, content=b"")):
+            result = _mini().submit_output_pin("1", "0000", select=True, volume_percent=30, muted=False)
+        assert (result.ok, result.error_code) == (False, "pin_invalid")
+
+    def test_upstream_refuses_a_pin_with_select(self):
+        with patch("autostream_players._session.put") as mock_put:
+            result = OwnToneBackend(base_url="http://localhost:3689").submit_output_pin("1", "1234", select=True)
+        assert result.ok is False and result.error_code == "unsupported"
+        mock_put.assert_not_called()
+
 
 class TestSetOutputEnabledContract:
     def test_enable_sends_selected_true(self, backend):

@@ -246,3 +246,55 @@ class TestRules:
         assert pp.holder("o1") == ""
         assert pp.note_attempt("webui", "o1") == (True, 0)
         pp.STATE.reset()
+
+
+class TestWrongPinSequence:
+    """A wrong PIN sent with its select: the player reports password with
+    pin_invalid, then the start it makes for the next PIN (connecting), then
+    password with pin_required once the new PIN is on the screen. Only the
+    first is applied; the third refreshes the row."""
+
+    def test_one_revert_one_claim_one_notice_and_the_new_prompt(self, monkeypatch):
+        import autostream_output_intents  # noqa: F401  (installs the late-claim handler)
+        from autostream_intents import Intent, submit
+        from autostream_state import Origin
+        from autostream_state.outputs import get_authority
+        from output_fakes import FakeBackend, async_hello, group_row, snap, state_event
+
+        a = get_authority()
+        fb = FakeBackend(a)
+        clock = [1000.0]
+        monkeypatch.setattr(a, "_clock", lambda: clock[0])
+        a.start(fb)
+        async_hello(a)
+        rows = [group_row("7", name="Den TV")]
+        fb.rows = rows
+        a.merge_for_tests(rows, boot="b0", now=clock[0])
+        pp.claim("7", "webui")
+        published = []
+        monkeypatch.setattr(a, "_start_failure_locked",
+                            (lambda orig: lambda u, reason, req=None: (published.append(reason), orig(u, reason, req)))(
+                                a._start_failure_locked))
+
+        def step(ev, at):
+            clock[0] = 1000.0 + at
+            a.on_device_event(ev)
+            a.step(now=clock[0])
+
+        reply = submit(Intent("output.pin.submit", {"id": "7", "pin": "0000", "selected": True}, Origin.USER,
+                              "webui", context="webui"), wait=0.05)
+        assert reply.result.get("pending") is True
+        step(state_event("7", "password", "pin_invalid", selected=False, pin_pending=True), 0.5)
+        assert snap().unit("7").selected is False
+        step(state_event("7", "connecting", selected=True, pin_pending=False), 0.7)
+        # The player starts it again for the next PIN: not switched off meanwhile
+        for t in (3.0, 6.0):
+            clock[0] = 1000.0 + t
+            a.step(now=clock[0])
+        assert not [c for c in fb.calls if c[0] == "update_output" and c[2].get("enabled") is False]
+        step(state_event("7", "password", "pin_required", selected=False, pin_pending=True), 7.0)
+        assert published == ["pin_invalid"]
+        assert pp.holder("7") == "webui"
+        u = snap().unit("7")
+        assert u.selected is False and u.availability == "password" and u.reported.pin_pending is True
+        assert len([c for c in fb.calls if c[0] == "submit_output_pin"]) == 1
