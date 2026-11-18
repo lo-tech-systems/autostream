@@ -269,6 +269,13 @@ class ScreenPolicy:
     replay_surface: tuple[str, bool, bool, bool] | None = None
 
 
+def _defers_sleep(screen: str, request: "str | None") -> bool:
+    """Whether the open screen, or the screen requested but not yet applied
+    (an open_* call just ran on the touch thread), holds off the idle-sleep
+    countdown. Plain reads."""
+    return _policy(screen).defers_sleep or (request is not None and _policy(request).defers_sleep)
+
+
 _RESAMPLE_BOX = Image.Resampling.BOX
 _RESAMPLE_NEAREST = Image.Resampling.NEAREST
 
@@ -4367,11 +4374,7 @@ class DialDisplay:
         screen = self._screen
         if focus_cleared and _policy(screen).closes_on_focus_clear:
             screen = "main"
-        open_or_requested = [_policy(screen)]
-        request = self._screen_request
-        if request is not None:
-            open_or_requested.append(_policy(request))
-        if any(p.defers_sleep for p in open_or_requested):
+        if _defers_sleep(screen, self._screen_request):
             return True
         started = self._idle_started_at
         return started is not None and time.monotonic() - started >= DISPLAY_IDLE_SLEEP_SECONDS
@@ -4420,10 +4423,7 @@ class DialDisplay:
             # touch thread, the repaint thread has not applied it yet)
             # counts as open too, so this never clobbers a list that is
             # opening this very tick.
-            open_or_requested = [_policy(self._screen)]
-            if self._screen_request is not None:
-                open_or_requested.append(_policy(self._screen_request))
-            list_open = any(p.defers_sleep for p in open_or_requested)
+            list_open = _defers_sleep(self._screen, self._screen_request)
             current = _policy(self._screen)
             if current.when_nothing_plays == IDLE_KEEP_WITH_FOCUS and not tick.idle_focus:
                 self._close_secondary_locked()
