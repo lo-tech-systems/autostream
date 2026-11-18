@@ -204,25 +204,6 @@ def test_a_store_write_that_fails_still_reports_success_with_a_warning(ctx, stor
     assert "could not be saved" in reply.result["warning"]
 
 
-def test_the_form_path_writes_the_file_and_restores_the_old_preference_on_failure(ctx):
-    with patch("autostream_appliances.reconcile_appliance_announcement", return_value=True) as rec, \
-            patch("autostream_live_config.load_config", return_value={}), \
-            patch("autostream_live_config.save_config", side_effect=OSError("disk")):
-        reply = _advertise(ctx, False, rollback_to=True)
-    assert (reply.ok, reply.error) == (False, "save_failed")
-    assert [c.args for c in rec.call_args_list] == [("1.0", False), ("1.0", True)]
-
-
-def test_the_form_path_persists_to_the_configuration_file(ctx):
-    saved = {}
-    with patch("autostream_appliances.reconcile_appliance_announcement", return_value=True), \
-            patch("autostream_live_config.load_config", return_value={}), \
-            patch("autostream_live_config.save_config", side_effect=lambda p, c: saved.update(c)):
-        reply = _advertise(ctx, False, rollback_to=True)
-    assert reply.ok is True
-    assert saved == {"webui": {"advertise_appliance": False}}
-
-
 def test_a_value_that_is_not_a_boolean_is_refused(ctx):
     reply = _advertise(ctx, "yes")
     assert reply.error == "value must be a boolean"

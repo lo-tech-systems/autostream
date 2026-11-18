@@ -21,7 +21,7 @@ Key boundaries:
 |---|---|
 | Shared mDNS transport (`autostream_mdns.py`) | Raw Avahi event parsing; no policy |
 | Appliance discovery adapter (`autostream_appliances.py`) | `_autostream._tcp` event handling; in-memory registry |
-| Bound-appliance gateway (`autostream_appliance_gateway.py`) | Token acquisition, request forwarding, error normalization |
+| Bound-appliance gateway (`webui/peer/gateway.py`) | Token acquisition, request forwarding, error normalization |
 | Browser-facing gateway API (`/api/appliances/<id>/…`) | Thin proxy; returns browser-contract JSON |
 | Target federation API (`/api/federation/v1/…`) | Reads and mutates local state; validates bearer tokens |
 

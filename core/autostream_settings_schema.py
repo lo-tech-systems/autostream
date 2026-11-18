@@ -8,7 +8,7 @@ identity (section/key), type/bounds/enum shape, and which of the existing
 per-field write paths' callables apply to it.
 
 This is a **consolidation**, not a rewrite: this module holds no validation
-logic of its own. Every `validate`/`live_fn`/`normalise`/`form_coerce`
+logic of its own. Every `validate`/`live_fn`/`normalise`
 callable a row carries is the exact same function object the pre-migration
 code already called -- unchanged bounds, unchanged error messages, unchanged
 edge-case handling. The four existing dispatch paths (POST /api/settings,
@@ -58,24 +58,13 @@ cross-field validation it runs:
     e.g. the output name); ``bounds``/``enum``/`validate` apply uniformly to
     every concrete instance.
 
-Why FieldSpec carries several *different* optional "how do I turn a raw
-value into a normalised one" slots (`validate`, `form_coerce`, `normalise`)
-instead of one uniform slot: the four dispatch paths this table replaces
-receive input in different shapes (typed JSON values vs. raw HTML-form
-strings vs. Service-page JSON strings) and, today, enforce different
-strictness for the *same* dotted settings path. Concretely: `handle_setup_
-post` (the HTML `/setup` form) applies no bounds/enum checking at all for
-several fields that `send_settings_post_json` (`POST /api/settings`, JSON)
-validates strictly -- e.g. `audio1.gain_db` is plain-cast by the form path
-but rejected outside [-10, 10] by the JSON path. This is a known,
-pre-existing inconsistency; fixing it is deferred to once a single
-`settings.set()` entry point exists to hang one shared rule off.
-This migration's job is a byte-for-byte-identical consolidation of where
-each path's existing logic *lives*, not a behaviour fix -- so a schema row
-for a path touched by two dispatch paths with different strictness
-legitimately carries two different callables (one per path) rather than
-being forced onto a single `validate` that would silently change one
-path's behaviour.
+Why FieldSpec carries two different optional "how do I turn a raw value
+into a normalised one" slots (`validate`, `normalise`) instead of one uniform
+slot: the dispatch paths this table serves receive input in different shapes
+(typed JSON values vs. Service-page JSON strings). A schema row for a path
+touched by two dispatch paths with different strictness legitimately carries
+two different callables (one per path) rather than being forced onto a single
+`validate` that would silently change one path's behaviour.
 """
 
 from __future__ import annotations
@@ -150,13 +139,6 @@ class FieldSpec:
                    handler-layer globals that would create an import cycle
                    if defined in this module) and passed in when the row is
                    registered.
-      form_coerce: ``Callable[[str], object]`` -- the ``/setup`` HTML-form
-                   style coercion: receives the raw string already extracted
-                   from the submitted form (via ``fld(...)``), returns the
-                   normalised value, exactly reproducing what
-                   the Setup form did inline before this migration
-                   (deliberately including the absence of bounds checking
-                   where none existed -- see module docstring).
       normalise:   ``Callable[[str], object]`` -- the Service-page
                    maintenance-threshold style normaliser: receives the raw
                    string value from the JSON body, returns the normalised
@@ -174,7 +156,6 @@ class FieldSpec:
     live_class: LiveClass = LiveClass.PASSIVE
     validate: Optional[Callable[[object], object]] = None
     live_fn: Optional[Callable[..., bool]] = None
-    form_coerce: Optional[Callable[[object], object]] = None
     normalise: Optional[Callable[[str], object]] = None
     cross_validate: Optional[Callable[[dict, str, str, object], None]] = None
     mutate: Optional[Callable[[dict, str, str, object], None]] = None
@@ -183,7 +164,7 @@ class FieldSpec:
 
 # The shared table. Populated by webui/browser/api_settings.py (POST /api/settings,
 # webui/browser/api_service.py POST /api/service/config), webui/browser/home_model.py (POST
-# /api/output_eq/config), and webui/browser/post_handlers.py (POST /setup)
+# /api/output_eq/config)
 # at their own import time / call time -- see each module's own
 # "settings-schema registration" section.
 SETTINGS_SCHEMA: dict[str, FieldSpec] = {}
@@ -196,7 +177,6 @@ def register_field(
     validate: Optional[Callable[[object], object]] = None,
     *,
     live: Optional[Callable[..., bool]] = None,
-    form_coerce: Optional[Callable[[object], object]] = None,
     normalise: Optional[Callable[[str], object]] = None,
     type: Optional[type] = None,
     bounds: Optional[Tuple[float, float]] = None,
@@ -221,7 +201,7 @@ def register_field(
     spec = FieldSpec(
         path=path, section=section, key=key, type=type, default=default,
         bounds=bounds, enum=enum, live_class=live_class,
-        validate=validate, live_fn=live, form_coerce=form_coerce, normalise=normalise,
+        validate=validate, live_fn=live, normalise=normalise,
         cross_validate=cross_validate, mutate=mutate, store=store,
     )
     SETTINGS_SCHEMA[path] = spec
@@ -279,8 +259,7 @@ def cross_validate_capture_device_unique(raw: dict, section: str, key: str, valu
     """Reject *value* if the other audio input already has this same capture
     device assigned. Runs against *raw*, the in-progress copy about to be
     committed, so it is atomic under whichever lock the caller holds while
-    mutating that copy (SettingsStore._lock for the JSON API, CONFIG_IO_LOCK
-    for the setup form).
+    mutating that copy (SettingsStore._lock).
     """
     normalized = str(value or "").strip()
     if not normalized:

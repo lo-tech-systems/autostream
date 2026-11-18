@@ -49,7 +49,7 @@ class TestFieldSpecAndRegister:
         finally:
             del SETTINGS_SCHEMA["test.roundtrip_field"]
 
-    def test_register_field_with_live_and_form_coerce(self):
+    def test_register_field_with_live(self):
         from autostream_settings_schema import SETTINGS_SCHEMA, register_field
 
         def _v(value):
@@ -58,16 +58,12 @@ class TestFieldSpecAndRegister:
         def _live(state, value):
             return True
 
-        def _fc(raw):
-            return raw
-
         spec = register_field(
             "test.full_field", "test_section", "full_field", _v,
-            live=_live, form_coerce=_fc,
+            live=_live,
         )
         try:
             assert spec.live_fn is _live
-            assert spec.form_coerce is _fc
         finally:
             del SETTINGS_SCHEMA["test.full_field"]
 
@@ -179,21 +175,6 @@ class TestSettingsFieldsMigration:
         with pytest.raises(ValueError, match="Value must be true or false"):
             spec.validate("not-a-bool")
 
-    def test_track_id_fields_carry_form_coerce_for_setup_form(self):
-        from autostream_settings_schema import SETTINGS_SCHEMA
-
-        for path in (
-            "track_identification.analysis_lead_in_seconds",
-            "track_identification.refresh_seconds",
-            "track_identification.track_change_silence_seconds",
-            "webui.output_usage_poll_interval_seconds",
-        ):
-            spec = SETTINGS_SCHEMA[path]
-            assert spec.form_coerce is not None, f"{path} missing form_coerce"
-            # form_coerce must accept a raw form string, as the Setup form
-            # always passed it (never a typed value).
-            assert spec.form_coerce("3") is not None
-
 
 # ---------------------------------------------------------------------------
 # 3. _SERVICE_FIELD_MAP migration (autostream_webui_api.py, POST /api/service/config)
@@ -271,38 +252,6 @@ class TestOutputEqMigration:
             assert spec.validate(truthy) is True
         for falsy in ("false", "0", "no", ""):
             assert spec.validate(falsy) is False
-
-
-# ---------------------------------------------------------------------------
-# 5. Form coercions kept in the schema
-#
-# The Setup form is retired; the fields whose form-path normalisation was
-# identical to the JSON API's schema-declared normaliser keep their
-# form_coerce slot.
-# ---------------------------------------------------------------------------
-
-class TestSetupPostMigration:
-    def test_setup_post_module_reaches_form_coerce_rows_via_schema(self):
-        import webui.browser.post_handlers as post_handlers  # noqa: F401
-        from autostream_settings_schema import SETTINGS_SCHEMA
-
-        for path in (
-            "webui.output_usage_poll_interval_seconds",
-            "track_identification.analysis_lead_in_seconds",
-            "track_identification.refresh_seconds",
-            "track_identification.track_change_silence_seconds",
-        ):
-            assert SETTINGS_SCHEMA[path].form_coerce is not None
-
-    def test_poll_interval_form_coerce_out_of_range_falls_back_to_default(self):
-        # Matches normalize_output_usage_poll_interval()'s own documented
-        # "out-of-range -> normalized to default (3)" contract, now reached
-        # via the schema row instead of a direct import.
-        import webui.browser.post_handlers as post_handlers  # noqa: F401
-        from autostream_settings_schema import SETTINGS_SCHEMA
-
-        spec = SETTINGS_SCHEMA["webui.output_usage_poll_interval_seconds"]
-        assert spec.form_coerce("999999") == 3
 
 
 # ---------------------------------------------------------------------------

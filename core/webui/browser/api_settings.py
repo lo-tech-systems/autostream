@@ -25,7 +25,6 @@ from autostream_config import (
     OUTPUT_USAGE_POLL_INTERVAL_MAX,
     OUTPUT_USAGE_POLL_INTERVAL_MIN,
     is_valid_monitor_device_id,
-    normalize_output_usage_poll_interval,
     normalize_update_channel,
 )
 from autostream_intents import Intent, submit
@@ -95,18 +94,10 @@ class _DuplicateCaptureDeviceError(Exception):
 # (autostream_settings_schema.py) via the same call that builds this dict,
 # rather than living only here -- the validator functions and live_fn
 # callables themselves are unchanged (same bodies, same error strings),
-# only their bookkeeping is single-sourced. form_coerce is set for the
-# handful of fields the Setup form's hand-parsed fields also wrote,
-# reusing the exact same raw-string normaliser it already
-# called directly -- see autostream_settings_schema.py's module docstring
-# for why the JSON API's validate and the form's form_coerce are two
-# different callables for the same field (typed JSON value vs. plain form
-# string). The form path's lack of bounds-checking on several of these
-# fields is a pre-existing, deliberately-untouched inconsistency, not a
-# new bug.
-def _reg_settings_field(path, section, key, validate, live=None, form_coerce=None,
+# only their bookkeeping is single-sourced.
+def _reg_settings_field(path, section, key, validate, live=None,
                          cross_validate=None, mutate=None, live_class=LiveClass.PASSIVE):
-    register_field(path, section, key, validate, live=live, form_coerce=form_coerce,
+    register_field(path, section, key, validate, live=live,
                     cross_validate=cross_validate, mutate=mutate, live_class=live_class)
     return (section, key, validate, live)
 
@@ -118,7 +109,7 @@ _SETTINGS_FIELDS: dict = {
     "webui.show_input_detail":                  _reg_settings_field("webui.show_input_detail", "webui", "show_input_detail", _validate_bool),
     "webui.show_hostname_on_home":              _reg_settings_field("webui.show_hostname_on_home", "webui", "show_hostname_on_home", _validate_bool, cross_validate=cross_validate_hostname_visibility_cascade),
     "webui.control_other_appliances":           _reg_settings_field("webui.control_other_appliances", "webui", "control_other_appliances", _validate_bool),
-    "webui.output_usage_poll_interval_seconds": _reg_settings_field("webui.output_usage_poll_interval_seconds", "webui", "output_usage_poll_interval_seconds", _validate_poll_interval, form_coerce=normalize_output_usage_poll_interval),
+    "webui.output_usage_poll_interval_seconds": _reg_settings_field("webui.output_usage_poll_interval_seconds", "webui", "output_usage_poll_interval_seconds", _validate_poll_interval),
     "updates.update_channel":                   _reg_settings_field("updates.update_channel", "updates", "update_channel", _validate_update_channel),
 }
 

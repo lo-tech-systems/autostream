@@ -213,5 +213,5 @@ reschedule request cannot pull the deadline earlier, only push it later.
 |---|---|
 | `core/track_id/models.py` | `TrackIdentificationSnapshot`, state constants, `state_status_text()` |
 | `core/autostream_core.py` | `AudioMonitor` attempt scheduling (`_schedule_track_id_attempt()`, `maybe_trigger_track_identification()`, `_ti_worker()`), `get_active_track_identification_snapshot()` |
-| `core/autostream_webui_api.py` | `send_status_json()` -- assembles `GET /api/status` |
+| `core/webui/browser/home_api.py` | `send_status_json()` -- assembles `GET /api/status` |
 | [ADDING-TRACK-ID-PROVIDER.md](ADDING-TRACK-ID-PROVIDER.md) | How the provider-neutral track-ID architecture fits together |

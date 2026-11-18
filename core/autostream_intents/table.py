@@ -227,9 +227,6 @@ def _build_rows() -> dict:
             {
                 "value": v.boolean(error="value must be a boolean"),
                 "version": v.text(error="invalid_version", max_len=64),
-                # The Setup form writes the configuration file and, when that
-                # fails, puts this preference back.
-                "rollback_to": v.optional(v.boolean(error=_BAD_BODY)),
             },
             {"value", "version"},
             {Origin.USER},

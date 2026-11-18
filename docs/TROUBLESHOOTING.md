@@ -975,7 +975,7 @@ whether the Web UI is reachable.
 1. **Logs page - quick look, no download**
 
    Open the **Logs** page (from **About**) to see the last 100 lines of the
-   main log and the current log level (`core/autostream_webui_page_logs.py`,
+   main log and the current log level (`core/webui/browser/logs.py`,
    `send_logs_page()`). This is a snapshot, not a live tail: use the
    **↻ Refresh** link at the top of the page to reload it with whatever has
    been logged since you opened it.
@@ -983,8 +983,8 @@ whether the Web UI is reachable.
 2. **Logs page → Download Log Bundle - needs the PIN**
 
    The same page has a **Download Log Bundle** button that requests
-   `GET /logs/download` (route registered in `core/autostream_webui_routes.py`,
-   built by `handle_logs_download()` in `core/autostream_webui_page_logs.py`).
+   `GET /logs/download` (route registered in `core/webui/routes.py`,
+   built by `handle_logs_download()` in `core/webui/browser/logs.py`).
    It requires the appliance PIN if one is set, and returns a ZIP containing
    every file under `/var/log/autostream/` (every rotation included) plus
    `/var/log/owntone.log` and its three most recent rotations.

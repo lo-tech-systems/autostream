@@ -39,8 +39,8 @@ Read these files before implementing a new adapter:
 - `core/autostream_owntone.py`
 - `core/autostream_owntone_mini.py`
 - `core/autostream_core.py`
-- `core/autostream_webui_page_owntone.py`
-- `core/autostream_webui_post_handlers.py`
+- `core/webui/browser/owntone.py`
+- `core/webui/browser/post_handlers.py`
 
 The two existing OwnTone adapters are the best reference implementations:
 
@@ -387,7 +387,7 @@ The result types are part of the contract. Try to follow the existing patterns:
 All five expose a shared `.message` property - `error or error_code`, and
 `error or detail or error_code` for `ActionResult`. This is what the rest of the
 app reads when it surfaces a failure to the logs or the UI (for example
-`autostream_webui_api.py` and `autostream_player_service.py`), so populate
+the modules under `core/webui/` and `autostream_player_service.py`), so populate
 `error` / `error_code` consistently on every method rather than only on the
 mutating ones.
 

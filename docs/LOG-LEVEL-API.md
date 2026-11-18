@@ -184,6 +184,6 @@ disruptive actions.
 | File | Purpose |
 |---|---|
 | `core/autostream_log_policy.py` | `get_log_level_state()`, `set_log_level()` |
-| `core/autostream_webui.py` | HTTP routing, `_is_direct_local()`, `do_PUT()` |
-| `core/autostream_webui_api.py` | `send_log_level_get_json()`, `send_log_level_put_json()` |
+| `core/webui/server.py` | HTTP routing, `_is_direct_local()`, `do_PUT()` |
+| `core/webui/browser/api_settings.py` | `send_log_level_get_json()`, `send_log_level_put_json()` |
 | `supervisor/autostream_storage_guard` | Automatic expiry and ceiling logic |

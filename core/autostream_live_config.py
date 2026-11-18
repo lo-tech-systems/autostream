@@ -62,7 +62,6 @@ from autostream_config import (
     normalize_track_id_refresh_seconds,
     normalize_track_id_track_change_silence_seconds,
     parse_config,
-    save_config,
     save_state,
     set_input_type,
 )
@@ -947,13 +946,12 @@ register_field("track_identification.enabled", "track_identification", "enabled"
                live=_live_track_id, live_class=LiveClass.RELOAD)
 register_field("track_identification.analysis_lead_in_seconds", "track_identification",
                "analysis_lead_in_seconds", _validate_track_id_lead_in, live=_live_track_id,
-               form_coerce=normalize_track_id_analysis_lead_in_seconds, live_class=LiveClass.RELOAD)
+               live_class=LiveClass.RELOAD)
 register_field("track_identification.refresh_seconds", "track_identification",
                "refresh_seconds", _validate_track_id_refresh, live=_live_track_id,
-               form_coerce=normalize_track_id_refresh_seconds, live_class=LiveClass.RELOAD)
+               live_class=LiveClass.RELOAD)
 register_field("track_identification.track_change_silence_seconds", "track_identification",
                "track_change_silence_seconds", _validate_track_id_silence, live=_live_track_id,
-               form_coerce=normalize_track_id_track_change_silence_seconds,
                live_class=LiveClass.RELOAD)
 
 
@@ -1047,32 +1045,15 @@ def _form_apply(intent: Intent, wait: float) -> Outcome:
 
 def _advertisement(intent: Intent, wait: float) -> Outcome:
     """Apply the peer advertisement preference, then store it only when the
-    privileged call worked. With *rollback_to* the value is written to the
-    configuration file instead of the store, and the previous preference is
-    restored if that write fails (the Setup form's path)."""
+    privileged call worked."""
     import autostream_appliances as appliances
 
     value = intent.args["value"]
     version = intent.args["version"]
-    rollback_to = intent.args.get("rollback_to")
     with _advertise_lock:
         if not appliances.reconcile_appliance_announcement(version, value):
             logging.warning("settings.advertisement: admin call failed for advertise=%s", value)
             return Outcome(ok=False, error="apply_failed")
-        if rollback_to is not None:
-            config_path = getattr(intent.context, "config_path", None)
-            try:
-                with CONFIG_IO_LOCK:
-                    fresh_cfg = load_config(config_path)
-                    fresh_cfg.setdefault("webui", {})["advertise_appliance"] = value
-                    save_config(config_path, fresh_cfg)
-            except Exception:
-                logging.warning(
-                    "settings.advertisement: failed to persist advertise_appliance=%s; "
-                    "rolling back service state", value)
-                appliances.reconcile_appliance_announcement(version, rollback_to)
-                return Outcome(ok=False, error="save_failed")
-            return Outcome(ok=True)
         settings = _store_of(intent.context)
         if settings is not None:
             try:

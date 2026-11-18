@@ -115,7 +115,7 @@ Native non-intercepted errors do not need a duplicated `error_status`.
 
 ## 5. Shared Helper
 
-The `send_browser_api_error()` function in `core/autostream_webui_api.py` is the single
+The `send_browser_api_error()` function in `core/webui/common.py` is the single
 authoritative implementation of this mapping:
 
 ```python
@@ -140,7 +140,7 @@ Do not add a second copy of this helper. The multi-appliance feature must reuse
 
 ## 6. Unknown-Route Exception
 
-The final route-dispatch `send_error(404)` calls in `core/autostream_webui.py` **must
+The final route-dispatch `send_error(404)` calls in `core/webui/server.py` **must
 not** be converted to `send_browser_api_error()`. Those represent unknown URLs that
 should trigger the NGINX offline-redirect behavior for the browser. Structured domain
 errors and routing errors are distinct.
@@ -149,7 +149,7 @@ errors and routing errors are distinct.
 
 ## 7. Dial Proxy Error Identifiers
 
-The host-side dial management proxy (`core/autostream_webui_dials.py`) uses these stable
+The host-side dial management proxy (`core/webui/dial/management.py`) uses these stable
 error identifiers:
 
 | Condition | `error` identifier | Semantic status | `retryable` |
@@ -308,8 +308,8 @@ explicit corresponding API-contract update.
 
 | File | Role |
 |---|---|
-| `core/autostream_webui_api.py` | `send_browser_api_error()`, `_NGINX_INTERCEPTED_STATUSES` |
-| `core/autostream_webui_dials.py` | Dial proxy using the helper |
+| `core/webui/common.py` | `send_browser_api_error()`, `_NGINX_INTERCEPTED_STATUSES` |
+| `core/webui/dial/management.py` | Dial proxy using the helper |
 | `system/nginx/autostream-nginx.conf` | Main NGINX `error_page` policy |
 | `system/nginx/autostream-nginxd.conf` | `$from_setup` and `$safe_next` maps |
 | `system/nginx/autostream-dial-nginx.conf` | Dial NGINX (different interception set) |

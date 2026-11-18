@@ -5,11 +5,10 @@ Import layering of the application modules, checked on the syntax tree only
 
 Every module under core/ sits in one layer.  A module may import its own layer
 or a lower one; the web layer (L3) is further limited to a named set of
-modules and names; L4 may import anything.  Violations that exist today are
-held in RATCHET: a new violation fails, and so does an entry that no longer
-occurs (delete it from RATCHET).
-
-Regenerate the table with ``python tests/test_layering.py --print-ratchet``.
+modules and names; L4 may import anything.  There is no list of tolerated
+violations: any violation fails.  An edge that is allowed on purpose is a row
+of EXCEPTIONS, and a dynamic lookup that is allowed on purpose is a row of
+DYNAMIC_LOOKUPS, each with its reason.
 """
 from __future__ import annotations
 
@@ -48,6 +47,12 @@ LAYERS: dict[str, str] = {
 # (importer, imported) -> reason the edge is allowed although a rule forbids it.
 EXCEPTIONS: dict[tuple[str, str], str] = {}
 
+# (file, function) -> reason a web module may look a module up by a name that
+# is not a constant (rule G).
+DYNAMIC_LOOKUPS: dict[tuple[str, str], str] = {
+    ("webui/routes.py", "_resolve_handler"): "resolves the route table's handler strings",
+}
+
 # Allowed L2-to-L2 imports (importer, imported).  Must stay acyclic.
 L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_repeat", "autostream_session"),
@@ -79,7 +84,7 @@ L2_EDGES: frozenset[tuple[str, str]] = frozenset({
 # module; DENIED_FOR_WEBUI removes names from a "*".
 ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
     "autostream_config": frozenset({"*"}),
-    "autostream_settings": frozenset({"SettingsView", "SetOutcome", "as_view"}),
+    "autostream_settings": frozenset({"SettingsView", "as_view"}),
     "autostream_settings_schema": frozenset({"*"}),
     "autostream_auth": frozenset({"*"}),
     "autostream_commissioning": frozenset({"*"}),
@@ -109,7 +114,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
     "autostream_watcher_client": frozenset({"*"}),
     "track_id.models": frozenset({"*"}),
     "autostream_playback_stats": frozenset({
-        "InputPlaybackSnapshot", "PlaybackSnapshot",
+        "InputPlaybackSnapshot",
         "make_fallback_input_snapshot", "format_hours",
     }),
     "autostream_appliances": frozenset({
@@ -118,7 +123,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
     }),
     "autostream_pin_pairing": frozenset({"PIN_RE", "REQUESTER_WEBUI", "dial_requester"}),
     "autostream_align": frozenset({
-        "parse_result_entries", "AlignArrival", "AlignResult",
+        "parse_result_entries", "AlignArrival",
     }),
 }
 DENIED_FOR_WEBUI: dict[str, frozenset[str]] = {
@@ -147,6 +152,7 @@ class Rules:
     allowed: dict = field(default_factory=lambda: ALLOWED_FOR_WEBUI)
     denied: dict = field(default_factory=lambda: DENIED_FOR_WEBUI)
     live_pinned: frozenset = LIVE_PINNED
+    dynamic_lookups: dict = field(default_factory=lambda: DYNAMIC_LOOKUPS)
 
 
 RULES = Rules()
@@ -231,6 +237,67 @@ def scan_file(importer: str, rel: str, tree: ast.AST, packages: dict[str, set[st
             if isinstance(func, ast.Attribute) and func.attr == "claim":
                 claims.append(node.lineno)
     return edges, claims
+
+
+def _is_sys_modules(node: ast.AST) -> bool:
+    return (isinstance(node, ast.Attribute) and node.attr == "modules"
+            and isinstance(node.value, ast.Name) and node.value.id == "sys")
+
+
+def _is_constant_str(node: ast.AST) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+class _DynamicLookups(ast.NodeVisitor):
+    """The places that look a module up by a name that is not a constant:
+    ``importlib.import_module(x)``, ``__import__(x)``, ``sys.modules[x]`` and
+    ``sys.modules.get(x)``.  Each is recorded with its enclosing function."""
+
+    def __init__(self) -> None:
+        self.found: list[tuple[str, int]] = []
+        self._scope: list[str] = []
+
+    def _visit_scope(self, node) -> None:
+        self._scope.append(node.name)
+        self.generic_visit(node)
+        self._scope.pop()
+
+    visit_FunctionDef = visit_AsyncFunctionDef = visit_ClassDef = _visit_scope
+
+    def _note(self, node: ast.AST) -> None:
+        self.found.append((self._scope[0] if self._scope else "<module>", node.lineno))
+
+    def visit_Call(self, node: ast.Call) -> None:
+        func = node.func
+        dynamic_import = (
+            (isinstance(func, ast.Attribute) and func.attr == "import_module"
+             and isinstance(func.value, ast.Name) and func.value.id == "importlib")
+            or (isinstance(func, ast.Name) and func.id in ("import_module", "__import__"))
+        )
+        if dynamic_import and node.args and not _is_constant_str(node.args[0]):
+            self._note(node)
+        elif (isinstance(func, ast.Attribute) and func.attr == "get" and _is_sys_modules(func.value)
+              and node.args and not _is_constant_str(node.args[0])):
+            self._note(node)
+        self.generic_visit(node)
+
+    def visit_Subscript(self, node: ast.Subscript) -> None:
+        if _is_sys_modules(node.value) and not _is_constant_str(node.slice):
+            self._note(node)
+        self.generic_visit(node)
+
+
+def dynamic_lookups(root: Path):
+    """Return (importer, path, enclosing function, line) for every non-constant
+    dynamic module lookup under *root*."""
+    out: list[tuple[str, str, str, int]] = []
+    for importer, paths in module_files(root).items():
+        for path in paths:
+            visitor = _DynamicLookups()
+            visitor.visit(ast.parse(path.read_text(encoding="utf-8"), filename=str(path)))
+            rel = path.relative_to(root).as_posix()
+            out.extend((importer, rel, func, line) for func, line in visitor.found)
+    return out
 
 
 def scan(root: Path):
@@ -325,6 +392,9 @@ def violations(root: Path, rules: Rules = RULES) -> set[tuple[str, str, str, str
     for importer, _path, _line in claims:
         if rules.layers[importer] == "L3":
             found.add(("F", importer, ".claim()", "*"))
+    for importer, path, func, _line in dynamic_lookups(root):
+        if rules.layers[importer] == "L3" and (path, func) not in rules.dynamic_lookups:
+            found.add(("G", importer, path, func))
     return found
 
 
@@ -358,13 +428,6 @@ def l2_cycle(edges) -> list[str] | None:
 
 
 # ---------------------------------------------------------------------------
-# Ratchet: violations that exist today.  Shrink only.
-# ---------------------------------------------------------------------------
-
-RATCHET: frozenset[tuple[str, str, str, str]] = frozenset()
-
-
-# ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
 
@@ -378,7 +441,7 @@ def _write(root: Path, files: dict[str, str]) -> Path:
 
 def _rules(layers: dict[str, str], **kw) -> Rules:
     base = dict(exceptions={}, l2_edges=frozenset(), allowed={}, denied={},
-                live_pinned=frozenset())
+                live_pinned=frozenset(), dynamic_lookups={})
     base.update(kw)
     return Rules(layers=layers, **base)
 
@@ -536,23 +599,62 @@ def test_a_name_in_a_packages_all_is_not_taken_for_its_submodule(tmp_path):
     assert violations(tmp_path, rules) == set()
 
 
-def test_the_real_tree_matches_the_ratchet():
-    got = violations(CORE_DIR)
-    new = sorted(got - RATCHET)
-    stale = sorted(RATCHET - got)
-    assert not new, f"new layering violations: {new}"
-    assert not stale, f"delete these from RATCHET, they no longer occur: {stale}"
+def test_rule_g_non_constant_dynamic_lookups_in_an_l3_module(tmp_path):
+    _write(tmp_path, {
+        "web.py": (
+            "import importlib\nimport sys\n"
+            "def a(n):\n    return importlib.import_module(n)\n"
+            "def b(n):\n    return __import__(n)\n"
+            "def c(n):\n    return sys.modules[n]\n"
+            "def d(n):\n    return sys.modules.get(n)\n"
+            "def ok():\n    importlib.import_module('json')\n    return sys.modules['json'], sys.modules.get('json')\n"
+        ),
+        "low.py": "import sys\ndef f(n):\n    return sys.modules[n]\n",
+    })
+    layers = {"web": "L3", "low": "L0"}
+    got = violations(tmp_path, _rules(layers))
+    assert got == {("G", "web", "web.py", fn) for fn in "abcd"}
 
 
-def _print_ratchet() -> None:
-    print("RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({")
-    for row in sorted(violations(CORE_DIR)):
-        print(f"    {row!r},")
-    print("})")
+def test_rule_g_a_listed_function_is_allowed_and_nothing_else_in_its_file(tmp_path):
+    _write(tmp_path, {
+        "web.py": (
+            "import sys\n"
+            "def resolve(n):\n    return sys.modules[n]\n"
+            "def other(n):\n    return sys.modules[n]\n"
+        ),
+    })
+    rules = _rules({"web": "L3"}, dynamic_lookups={("web.py", "resolve"): "the one site"})
+    assert violations(tmp_path, rules) == {("G", "web", "web.py", "other")}
 
 
-if __name__ == "__main__":
-    if "--print-ratchet" in sys.argv:
-        _print_ratchet()
-    else:
-        sys.exit("usage: test_layering.py --print-ratchet")
+def test_the_real_dynamic_lookup_table_has_no_stale_row():
+    seen = {(path, func) for _importer, path, func, _line in dynamic_lookups(CORE_DIR)}
+    assert set(DYNAMIC_LOOKUPS) <= seen
+
+
+def test_the_real_tree_has_no_layering_violation():
+    assert violations(CORE_DIR) == set()
+
+
+def _web_identifiers() -> set[str]:
+    names: set[str] = set()
+    for path in sorted((CORE_DIR / "webui").rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.ImportFrom):
+                names.update(a.name for a in node.names)
+    return names
+
+
+def test_every_allowlisted_name_is_used():
+    used = _web_identifiers()
+    unused = sorted(
+        (module, name)
+        for module, names in ALLOWED_FOR_WEBUI.items()
+        for name in names if name != "*" and name not in used
+    )
+    assert not unused, f"allowlisted but never used under core/webui: {unused}"
