@@ -975,7 +975,7 @@ class DialDisplay:
         to bare artwork on their own — see _compact_controls_hidden().
         """
         return (
-            self._held_overlay_locked(time.monotonic())
+            self._held_overlay(time.monotonic())
             and self._backend_open
             and self._screen == "main"
         )
@@ -1079,12 +1079,13 @@ class DialDisplay:
         from any thread."""
         return self._layout_metrics().content_tier in (CONTENT_RICH, CONTENT_LARGE)
 
-    def _held_overlay_locked(self, now: float) -> bool:
+    def _held_overlay(self, now: float) -> bool:
         """The held-visible predicate _effective_overlay_locked() applies:
         always-show on (off compact), or the compact tier's own controls
         window open; a controllable appliance shown; the panel not cleared
-        or asleep; and no artwork-tap hide window running. Caller holds
-        self._lock."""
+        or asleep; and no artwork-tap hide window running. Plain reads, safe
+        from any thread: the touch thread reaches it through
+        persistent_overlay_shown()."""
         return (
             (
                 (self._config.always_show_controls and not self._compact_tier())
@@ -1636,7 +1637,7 @@ class DialDisplay:
         metrics = self._layout_metrics()
         now = time.monotonic()
         snapshot = self._overlay_snapshot
-        steady = (snapshot.visible or self._held_overlay_locked(now)) and not self._controls.hidden(now)
+        steady = (snapshot.visible or self._held_overlay(now)) and not self._controls.hidden(now)
         slide_ok = (
             self._screen == "main"
             and self._slide_tier()
@@ -1738,7 +1739,7 @@ class DialDisplay:
             whenever a controllable appliance is shown — unconditional,
             never gated on how many appliances are authorized.
 
-        held-visible (see _held_overlay_locked()): when always_show_controls
+        held-visible (see _held_overlay()): when always_show_controls
         is on and a controllable appliance is shown (the snapshot carries a
         now_playing — true for real artwork and for the playing-placeholder
         logo shown across a track change; false only when nothing is
@@ -1772,7 +1773,7 @@ class DialDisplay:
             now = time.monotonic()
         if animating is None:
             animating = self._controls.animating(now)
-        held = self._held_overlay_locked(now)
+        held = self._held_overlay(now)
         # The reveal slide's own frames: the chrome is still on its way off
         # the panel, so the overlay is merged (the compositor slides it)
         # even though the snapshot or the hide window says hidden. Same
