@@ -250,7 +250,7 @@ def test_importing_the_server_runs_every_registration_before_the_first_request()
     assert {
         "webui.dark_mode", "webui.show_master_volume", "webui.show_input_detail",
         "webui.show_hostname_on_home", "webui.control_other_appliances",
-        "webui.output_usage_poll_interval_seconds", "updates.update_channel",
+        "updates.update_channel",
     } <= added
     assert any(name.startswith("service_") and "_life_hours_input1" in name for name in added)
     assert any(name.startswith("service_") and "_life_years_input2" in name for name in added)
@@ -260,5 +260,5 @@ def test_importing_the_server_runs_every_registration_before_the_first_request()
         "customise", "system", "factory-reset",
     ]
     # The table is filled and every module it names is already loaded.
-    assert out["routes"] > 100
+    assert out["routes"] > 90
     assert out["unloaded"] == []

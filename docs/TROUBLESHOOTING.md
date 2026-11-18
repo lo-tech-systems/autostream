@@ -323,27 +323,26 @@ To inspect which `_autostream._tcp` services are visible from an appliance's con
 avahi-browse _autostream._tcp -t -r
 ```
 
-#### Appliance switcher times out or returns 429 after a network change
+#### Appliance switcher shows an appliance as unreachable after a network change
 
 If a remote appliance changed network adapters or IP addresses, the Home page
-switcher may briefly show stale data or a `remote_backoff` / HTTP 429 response
-while discovery and gateway backoff catch up. Current autostream releases
-re-confirm `_autostream._tcp` records periodically, prefer a non-stale address for
-multi-homed peers, and clear gateway backoff when the selected peer IP changes.
-Recovery should normally happen after the next discovery refresh cycle.
+switcher may briefly show it as unreachable while discovery catches up. Current
+autostream releases re-confirm `_autostream._tcp` records periodically and prefer a
+non-stale address for multi-homed peers. Recovery should normally happen after the
+next discovery refresh cycle.
 
-From the controlling appliance, compare Avahi's current view with the gateway log:
+From the controlling appliance, compare Avahi's current view with the log:
 
 ```bash
 avahi-browse --no-fail -r -t -p _autostream._tcp
-journalctl -u autostream.service --since "-5 min" --no-pager | grep -E "gateway:|remote_backoff|429"
+journalctl -u autostream.service --since "-5 min" --no-pager | grep -E "appliances:|peer"
 ```
 
 The live Avahi dump should show the remote appliance's current IPv4 address. If
-the log shows the gateway dialing an older address, wait one refresh cycle and
-try the selector again. If the old address is still being used after the mDNS
-grace period, restart only `autostream.service` on the controlling appliance and
-check for Avahi or multicast problems on the LAN.
+the log shows the old address still in use, wait one refresh cycle and try the
+selector again. If the old address is still being used after the mDNS grace
+period, restart only `autostream.service` on the controlling appliance and check
+for Avahi or multicast problems on the LAN.
 
 #### mDNS browser log messages
 
@@ -374,21 +373,25 @@ Each autostream derives a stable identity from its Raspberry Pi CPU serial (with
 journalctl -u autostream.service --no-pager | grep "conflict"
 ```
 
-#### Remote Equaliser - temporarily unreachable
+#### Remote Home and Equaliser - temporarily unreachable
 
-On the **Equaliser page**, if the remote appliance becomes unreachable (network interruption, brief reboot, transient timeout), the page enters **degraded polling mode**: it continues polling every 10 seconds and shows the last-known equaliser state rather than redirecting. When the appliance comes back online, normal 3-second polling resumes automatically.
+The remote Home and Equaliser pages follow the other appliance's change stream. If the
+other appliance becomes unreachable (network interruption, brief reboot, transient
+timeout), the page keeps the last-known state and shows that it cannot reach the
+appliance, and carries on when the appliance comes back. After three failed attempts in a row it
+returns to the bound appliance and shows a status message. If the remote appliance was
+only rebooting, wait for it to come back and re-select it from the appliance selector.
 
-The Equaliser page only redirects for a **definitive** error - one that indicates the selection is fundamentally invalid (appliance not found, identity conflict, or appliance not configured for federation). Common reasons for a redirect:
+A page returns to the bound appliance at once for a definitive refusal: the appliance
+is not found, two appliances share its identity, it is not set up yet, or it does not
+allow control by other appliances. Common reasons:
 
 * The remote appliance was permanently removed from the network.
 * The remote appliance's identity changed (hardware or config replacement).
-* Federation is disabled on the remote appliance.
+* **Allow control of other appliances** is turned off on the remote appliance.
 
-If the Equaliser page redirects unexpectedly after a reboot, wait for the remote appliance to finish booting, then tap the appliance selector to re-select it.
-
-#### Remote Home - temporarily unreachable
-
-On the **Home page**, three consecutive transport failures (timeout or bad response) return to the bound appliance and show a status message. This is more sensitive to brief interruptions than the Equaliser page. If the remote appliance was only rebooting, wait for it to come back and re-select it from the appliance selector.
+If a page returns to the bound appliance unexpectedly after a reboot, wait for the remote
+appliance to finish booting, then tap the appliance selector to re-select it.
 
 #### Remote appliance unavailable - returned to bound appliance
 
@@ -1320,12 +1323,13 @@ behavior still require hands-on hardware verification.
 (or another appliance name) and the toggle is greyed out.
 
 **Cause:** The named appliance is currently playing audio through that output.
-autostream discovers this by querying neighbouring appliances that announce
-`_autostream-playing._tcp` and checking their active output list.
+autostream discovers this by following neighbouring appliances (it reads each one's
+state and keeps it current from its change stream) and checking their active output
+list.
 
 **Resolution:**
-- The status clears automatically a few seconds after the other appliance stops
-  playing, once the occupancy TTL expires and the next poll completes.
+- The status clears automatically as soon as the other appliance reports that it
+  has stopped playing.
 - If the status persists unexpectedly, check that the other appliance is genuinely
   stopped and that mDNS is working (see *Appliance not appearing in selector* above).
 
@@ -1336,13 +1340,9 @@ mode. If tapping does nothing, that toggle is off, or **Display Hostname** (whic
 depends on) is off.
 
 **After Wi-Fi loss or crash:** If the remote appliance lost network connectivity
-without sending a goodbye packet, the occupied state can persist briefly (at most a
-few seconds beyond twice the poll interval). It will clear on its own once the TTL
-elapses.
-
-**Refresh interval:** Output sharing polls every 3 seconds by default. A lower
-value means faster detection and faster clearing; a higher value reduces LAN
-traffic.
+without sending a goodbye packet, the occupied state can persist briefly, until its
+change stream is seen to have fallen silent (about half a minute). It will clear on its
+own after that.
 
 ---
 

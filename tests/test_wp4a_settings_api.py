@@ -230,7 +230,7 @@ class TestSettingsFieldsWp4aPresent:
             "webui.dark_mode", "webui.show_master_volume",
             "webui.show_input_detail", "webui.show_hostname_on_home",
             "webui.control_other_appliances",
-            "webui.output_usage_poll_interval_seconds", "updates.update_channel",
+            "updates.update_channel",
         ]
         for f in wp3_fields:
             entry = _SETTINGS_FIELDS[f]

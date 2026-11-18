@@ -230,66 +230,6 @@ def resolve(appliance_id: str) -> Resolution:
 
 
 # ---------------------------------------------------------------------------
-# Names the pages still import
-# ---------------------------------------------------------------------------
-
-class ApplianceSighting(Sighting):
-    """A sighting built the way the old pages build one: control defaults on
-    and there is no proto."""
-
-    def __init__(self, id, service_name, hostname, ip, port, version, control=True, proto=None):
-        super().__init__(id=id, hostname=hostname, ip=ip, port=port, version=version,
-                         control=control, proto=proto, service_name=service_name)
-
-
-def get_appliance_sighting(appliance_id: str) -> Optional[Sighting]:
-    """The live sighting for *appliance_id*, or None if absent, conflicted or
-    control-disabled."""
-    with _lock:
-        registry = _registry
-    if registry is None:
-        return None
-    sighting = registry.sightings().get(appliance_id)
-    if sighting is None or not sighting.control:
-        return None
-    return sighting
-
-
-def get_all_appliances() -> list[Sighting]:
-    """All eligible live appliances sorted by case-insensitive hostname.
-    Excludes conflicted ids and control-disabled sightings."""
-    with _lock:
-        registry = _registry
-    if registry is None:
-        return []
-    found = [s for s in registry.sightings().values() if s.control]
-    found.sort(key=lambda s: s.hostname.lower())
-    return found
-
-
-def get_conflict_ids() -> frozenset[str]:
-    """The appliance ids currently excluded due to conflict."""
-    with _lock:
-        registry = _registry
-    return registry.conflicts() if registry is not None else frozenset()
-
-
-def scanner_ready() -> bool:
-    """True when discovery has processed a browse event or its startup grace
-    has elapsed."""
-    with _lock:
-        registry = _registry
-    return registry._browser.scanner_ready() if registry is not None else False
-
-
-def grace_remaining_ms() -> int:
-    """The remaining startup grace in milliseconds (0 if expired or ready)."""
-    with _lock:
-        registry = _registry
-    return registry._browser.grace_remaining_ms() if registry is not None else 0
-
-
-# ---------------------------------------------------------------------------
 # Announcement (privileged, via autostream_admin)
 # ---------------------------------------------------------------------------
 

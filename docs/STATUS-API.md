@@ -198,6 +198,26 @@ snapshot on each request.
 
 ---
 
+## Another appliance's state, stream and intents
+
+The appliances this one follows are served in the same shapes, under
+`/api/v1/peers/<id>/`, so a page draws another appliance with the code that
+draws this one. `<id>` is the other appliance's 20-character identity.
+
+| Route | Reply |
+|---|---|
+| `GET /api/v1/peers/<id>/state` | The other appliance's state body, whole or `?parts=a,b`, as `GET /api/v1/state` shows it |
+| `GET /api/v1/peers/<id>/events` | The other appliance's change stream. Its events and ids are passed on as they come, so a browser resumes against the other appliance's versions |
+| `POST /api/v1/peers/<id>/intents/<name>` | The intent is sent to the other appliance as a request from this one, on behalf of the browser |
+
+A request for an appliance this one does not follow, or may not control, is
+refused with `unknown_appliance`, `bound_appliance` (the id is this
+appliance's own), `control_disabled`, `appliance_conflict` or
+`appliance_unconfigured`. The `peers` part of this appliance's own state lists
+the appliances it follows.
+
+---
+
 ## Related files
 
 | File | Role |
@@ -205,4 +225,5 @@ snapshot on each request.
 | `core/track_id/models.py` | `TrackIdentificationSnapshot`, state constants, `state_status_text()` |
 | `core/autostream_core.py` | `AudioMonitor` attempt scheduling (`_schedule_track_id_attempt()`, `maybe_trigger_track_identification()`, `_ti_worker()`), `get_active_track_identification_snapshot()` |
 | `core/webui/protocol/state.py`, `stream.py`, `intents.py` | The state route, the change stream and `POST /api/v1/intents/<name>` |
+| `core/webui/peer/relay.py` | The same three routes for another appliance |
 | [ADDING-TRACK-ID-PROVIDER.md](ADDING-TRACK-ID-PROVIDER.md) | How the provider-neutral track-ID architecture fits together |

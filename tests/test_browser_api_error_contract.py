@@ -289,29 +289,7 @@ class TestRouteDistinction:
         assert "error_status" not in data
 
 
-class TestFederationErrorContract:
-    """Federation target API uses native status codes (400/401/409/429/500).
-
-    These statuses are not in the NGINX-intercepted set, so they must be
-    returned natively without error_status tunnelling.
-    """
-
-    def test_federation_401_is_native_not_tunneled(self):
-        from webui.peer.federation import send_federation_home_json
-        sent = []
-        with patch("webui.common.send_json",
-                   side_effect=lambda h, c, d: sent.append((c, d))), \
-             patch("webui.common._config_snapshot", return_value=object()), \
-             patch("webui.peer.federation.build_home_state",
-                   return_value={"ok": True, "outputs": [], "appliance": {},
-                                 "preferences": {}, "playback": {}, "input_levels": [],
-                                 "warnings": {}, "vu_delay_ms": 100}):
-            send_federation_home_json(MagicMock(), MagicMock())
-        # The API function itself doesn't do auth — auth is in the dispatcher.
-        # This test verifies the contract: 200 from home function (auth already validated)
-        assert sent[0][0] == 200
-        assert "error_status" not in sent[0][1]
-
+class TestNativeErrorStatuses:
     def test_send_browser_api_error_with_400_is_native(self):
         from webui.common import send_browser_api_error
         sent = []

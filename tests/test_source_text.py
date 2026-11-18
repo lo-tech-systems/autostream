@@ -38,7 +38,7 @@ _PAGE = (
     '<script src="/static/poll.js?v=0123abcd45"></script>'
     "<script>var inline_one = 1;</script>"
     "</head><body>"
-    "<script src='/static/render_fragments.js'></script>"
+    "<script src='/static/page/info_modal.js'></script>"
     "<script>var inline_two = 2;</script>"
     "</body></html>"
 )
@@ -50,14 +50,14 @@ def test_static_text_reads_a_served_file():
 
 def test_linked_static_lists_scripts_and_styles_in_document_order():
     assert _source_text.linked_static(_PAGE) == [
-        "theme.css", "poll.js", "render_fragments.js"]
+        "theme.css", "poll.js", "page/info_modal.js"]
 
 
 def test_page_scripts_joins_inline_bodies_and_linked_files_in_order():
     text = _source_text.page_scripts(_PAGE)
     positions = [
         text.index("inline_one"),
-        text.index(_source_text.static_text("render_fragments.js")[:40]),
+        text.index(_source_text.static_text("page/info_modal.js")[:40]),
         text.index("inline_two"),
     ]
     assert text.index(_source_text.static_text("poll.js")[:40]) < positions[0]
@@ -74,7 +74,7 @@ def test_page_with_static_appends_the_linked_files_but_not_the_theme():
     text = _source_text.page_with_static(_PAGE)
     assert text.startswith(_PAGE)
     assert _source_text.static_text("poll.js")[:40] in text
-    assert _source_text.static_text("render_fragments.js")[:40] in text
+    assert _source_text.static_text("page/info_modal.js")[:40] in text
     assert _source_text.static_text("theme.css")[:40] not in text
 
 

@@ -177,7 +177,7 @@ def pin_claim_lapse_in() -> Optional[float]:
 
 
 def annotate_outputs(outputs: list[dict]) -> list[dict]:
-    """The output dicts with remote-occupancy fields added (bound by autostream_output_usage)."""
+    """The output dicts with remote-occupancy fields added (bound by autostream_appliances)."""
     return _call_bound("annotate_outputs", outputs)
 
 

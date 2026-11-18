@@ -29,7 +29,7 @@ Deleted when the last capture stops.
 | `version` | e.g. `1.2.3` | Installed autostream version |
 | `dial_api` | `v1` | `POST /api/dial/volume` is available |
 | `dial_proto` | `v3` | The appliance speaks the third dialect (see below) |
-| `audio_status` | `v1` | `GET /api/audio/status` is available |
+| `audio_status` | `v1` | Kept for dials of an earlier release; no route sits behind it now |
 | `dial_status` | `v1` | `POST /api/dial/status` is available |
 | `dial_outputs` | `v1` | `POST /api/dial/outputs` and `POST /api/dial/outputs/set` are available |
 | `dial_eq` | `v1` | `POST /api/dial/eq` and `POST /api/dial/eq/set` are available |
@@ -145,9 +145,9 @@ currently playing - the repeat/replay picker's "idle focus".
 | `dial_eq` | `v1` | `POST /api/dial/eq` and `POST /api/dial/eq/set` are available |
 | `repeat` | `v1` | Repeat recording/replay is enabled on this appliance; surfaced to the dial as `repeat_capable` in its roster |
 
-This service also carries `ui`, `federation`, and `control` TXT fields used for
-appliance-to-appliance federation (see `docs/APPLIANCE-FEDERATION.md`). The dial does not
-read any of these three - authorization for what a dial can do with a rostered appliance
+This service also carries a `control` TXT field used for
+appliance-to-appliance control (see `docs/APPLIANCE-FEDERATION.md`). The dial does not
+read it - authorization for what a dial can do with a rostered appliance
 comes entirely from the per-dial UUID check on each protocol call, never from the
 peer-control setting. `audio_status` is not carried here - it is specific to
 `_autostream-playing._tcp`.
@@ -157,37 +157,6 @@ Port: **80** (appliance HTTP server, same as `_autostream-playing._tcp`).
 ---
 
 ## 2. autostream HTTP API (port 80)
-
-### `GET /api/audio/status`
-
-Unauthenticated. Returns a fresh snapshot of currently selected OwnTone outputs and playing
-state. Added to `ALLOWLIST_PATHS` - no session or CSRF token required.
-
-**Response schema:**
-```json
-{
-  "playing": true,
-  "outputs": ["Kitchen", "Living Room"]
-}
-```
-
-| Field | Type | Notes |
-|---|---|---|
-| `playing` | bool | `true` if any capture is active |
-| `outputs` | array\|null | Selected output names; `null` means state unknown |
-| `error` | string | Present only on failure: `"backend_unavailable"` |
-
-**Semantics:**
-- `playing: false, outputs: []` - normal; no conflict with this appliance.
-- `playing: true, outputs: []` - startup-pending/unknown (capture is starting, OwnTone selection
-  not yet established). Treat the same as `outputs: null` - retry after 1-2 s.
-- `outputs: null` - OwnTone unreachable or returned an error; state unknown. Do not treat as
-  "no outputs in use".
-
-Output IDs are not included. OwnTone assigns IDs locally per host (ALSA outputs get `"0"` on
-every device), making them unsuitable for cross-host comparison. Names are the stable identifier.
-
----
 
 ### `GET /api/dial/capabilities`
 
@@ -325,7 +294,7 @@ no-op) while the next restore falls back to the configured default volume for an
 **Outputs touched while muted.** An output enabled, or whose volume is changed, while the
 appliance is muted stays silent: its requested level becomes what the restore action brings
 it to, rather than being applied immediately. This applies uniformly across the intents route
-(the browser), `POST /api/dial/outputs/set` (the dial) and federation - muted
+(the browser), `POST /api/dial/outputs/set` (the dial) - muted
 means silent regardless of which client last touched an output.
 
 **Request body:**
@@ -1855,7 +1824,7 @@ Responses:
 | Capability | Endpoint | Notes |
 |---|---|---|
 | `dial_api=v1` | `POST /api/dial/volume` | UUID-in-body, delta-only, fire-and-forget |
-| `audio_status=v1` | `GET /api/audio/status` | Output names only; no IDs |
+| `audio_status=v1` | (none) | Kept for dials of an earlier release; no route sits behind it now |
 | `dial_status=v1` | `POST /api/dial/status` | UUID-auth, read-only live master volume and the `input` object |
 | `dial_outputs=v1`; version 2 (JSON only) | `POST /api/dial/outputs`, `POST /api/dial/outputs/set` | UUID-auth; per-output enable and volume. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the pairing fields, the PIN submission and `retry_after_s` |
 | `dial_eq=v1`; version 2 (JSON only) | `POST /api/dial/eq`, `POST /api/dial/eq/set` | UUID-auth; version 1 is bass/treble over the output EQ bands. Version 2, announced only by `GET /api/dial/capabilities` (the TXT key stays `v1`), adds the six-band `bands` field on both routes |

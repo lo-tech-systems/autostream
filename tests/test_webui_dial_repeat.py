@@ -11,9 +11,7 @@ Covers:
     response carries state, armed, position_seconds, appliance_id; the
     route never reads the repeat part.
 3.  POST /api/dial/repeat/arm: invalid_armed 400 for a non-bool; calls
-    set_live_repeat_armed_ack() with the bool; never calls
-    apply_repeat_arm_request() (that string-body API is a different route's
-    contract).
+    set_live_repeat_armed_ack() with the bool.
 """
 from __future__ import annotations
 
@@ -93,20 +91,18 @@ def _invoke_arm(
     auth_state: str = AUTH_AUTHORIZED,
     appliance_id: str | None = TEST_APPLIANCE_ID,
     arm_ack=None,
-) -> tuple[int, dict, MagicMock, MagicMock]:
+) -> tuple[int, dict, MagicMock]:
     handler = _handler()
     arm_mock = MagicMock(return_value=arm_ack)
-    legacy_mock = MagicMock(side_effect=AssertionError("must not call apply_repeat_arm_request"))
     with (
         patch("webui.dial.api.dial_authorization", return_value=auth_state),
         patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("autostream_monitor_control.set_live_repeat_armed_ack", arm_mock),
-        patch("webui.repeat.apply_repeat_arm_request", legacy_mock),
     ):
         send_dial_repeat_arm_post_json(handler, MagicMock(), json_obj)
     code, body = _response(handler)
-    return code, body, arm_mock, legacy_mock
+    return code, body, arm_mock
 
 
 # The seek limiter is the intent table's; the store fixture resets it after
@@ -145,13 +141,13 @@ class TestAuthGateOrder:
         transport.assert_not_called()
 
     def test_arm_route_missing_dial_id_is_400(self):
-        code, body, arm_mock, _ = _invoke_arm({"armed": True})
+        code, body, arm_mock = _invoke_arm({"armed": True})
         assert code == 400
         assert body == {"ok": False, "error": "missing_dial_id"}
         arm_mock.assert_not_called()
 
     def test_arm_route_auth_unavailable_is_200_ok_false(self):
-        code, body, arm_mock, _ = _invoke_arm(
+        code, body, arm_mock = _invoke_arm(
             {"dial_id": DIAL_ID, "armed": True}, auth_state=AUTH_UNAVAILABLE,
         )
         assert code == 200
@@ -159,7 +155,7 @@ class TestAuthGateOrder:
         arm_mock.assert_not_called()
 
     def test_arm_route_unauthorized_is_412(self):
-        code, body, arm_mock, _ = _invoke_arm(
+        code, body, arm_mock = _invoke_arm(
             {"dial_id": DIAL_ID, "armed": True}, auth_state=AUTH_NOT_AUTHORIZED,
         )
         assert code == 412
@@ -370,14 +366,13 @@ class TestAckMapping:
 class TestArmRoute:
     @pytest.mark.parametrize("armed", [None, "true", 1, 0, [], {}, "yes"])
     def test_invalid_armed_is_400(self, armed):
-        code, body, arm_mock, legacy_mock = _invoke_arm({"dial_id": DIAL_ID, "armed": armed})
+        code, body, arm_mock = _invoke_arm({"dial_id": DIAL_ID, "armed": armed})
         assert code == 400
         assert body == {"ok": False, "error": "invalid_armed"}
         arm_mock.assert_not_called()
-        legacy_mock.assert_not_called()
 
     def test_missing_armed_is_400(self):
-        code, body, arm_mock, _ = _invoke_arm({"dial_id": DIAL_ID})
+        code, body, arm_mock = _invoke_arm({"dial_id": DIAL_ID})
         assert code == 400
         assert body == {"ok": False, "error": "invalid_armed"}
         arm_mock.assert_not_called()
@@ -385,25 +380,24 @@ class TestArmRoute:
     @pytest.mark.parametrize("armed", [True, False])
     def test_calls_set_live_repeat_armed_ack_with_bool(self, armed):
         ack = {"ok": True, "state": "hold", "armed": armed, "position_seconds": 0.0}
-        code, body, arm_mock, legacy_mock = _invoke_arm(
+        code, body, arm_mock = _invoke_arm(
             {"dial_id": DIAL_ID, "armed": armed}, arm_ack=ack,
         )
         assert code == 200
         arm_mock.assert_called_once_with(armed, requester=REQUESTER)
-        legacy_mock.assert_not_called()
 
     def test_arm_allowed_while_playing(self):
         """The route places no daemon-state precondition on arming -- the
         daemon's own Armed/Disarmed cells decide what it means."""
         ack = {"ok": True, "state": "recording", "armed": True, "position_seconds": 0.0}
-        code, body, arm_mock, _ = _invoke_arm({"dial_id": DIAL_ID, "armed": True}, arm_ack=ack)
+        code, body, arm_mock = _invoke_arm({"dial_id": DIAL_ID, "armed": True}, arm_ack=ack)
         assert code == 200
         assert body["ok"] is True
         arm_mock.assert_called_once_with(True, requester=REQUESTER)
 
     def test_ack_mapping_shared_with_transport_route(self):
         ack = {"ok": False, "error": "repeat_unavailable", "state": "idle", "armed": False}
-        code, body, _, _ = _invoke_arm({"dial_id": DIAL_ID, "armed": True}, arm_ack=ack)
+        code, body, _ = _invoke_arm({"dial_id": DIAL_ID, "armed": True}, arm_ack=ack)
         assert code == 200
         assert body == {
             "ok": False, "error": "repeat_unavailable", "state": "idle",
@@ -411,7 +405,7 @@ class TestArmRoute:
         }
 
     def test_none_ack_maps_to_backend_unavailable(self):
-        code, body, _, _ = _invoke_arm({"dial_id": DIAL_ID, "armed": True}, arm_ack=None)
+        code, body, _ = _invoke_arm({"dial_id": DIAL_ID, "armed": True}, arm_ack=None)
         assert code == 200
         assert body == {
             "ok": False, "error": "backend_unavailable",

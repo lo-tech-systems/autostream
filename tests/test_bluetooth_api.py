@@ -59,7 +59,6 @@ def _minimal_cfg(tmp_path: Path, **audio_overrides) -> Path:
         "webui": {
             "dark_mode": False, "show_master_volume": True, "show_input_detail": False,
             "show_hostname_on_home": False, "control_other_appliances": True,
-            "output_usage_poll_interval_seconds": 3,
         },
         "updates": {"auto_update": False, "update_channel": "stable"},
     }

@@ -87,10 +87,9 @@ class Route:
     # The others opt a route OUT of every one of those stages --
     # dispatch() just resolves and calls the handler, exactly mirroring the
     # early-dispatch branches these routes used to be in do_GET/do_POST
-    # (before route-table dispatch even ran): "bearer" is the federation
-    # API (source-IP-bound bearer tokens, its own 401s, never a browser
-    # session), "dial" is the dial-device protocol endpoints (UUID/allow-
-    # list auth inside the sender), "protocol" is the client protocol's
+    # (before route-table dispatch even ran): "dial" is the dial-device
+    # protocol endpoints (UUID/allow-list auth inside the sender), "protocol"
+    # is the client protocol's
     # intents route, which identifies its caller from the request body
     # itself, "loopback_aware" is a route whose
     # handler itself distinguishes a direct-loopback caller (full access)
@@ -100,8 +99,7 @@ class Route:
     # fn(handler, STATE) -- two args, GET's calling convention -- even for
     # POST/PUT, since dispatch() does no body pre-parsing for them either
     # (that parsing is itself part of the "own logic" these routes keep;
-    # see e.g. _route_post_federation's or the dial adapters' own body
-    # reads in the dial and peer modules, which reproduce -- not share -- the
+    # see e.g. the dial adapters' own body reads in the dial and peer modules, which reproduce -- not share -- the
     # generic POST/PUT parse below since their legacy call sites ran ahead
     # of, or bypassed, one or more of its checks).
     scheme: str = "browser"
@@ -143,9 +141,9 @@ class Route:
             raise ValueError("Route requires at least one HTTP method")
         if self.kind not in ("page", "api"):
             raise ValueError(f"Route.kind must be 'page' or 'api', got {self.kind!r}")
-        if self.scheme not in ("browser", "bearer", "dial", "loopback_aware", "protocol"):
+        if self.scheme not in ("browser", "dial", "loopback_aware", "protocol"):
             raise ValueError(
-                f"Route.scheme must be one of browser/bearer/dial/loopback_aware/protocol, got {self.scheme!r}"
+                f"Route.scheme must be one of browser/dial/loopback_aware/protocol, got {self.scheme!r}"
             )
 
 
@@ -372,7 +370,7 @@ def dispatch(handler, method: str, path: str) -> bool:
         # do_POST/do_PUT no longer pre-read the body ahead of
         # dispatch() -- a generic pre-read would double-consume the request
         # stream for non-"browser"-scheme routes, whose adapters read the
-        # body themselves (see e.g. _route_post_federation). So this is now
+        # body themselves (see e.g. the dial adapters). So this is now
         # almost always a fresh read. The cache path stays for any direct
         # caller (a test, or a future addition) that pre-populates
         # ``_parsed_body`` itself. Either way, the result is (re-)stashed on
@@ -647,18 +645,6 @@ register(
 # commissioning is complete.
 
 # --- Simple GET APIs -----------------------------------------------------
-
-register(
-    Route(
-        path="/api/audio/status",
-        methods=("GET",),
-        handler="webui.browser.home_api.send_audio_status_json",
-        auth=AuthRequirement.NONE,
-        kind="api",
-        allow_unconfigured=False,
-        poll_log=True,
-    )
-)
 
 register(
     Route(
@@ -1290,7 +1276,7 @@ register(
 #
 # This section uses Route.scheme (see its docstring above) for the
 # routes that were never gated by the browser session/CSRF/commissioning/
-# FULL-auth pipeline in the first place: federation ("bearer"), the
+# FULL-auth pipeline in the first place: the
 # dial-device protocol endpoints ("dial"), and the two loopback-vs-proxied
 # fast paths ("loopback_aware"). It also uses Route.unconfigured_only
 # (see its docstring above) for the first-boot pages/posts, which need the
@@ -1305,34 +1291,6 @@ register(
 # cleanly onto the existing Route/AuthRequirement vocabulary plus this
 # batch's two small extensions.
 # ---------------------------------------------------------------------------
-
-# --- Federation (bearer) ---------------------------------------------------
-
-register(
-    Route(
-        prefix="/api/federation/v1",
-        methods=("GET",),
-        handler="webui.peer.federation._route_get_federation",
-        scheme="bearer",
-        comment="Auth/commissioning/body validation all stay inside _dispatch_federation, unchanged.",
-    )
-)
-
-register(
-    Route(
-        prefix="/api/federation/v1",
-        methods=("POST",),
-        handler="webui.peer.federation._route_post_federation",
-        scheme="bearer",
-        comment=(
-            "Adapter reproduces do_POST's former universal body-read (steps 2-3) "
-            "up to and including the 'Invalid JSON' check, but deliberately NOT "
-            "the later 'JSON object required' non-dict check (do_POST's generic "
-            "step ran AFTER the federation branch returned, so federation POSTs "
-            "never reached it)."
-        ),
-    )
-)
 
 # --- Dial-device protocol (dial) -------------------------------------------
 
@@ -1483,47 +1441,6 @@ register(
             "own bespoke Content-Type-must-be-json 415 + CSRF-only-for-proxied "
             "logic verbatim."
         ),
-    )
-)
-
-# --- Gateway (browser session surface) --------------------------------------
-
-register(
-    Route(
-        path="/api/appliances",
-        methods=("GET",),
-        handler="webui.peer.gateway._route_get_appliances_list",
-        auth=AuthRequirement.NONE,
-        kind="api",
-        allow_unconfigured=False,
-        poll_log=True,
-        comment="NONE: AUTH.ALLOWLIST_PATHS covers this exact path. Blocked during commissioning (not in do_GET's commissioning allowlist).",
-    )
-)
-
-register(
-    Route(
-        prefix="/api/appliances/",
-        methods=("GET",),
-        handler="webui.peer.gateway._route_get_gateway_sub",
-        auth=AuthRequirement.NONE,
-        kind="api",
-        allow_unconfigured=False,
-        poll_log=True,
-        comment="NONE: AUTH.ALLOWLIST_PREFIXES covers this prefix.",
-    )
-)
-
-register(
-    Route(
-        prefix="/api/appliances/",
-        methods=("POST",),
-        handler="webui.peer.gateway._route_post_gateway",
-        auth=AuthRequirement.CSRF,
-        kind="api",
-        allow_unconfigured=False,
-        poll_log=True,
-        comment="CSRF only -- no inline PIN check in the legacy do_POST arm; per-sub-route body checks live in the adapter.",
     )
 )
 

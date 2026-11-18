@@ -388,7 +388,7 @@ def stop_playing_browser() -> None:
 #
 # This is the dial's OWN general-appliance browser — distinct from
 # core/autostream_appliances.py's browser of the same service type, which the
-# appliance side runs for peer/federation discovery. The dial never imports
+# appliance side runs for peer discovery. The dial never imports
 # that module; it runs its own instance of the shared MdnsBrowser so it can
 # see idle (not-currently-playing) appliances too, which the playing-only
 # browser above never reports.
@@ -441,8 +441,7 @@ def _parse_general_event(parts: list, txt: dict) -> tuple | None:
     browser.
 
     Requires a valid id and dial_api=v1, or no dial_api at all (a legacy
-    sighting, used only for id resolution; ui/federation are appliance-to-
-    appliance capabilities the dial has no use for). The
+    sighting, used only for id resolution). The
     control TXT flag is deliberately not read here: dials are gated by
     per-dial authorization only, never by the peer-control setting.
 

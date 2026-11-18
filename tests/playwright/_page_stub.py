@@ -28,7 +28,6 @@ for _p in (REPO_ROOT / "core", REPO_ROOT / "tests"):
     if str(_p) not in sys.path:
         sys.path.insert(0, str(_p))
 
-REMOTE_APPLIANCE_ID = "aabbccdd1122334455aa"
 LOCAL_APPLIANCE_ID = "0" * 20
 
 _CONTENT_TYPES = {
@@ -117,11 +116,6 @@ def _render_home(**fakes) -> bytes:
     return _home_stub.render_home(**fakes)
 
 
-def _render_remote_home(**fakes) -> bytes:
-    import _home_stub  # noqa: PLC0415
-    return _home_stub.render_remote_home(**fakes)
-
-
 def _render_equaliser(*, eq_fs: int = 96000, parts: dict | None = None, **_fakes) -> bytes:
     import _home_stub  # noqa: PLC0415
     from webui.browser.equaliser import send_equaliser_page  # noqa: PLC0415
@@ -135,28 +129,11 @@ def _render_equaliser(*, eq_fs: int = 96000, parts: dict | None = None, **_fakes
             for p in (
                 *_banner_patches("webui.browser.equaliser"),
                 patch("autostream_rpi.get_appliance_id", return_value=LOCAL_APPLIANCE_ID),
-                patch("webui.browser.equaliser.get_all_appliances", return_value=[]),
                 patch("webui.browser.equaliser.get_system_hostname", return_value="autostream"),
                 patch("webui.browser.equaliser.state_for_page", return_value=_home_stub.state_body()),
             ):
                 stack.enter_context(p)
             send_equaliser_page(handler, state)
-    return b"".join(chunks)
-
-
-def _render_remote_equaliser(*, appliance_id: str = REMOTE_APPLIANCE_ID, **_fakes) -> bytes:
-    from webui.browser.equaliser import send_remote_equaliser_page  # noqa: PLC0415
-
-    handler, chunks = _handler()
-    state = MagicMock()
-    state.config_path = "dummy.ini"
-    parsed = MagicMock()
-    parsed.webui.dark_mode = False
-    with patch("webui.common._config_snapshot", return_value=parsed), \
-         patch("autostream_rpi.get_appliance_id", return_value=LOCAL_APPLIANCE_ID), \
-         patch("webui.browser.equaliser.get_all_appliances", return_value=[]), \
-         patch("webui.browser.equaliser.get_system_hostname", return_value="autostream"):
-        send_remote_equaliser_page(handler, state, appliance_id)
     return b"".join(chunks)
 
 
@@ -388,9 +365,7 @@ def setup_card_json(*, bt_enabled: bool = False, bt_status: dict | None = None,
 
 _RENDERERS = {
     "home": _render_home,
-    "remote_home": _render_remote_home,
     "equaliser": _render_equaliser,
-    "remote_equaliser": _render_remote_equaliser,
     "about": _render_about,
     "align": _render_align,
     "service": _render_service,

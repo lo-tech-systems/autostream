@@ -1,8 +1,5 @@
-"""webui/browser/home_model.py -- shared Home and Equaliser state models.
-
-Provides build_home_state() and build_equaliser_state() plus shared
-output and EQ mutation helpers used by both local API endpoints and
-target-side federation APIs.
+"""webui/browser/home_model.py -- the output list and the output and EQ
+mutation helpers the dial's routes use.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -13,16 +10,13 @@ import time
 from typing import Optional
 
 from autostream_pin_pairing import PIN_RE
-from autostream_state.live import get_live_output_eq_status, pin_claim, start_buffer_ms
+from autostream_state.live import pin_claim
 from autostream_eq_bands import OUTPUT_EQ_DB_MAX, OUTPUT_EQ_DB_MIN, OUTPUT_PEQ_BANDS
 from autostream_intents import Intent, submit
-from autostream_state import Origin, active_track
-import autostream_rpi as rpi
-from autostream_sysutils import format_hostname, get_system_hostname
-from webui.system import updates
+from autostream_state import Origin
 
 # ---------------------------------------------------------------------------
-# Output-list builder (shared between Home page and federation)
+# Output-list builder
 # ---------------------------------------------------------------------------
 
 def build_output_list(
@@ -89,73 +83,6 @@ def build_output_list(
     return result
 
 
-# ---------------------------------------------------------------------------
-# build_home_state
-# ---------------------------------------------------------------------------
-
-def build_home_state(snap, parsed) -> dict:
-    """Build the aggregate Home state dict for the federation home route and
-    the gateway's bound branch, from the caller's one snapshot and parsed
-    settings. No file is read and the player is not asked: vu_delay_ms comes
-    from the start-buffer cache.
-
-    Keys: ok, appliance, preferences, playback, input_levels, warnings,
-    outputs, muted, vu_delay_ms, track_identification, start_failure (only
-    when a start has failed), session, and repeat (only when the daemon has
-    reported one).
-    """
-    input_levels = snap.inputs.levels()
-
-    playback = snap.playback
-
-    vu_delay_ms = start_buffer_ms(parsed.owntone.base_url)
-    outputs: list[dict] = []
-
-    if snap.outputs.connected:
-        outputs = build_output_list(
-            parsed, snap.outputs.units, include_offline=True, session_active=snap.session.active,
-        )
-
-    try:
-        from autostream_state.live import annotate_outputs
-        outputs = annotate_outputs(outputs)
-    except Exception:
-        pass
-
-    ti_dict = active_track(snap).to_public_dict()
-
-    hostname = format_hostname(get_system_hostname())
-    reply = {
-        "ok": True,
-        "appliance": {
-            "id": rpi.get_appliance_id() or "",
-            "hostname": hostname,
-            "version": updates.get_app_version(),
-        },
-        "preferences": {
-            "show_master_volume": parsed.webui.show_master_volume,
-            "show_input_detail": parsed.webui.show_input_detail,
-        },
-        "playback": playback.to_public_dict(),
-        "input_levels": input_levels,
-        "warnings": {
-            "stylus": playback.stylus_banner_text or "",
-            "belt": playback.belt_banner_text or "",
-            "bearing": playback.bearing_banner_text or "",
-            "dial_update": _dial_update_banner_text(),
-            "sample_rate": snap.inputs.sample_rate_warning_text,
-        },
-        "outputs": outputs,
-        "muted": snap.outputs.muted_all,
-        "vu_delay_ms": int(vu_delay_ms),
-        "track_identification": ti_dict,
-    }
-    if snap.outputs.start_failure is not None:
-        reply["start_failure"] = start_failure_reply(snap)
-    reply.update(_session_and_repeat_fields(snap))
-    return reply
-
-
 # The wall clock for the age of a start failure; tests replace it.
 _wall = time.time
 
@@ -170,64 +97,6 @@ def start_failure_reply(snap) -> dict:
         "reason": f.reason, "requester": f.requester,
         "age_s": max(0, int(_wall() - f.at)),
     }
-
-
-def _dial_update_banner_text() -> str:
-    """Dial-update banner text, or "" when none is due or the dial scanner
-    is unavailable (never raises)."""
-    try:
-        from autostream_dials import build_dial_update_banner_text
-        return build_dial_update_banner_text()
-    except Exception:
-        return ""
-
-
-def _session_and_repeat_fields(snap) -> dict:
-    """Return the "session" (always present) and "repeat" (present only when
-    the daemon has reported one) fields for build_home_state()'s dict.
-
-    The session comes from the caller's snapshot, and the repeat block is
-    passed through verbatim when present -- omitted entirely (not a KeyError) when
-    the daemon has never reported one, so an older backend degrades by
-    absence rather than by error.
-    """
-    fields: dict = {"session": snap.session.as_dict()}
-    repeat_status = snap.repeat.block
-    if repeat_status is not None:
-        fields["repeat"] = repeat_status
-    return fields
-
-
-# ---------------------------------------------------------------------------
-# build_equaliser_state
-# ---------------------------------------------------------------------------
-
-def build_equaliser_state(parsed) -> dict:
-    """Build the aggregate Equaliser state dict from the parsed settings.
-
-    Returns a dict with all EQ config fields plus the live auto-trim status
-    from the monitor (if available).  Keys: ok, gain_db, auto_trim_enabled,
-    peq1_db ... peq6_db, output_auto_trim_enabled, output_auto_trim_db,
-    effective_output_gain_db.
-    """
-    oeq = parsed.output_eq
-    state: dict = {
-        "ok": True,
-        "gain_db": float(oeq.gain_db),
-        "auto_trim_enabled": bool(oeq.auto_trim_enabled),
-        "peq1_db": float(oeq.peq1_db),
-        "peq2_db": float(oeq.peq2_db),
-        "peq3_db": float(oeq.peq3_db),
-        "peq4_db": float(oeq.peq4_db),
-        "peq5_db": float(oeq.peq5_db),
-        "peq6_db": float(oeq.peq6_db),
-    }
-
-    live = get_live_output_eq_status()
-    if live is not None:
-        state.update(live)
-
-    return state
 
 
 # ---------------------------------------------------------------------------
@@ -324,15 +193,9 @@ def _sanitized_volume(body: dict) -> int:
 
 
 def sanitize_output_body(body: dict) -> tuple[Optional[dict], Optional[str]]:
-    """Derive the trusted output-mutation body from a raw browser/peer JSON body.
+    """Derive the trusted output-mutation body from a raw JSON body.
 
-    Shared by the local federation-server handler
-    (``send_federation_output_json`` in webui/peer/federation.py) and the
-    gateway client handler (``send_gateway_output_json`` in
-    webui/peer/gateway.py) so the two write paths that forward a
-    browser's POST body across the federation boundary re-derive the exact
-    same accepted-field set from the exact same logic, rather than
-    hand-duplicating it. Only the documented ``{"id", "op", "pin"}``,
+    Only the documented ``{"id", "op", "pin"}``,
     ``{"id", "op", "pin", "selected", "volume"}`` and
     ``{"id", "selected", "volume"}`` shapes are accepted; every other field
     on the raw body is dropped.

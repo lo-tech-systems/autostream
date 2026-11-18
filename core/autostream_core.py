@@ -276,7 +276,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     """Run-once process bootstrap: settings store, signal handlers, logging,
     startup log-level policy, static-facts audit, playback-tracker init,
     install-state read, optional Web UI thread start, poll-cadence
-    constants, stale-Avahi cleanup, output-usage poller start.
+    constants, stale-Avahi cleanup, peer follower start.
 
     Split out of run_autostream() -- every line here runs exactly once and
     has no loop-carried state dependency on the startup-retry or

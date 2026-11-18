@@ -372,10 +372,11 @@ SHIPPED_ENTRIES: dict[str, str] = {
         "autostream_bluetooth_presentation.py", "autostream_commissioning.py",
         "autostream_config.py", "autostream_core.py", "autostream_debounce.py",
         "autostream_dial_gpio.py", "autostream_dial_push.py", "autostream_dial_warnings.py",
-        "autostream_dials.py", "autostream_federation.py", "autostream_licensing.py",
+        "autostream_dials.py", "autostream_licensing.py",
         "autostream_log_policy.py", "autostream_mdns.py", "autostream_mute_state.py",
-        "autostream_nowplaying.py", "autostream_output_usage.py", "autostream_owntone.py",
-        "autostream_owntone_mini.py", "autostream_pin_pairing.py",
+        "autostream_nowplaying.py", "autostream_owntone.py",
+        "autostream_owntone_mini.py", "autostream_peer_client.py", "autostream_peer_http.py",
+        "autostream_peer_registry.py", "autostream_pin_pairing.py",
         "autostream_playback_stats.py", "autostream_player_service.py",
         "autostream_players.py", "autostream_rpi.py", "autostream_runtime_state.py",
         "autostream_settings.py", "autostream_settings_schema.py",
@@ -398,8 +399,8 @@ SHIPPED_ENTRIES: dict[str, str] = {
 
 
 class TestShippedNames:
-    def test_the_recorded_list_has_sixty_modules(self):
-        assert sum(1 for n in SHIPPED_ENTRIES if n.endswith(".py")) == 60
+    def test_the_recorded_list_has_sixty_one_modules(self):
+        assert sum(1 for n in SHIPPED_ENTRIES if n.endswith(".py")) == 61
 
     @pytest.mark.parametrize("name,kind", sorted(SHIPPED_ENTRIES.items()))
     def test_no_current_entry_reuses_a_shipped_name_as_the_other_kind(self, name, kind):

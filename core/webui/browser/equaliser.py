@@ -21,7 +21,6 @@ import html
 import math
 from types import SimpleNamespace
 
-from autostream_appliances import get_all_appliances
 from autostream_state.live import get_live_monitor_output_rate
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 import autostream_rpi as rpi
@@ -37,37 +36,6 @@ from webui.common import (
 from webui.session_state import WebUIState
 from webui import common
 from webui.peer import relay
-
-
-def _build_eq_appliances_for_selector() -> list:
-    """Return the bound-first appliance list for the equaliser selector widget."""
-    local_id = rpi.get_appliance_id() or ""
-    hostname = str(get_system_hostname() or "").strip()
-    if hostname.lower().endswith(".local"):
-        hostname = hostname[:-6]
-    bound = {
-        "id": local_id,
-        "hostname": hostname.strip() or "autostream",
-        "is_bound": True,
-        "home_path": "/",
-        "equaliser_path": "/equaliser",
-    }
-    peers = get_all_appliances()
-    result = [bound]
-    for s in peers:
-        if s.id == local_id:
-            continue
-        peer_hostname = str(s.hostname or "").strip()
-        if peer_hostname.lower().endswith(".local"):
-            peer_hostname = peer_hostname[:-6]
-        result.append({
-            "id": s.id,
-            "hostname": peer_hostname or "autostream",
-            "is_bound": False,
-            "home_path": f"/a/{s.id}/",
-            "equaliser_path": f"/a/{s.id}/equaliser",
-        })
-    return result
 
 
 # -----------------------------------------------------------------------------
@@ -369,113 +337,6 @@ def send_equaliser_page(handler, state: WebUIState, peer=None) -> None:
         remote_id="" if peer is None else peer.sighting.id,
     )
     common.send_html(handler, 200, page)
-
-
-# -----------------------------------------------------------------------------
-# Remote Equaliser page renderer
-# -----------------------------------------------------------------------------
-
-def send_remote_equaliser_page(handler, state: WebUIState, appliance_id: str) -> None:
-    """Render the remote Equaliser shell for a remote appliance.
-
-    Serves a client-side loading shell.  JavaScript fetches
-    /api/appliances/<id>/equaliser on DOMContentLoaded (with retry schedule
-    [500, 500, 1000, 1000, 2000, 3000] ms before handing off to background
-    polling), renders the sliders, then polls every 3 s (10 s in degraded mode).
-    Writes go to /api/appliances/<id>/equaliser/config and
-    /api/appliances/<id>/equaliser/reset via the gateway.
-    Transient transport failures enter degraded mode; only definitive errors
-    (appliance_unconfigured, identity conflicts, etc.) return to /.
-    """
-    try:
-        parsed = common._config_snapshot(state)
-    except Exception:
-        try:
-            handler.send_error(500, "Configuration unavailable")
-        except Exception:
-            pass
-        return
-
-    csrf_token = getattr(handler, "_csrf_token", None) or ""
-    dark_mode = parsed.webui.dark_mode
-
-    appliances = _build_eq_appliances_for_selector()
-    _local_id = str(rpi.get_appliance_id() or "")
-
-    _remote_hostname = "autostream"
-    for a in appliances:
-        if a.get("id") == appliance_id:
-            _remote_hostname = str(a.get("hostname") or "autostream")
-            break
-
-    poll_url = f"/api/appliances/{appliance_id}/equaliser"
-    save_url = f"/api/appliances/{appliance_id}/equaliser/config"
-    reset_url = f"/api/appliances/{appliance_id}/equaliser/reset"
-    status_url = f"/api/appliances/{appliance_id}/equaliser/status"
-
-    _selector_html = build_appliance_selector_html(appliances, appliance_id, "equaliser")
-
-    _head_extra = (
-        f"<meta name='csrf-token' content='{html.escape(csrf_token)}'>"
-        f"<script>window.__CSRF='{html.escape(csrf_token)}';</script>"
-        + static.script_tag("page/csrf_recovery.js")
-        + static.page_data_island({
-            "poll_url": poll_url,
-            "save_url": save_url,
-            "reset_url": reset_url,
-            "status_url": status_url,
-            "remote_aid": appliance_id,
-            "remote_hostname": _remote_hostname,
-            "local_id": _local_id,
-            "selector_current_page": "equaliser",
-            "eq_bands": _eq_bands_data(),
-            "eq_fs": _curve_fs(),
-            "curve": _curve_data(),
-        })
-        + static.script_tag("page/remote_equaliser.js")
-        + static.script_tag("page/appliance_selector.js")
-    )
-
-    page_header = (
-        "<div class='eq-page-header'>"
-        "<div style='display:flex;align-items:center;gap:0.5rem;'>"
-        "<h1>Equaliser</h1>"
-        "</div>"
-        f"{_selector_html}"
-        "</div>"
-    )
-
-    body_html = (
-        f"<input type='hidden' id='_csrfField' value='{html.escape(csrf_token)}'>"
-        + page_header
-        + "<div class='eq-section'>"
-        + "<div class='eq-section-header'>"
-        + "<span></span>"
-        + "<button class='pill-btn small' disabled id='eq-flat-btn' onclick='resetEq()'>Flat</button>"
-        + "</div>"
-        + _eq_curve_html()
-        + "<div class='eq-bands-wrap'>"
-        + "<div class='eq-bands-row' id='eq-bands-container'></div>"
-        + "</div></div>"
-        + "<div class='eq-section' id='eq-gain-section'></div>"
-        + "<p id='eq-loading-msg' style='text-align:center;"
-        "color:var(--color-text-muted,#888);padding:1.5rem 0;margin:0;'>Connecting&hellip;</p>"
-        + static.script_tag("page/equaliser_curve.js")
-    )
-
-    page = build_page_html(
-        f"Equaliser — {html.escape(_remote_hostname)}",
-        body_html,
-        style_files=("page/appliance_selector.css",),
-        head_extra=_head_extra,
-        active_tab="equaliser",
-        dark_mode=dark_mode,
-        remote_id=appliance_id,
-    )
-    try:
-        common.send_html(handler, 200, page)
-    except Exception:
-        pass
 
 
 # -----------------------------------------------------------------------------

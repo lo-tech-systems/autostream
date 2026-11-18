@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import pytest
 import _home_stub as stub
 import _page_stub
-from _home_stub import render_home, render_remote_home, start_server
+from _home_stub import render_home, start_server
 
 try:
     from playwright.sync_api import Page, expect  # type: ignore[attr-defined]
@@ -49,8 +49,6 @@ def _watch_errors(page: "Page") -> list:
 @pytest.fixture(autouse=True)
 def _clean_stub():
     yield
-    stub.REMOTE_HOME.clear()
-    stub.REMOTE_HOME_POLLS.clear()
     stub.POSTS.clear()
     stub.PATHS.clear()
     stub.API.clear()
@@ -86,20 +84,6 @@ class TestHome:
         finally:
             server.shutdown()
 
-    def test_the_remote_page_loads_its_file_and_polls_once(self, page: "Page"):
-        server, base = start_server(render_remote_home())
-        try:
-            errors = _watch_errors(page)
-            stub.REMOTE_HOME.update({"ok": True, "warnings": {}})
-            page.goto(f"{base}/")
-            _wait_for(page, lambda: stub.REMOTE_HOME_POLLS, "the remote home poll")
-            assert errors == []
-            assert page.evaluate("window.__POLL_URL") == (
-                f"/api/appliances/{stub.REMOTE_APPLIANCE_ID}/home")
-            assert page.evaluate("window.__REMOTE_AID") == stub.REMOTE_APPLIANCE_ID
-        finally:
-            server.shutdown()
-
 
 @_requires_browser
 class TestEqualiser:
@@ -126,16 +110,6 @@ class TestEqualiser:
             _wait_for(page, lambda: stub.POSTS, "the equaliser save")
             page.wait_for_timeout(1000)
             assert len(stub.POSTS) == 1
-        finally:
-            server.shutdown()
-
-    def test_the_remote_page_polls_its_state_url(self, page: "Page"):
-        server, base = start_server(_page_stub.render("remote_equaliser"))
-        try:
-            page.goto(f"{base}/")
-            poll = f"/api/appliances/{stub.REMOTE_APPLIANCE_ID}/equaliser"
-            _wait_for(page, lambda: poll in stub.PATHS, "the remote equaliser poll")
-            assert page.evaluate("window.__POLL_URL") == poll
         finally:
             server.shutdown()
 

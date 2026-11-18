@@ -15,7 +15,6 @@ DIAL_PROTOCOL.md schema validation:
 Route existence (protocol → code):
   - Every route documented in DIAL_PROTOCOL.md exists in the corresponding
     Python handler file.
-  - The /api/audio/status route is in ALLOWLIST_PATHS (unauthenticated per spec).
   - The /api/dial/volume route is NOT in ALLOWLIST_PATHS (UUID-in-body auth).
 
 Not covered here:
@@ -256,22 +255,6 @@ class TestDialProtocolSchemaFields:
                 results.append(obj)
         return results
 
-    def test_audio_status_example_has_playing_field(self, doc_text):
-        matches = self._find_json_with_field(doc_text, "playing")
-        assert matches, (
-            "DIAL_PROTOCOL.md must have a JSON example with a 'playing' field "
-            "for the /api/audio/status response"
-        )
-        assert isinstance(matches[0]["playing"], bool), (
-            "'playing' must be a boolean in the /api/audio/status example"
-        )
-
-    def test_audio_status_example_has_outputs_field(self, doc_text):
-        matches = self._find_json_with_field(doc_text, "outputs")
-        assert matches, (
-            "DIAL_PROTOCOL.md must have a JSON example with an 'outputs' field"
-        )
-
     def test_dial_volume_request_has_dial_id_and_delta(self, doc_text):
         matches = self._find_json_with_field(doc_text, "dial_id")
         assert matches, (
@@ -365,11 +348,6 @@ class TestApplianceRouteExistence:
     def api_src(self):
         return _source_text.web_source()
 
-    def test_audio_status_route_exists(self, api_src):
-        assert "/api/audio/status" in api_src, (
-            "GET /api/audio/status is missing from autostream_webui_api.py"
-        )
-
     def test_dial_volume_route_exists(self, api_src):
         assert "/api/dial/volume" in api_src, (
             "POST /api/dial/volume is missing from autostream_webui_api.py"
@@ -388,13 +366,6 @@ class TestApiSecurityPolicy:
         import autostream_auth
         return autostream_auth
 
-    def test_audio_status_is_allowlisted(self, auth_module):
-        """DIAL_PROTOCOL.md says GET /api/audio/status is 'Unauthenticated'."""
-        assert "/api/audio/status" in auth_module.ALLOWLIST_PATHS, (
-            "/api/audio/status must be in ALLOWLIST_PATHS — "
-            "DIAL_PROTOCOL.md documents it as unauthenticated"
-        )
-
     def test_dial_volume_is_not_allowlisted(self, auth_module):
         """DIAL_PROTOCOL.md says POST /api/dial/volume requires UUID-in-body auth."""
         assert "/api/dial/volume" not in auth_module.ALLOWLIST_PATHS, (
@@ -402,7 +373,7 @@ class TestApiSecurityPolicy:
             "it requires UUID-in-body authentication per DIAL_PROTOCOL.md"
         )
 
-    def test_audio_status_has_no_session_requirement(self, auth_module):
+    def test_allowlist_paths_supports_membership(self, auth_module):
         """ALLOWLIST_PATHS membership implies no session/CSRF check."""
         from autostream_auth import ALLOWLIST_PATHS
         # Confirm the allowlist is a set-like collection for O(1) lookup

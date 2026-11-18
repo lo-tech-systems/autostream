@@ -10,11 +10,10 @@ is off and disabled. A change in the state moves the card without a reload.
 from __future__ import annotations
 
 import re
-import time
 
 import pytest
 import _home_stub as stub
-from _home_stub import REMOTE_HOME as _REMOTE_HOME, REMOTE_HOME_POLLS as _REMOTE_POLLS, render_remote_home, start_server
+from _home_stub import start_server
 from _home_helpers import intents, open_home, outputs, wait_for, wait_stream
 
 try:
@@ -43,13 +42,6 @@ CONNECTING = _unit(connecting=True)
 OFFLINE_IN_SESSION = _unit(offline=True)
 OFFLINE_OUTSIDE_SESSION = _unit(offline=True, selected=False)
 PLAYING = _unit()
-
-
-@pytest.fixture(autouse=True)
-def _clean_stub():
-    _REMOTE_HOME.clear()
-    yield
-    _REMOTE_HOME.clear()
 
 
 @pytest.fixture
@@ -162,31 +154,3 @@ class TestOfflineCard:
         expect(page.locator("#output_card_real")).to_have_class(_CONNECTING)
         expect(page.locator("#output_card_real")).not_to_have_class(_OFFLINE)
         expect(page.locator("#output_card_tv")).to_have_count(0)
-
-
-@_requires_browser
-class TestRemoteConnectingCard:
-    """The remote page draws the same card from its own poll."""
-
-    @staticmethod
-    def _remote_row(row: dict) -> dict:
-        return {"id": row["id"], "name": row["name"], "selected": row["selected"], "volume": row["volume"],
-                "is_default": True, "pin_pending": False, "pin_claim": "",
-                "connecting": row["connecting"], "offline": row["offline"]}
-
-    def test_a_connecting_card_shows_and_clears_with_the_poll(self, page: "Page", serve):
-        def publish(row):
-            _REMOTE_HOME.clear()
-            _REMOTE_HOME.update({"ok": True, "warnings": {}, "outputs": [self._remote_row(row)]})
-
-        publish(CONNECTING)
-        _REMOTE_POLLS.clear()
-        page.goto(f"{serve(render_remote_home())}/")
-        page.wait_for_selector("#output_enabled_tv", state="attached")
-        expect(page.locator("#output_label_tv")).to_have_text("(Connecting)", timeout=8000)
-        expect(page.locator("#output_card_tv")).to_have_class(_CONNECTING)
-        expect(page.locator("#output_enabled_tv")).to_be_enabled()
-        expect(page.locator("#output_card_tv .output-toggle .switch")).to_have_css("opacity", "0.45")
-        publish(PLAYING)
-        expect(page.locator("#output_label_tv")).to_be_hidden(timeout=10000)
-        expect(page.locator("#output_card_tv")).not_to_have_class(_CONNECTING)

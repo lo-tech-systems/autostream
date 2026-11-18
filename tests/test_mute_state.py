@@ -46,8 +46,8 @@ if _core not in sys.path:
 
 import autostream_player_service as player_service
 from fake_store import (
-    FakeStore, fake_levels, fake_outputs, fake_playback, fake_playback_mock, fake_repeat,
-    fake_session, fake_track,
+    FakeStore, fake_levels, fake_outputs, fake_playback, fake_repeat,
+    fake_track,
 )
 from autostream_players import ActionResult, OutputInfo
 from autostream_state import Origin, store
@@ -466,10 +466,10 @@ class TestOutputChangeMuteHooks:
 
 
 # ---------------------------------------------------------------------------
-# 6. build_output_list() / build_home_state()
+# 6. build_output_list()
 # ---------------------------------------------------------------------------
 
-class TestBuildOutputListAndHomeStateMuteAware:
+class TestBuildOutputListMuteAware:
     def test_build_output_list_reports_the_intended_level_while_muted(self, writes):
         import webui.browser.home_model as models
         FakeStore().outputs([OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=40)])
@@ -490,30 +490,6 @@ class TestBuildOutputListAndHomeStateMuteAware:
         out = OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=33)
         rows = webui_home_model.build_output_list(parsed, FakeStore().outputs([out]).outputs.units)
         assert rows[0]["volume"] == 33
-
-    def test_build_home_state_carries_the_muted_flag(self, writes):
-        import webui.browser.home_model as models
-        FakeStore().outputs([OutputInfo(id="o1", name="Speaker", selected=True, volume_percent=40)])
-        get_authority().mute_all(Origin.USER)
-        parsed = SimpleNamespace(
-            owntone=SimpleNamespace(base_url="http://x", default_outputs=()),
-            webui=SimpleNamespace(show_master_volume=True, show_input_detail=False, hidden_outputs=()),
-        )
-        with patch("autostream_start_buffer_cache.current_ms", return_value=2250), \
-             fake_levels([]), \
-             fake_playback_mock() as mock_playback, \
-             patch("webui.browser.home_model.active_track") as mock_ti, \
-             fake_session({"active": False, "source": None}), \
-             fake_repeat(None), \
-             patch("webui.browser.home_model.get_system_hostname", return_value="host"), \
-             patch("webui.system.updates.get_app_version", return_value="1.0"), \
-             patch("autostream_rpi.get_appliance_id", return_value="id"):
-            mock_playback.return_value = SimpleNamespace(
-                to_public_dict=lambda: {}, stylus_banner_text="", belt_banner_text="", bearing_banner_text="",
-            )
-            mock_ti.return_value = SimpleNamespace(to_public_dict=lambda: {})
-            home = webui_home_model.build_home_state(store().snapshot(), parsed)
-        assert home["muted"] is True
 
     def test_the_outputs_part_carries_muted_all(self, writes):
         import json
@@ -581,7 +557,7 @@ class TestWebUIMuteControlRemoved:
         assert "unmuteMaster" not in src
 
     def test_page_js_header_shows_muted_suffix(self):
-        assert "(Muted)" in static_text("page/home_cards.js")
+        assert "(Muted)" in static_text("shared/state_view.js")
 
 
 def inspect_source(module) -> str:
@@ -651,7 +627,6 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
-        patch("webui.browser.home.get_all_appliances", return_value=[]),
         patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels(input_levels),
         fake_playback(playback),
@@ -676,38 +651,6 @@ def _disabled_ti_snapshot():
     return disabled_snapshot()
 
 
-def _render_remote_home_html() -> str:
-    from webui.browser.home import send_remote_home_page
-
-    handler = MagicMock()
-    chunks: list[bytes] = []
-    handler.wfile.write = lambda d: chunks.append(d)
-    handler._csrf_token = "testcsrf"
-    handler._pending_set_cookies = []
-
-    state = MagicMock()
-    state.config_path = "dummy.ini"
-
-    parsed = MagicMock()
-    parsed.owntone.volume_percent = 20
-    parsed.webui.dark_mode = False
-    parsed.webui.show_hostname_on_home = False
-    parsed.webui.control_other_appliances = False
-
-    from contextlib import ExitStack
-    patches = [
-        patch("webui.common._config_snapshot", return_value=parsed),
-        patch("autostream_rpi.get_appliance_id", return_value="1" * 20),
-        patch("webui.browser.home.get_all_appliances", return_value=[]),
-        patch("webui.browser.home.get_system_hostname", return_value="autostream"),
-    ]
-    with ExitStack() as stack:
-        for p in patches:
-            stack.enter_context(p)
-        send_remote_home_page(handler, state, "a" * 20)
-    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
-
-
 class TestNowPlayingLevelSlotMarkup:
     def test_airplay_page_has_np_level_with_meter_and_no_mute_button(self):
         html = _render_airplay_page_html(show_input_detail=True)
@@ -721,14 +664,6 @@ class TestNowPlayingLevelSlotMarkup:
         assert 'id="np-level"' in html
         assert 'id="np-vu"' not in html
         assert 'id="np_mute_btn"' not in html
-
-
-    def test_remote_placeholder_page_mirrors_the_level_slot(self):
-        html = _render_remote_home_html()
-        assert 'id="np-level"' in html
-        assert 'id="np_mute_btn"' not in html
-        assert 'master_mute_btn' not in html
-
 
 # ---------------------------------------------------------------------------
 # 10. The now-playing header text is the mute indication.

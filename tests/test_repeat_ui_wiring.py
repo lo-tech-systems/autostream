@@ -445,7 +445,6 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("webui.browser.home.get_all_appliances", return_value=[]),
         patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels([]),
         fake_playback(playback),
@@ -459,33 +458,6 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
         for p in patches:
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
-
-    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
-
-
-def _render_remote_home_page() -> str:
-    """The remote Home page, which carries the repeat button's script."""
-    from webui.browser.home import send_remote_home_page
-
-    handler = MagicMock()
-    chunks: list = []
-    handler.wfile.write = lambda d: chunks.append(d)
-    handler._csrf_token = "testcsrf"
-    handler._pending_set_cookies = []
-
-    state = MagicMock()
-    state.config_path = "dummy.ini"
-
-    patches = [
-        patch("webui.common._config_snapshot", return_value=_make_parsed()),
-        patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("webui.browser.home._build_appliances_for_selector", return_value=[]),
-        patch("webui.browser.home.build_appliance_selector_html", return_value=""),
-    ]
-    with ExitStack() as stack:
-        for p_ in patches:
-            stack.enter_context(p_)
-        send_remote_home_page(handler, state, "some-remote-appliance-id")
 
     return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
@@ -585,65 +557,9 @@ class TestHomeRepeatButton:
         assert '<button type="button" class="pill-btn small repeat-btn" id="repeat-btn"' in html
         assert "disabled" in html.split('id="repeat-btn"', 1)[1].split(">", 1)[0]
 
-    def test_button_click_wired_to_post_api_repeat(self):
-        html = _render_remote_home_page()
-        assert "onRepeatButtonClick()" in html
-        assert "fetch(window.__REPEAT_URL," in html
-        assert "armed: newArmed" in html
-
-    def test_refresh_status_calls_update_repeat_button(self):
-        html = _render_remote_home_page()
-        assert "updateRepeatButton(d)" in html
-        assert "updateRepeatPill" not in html
-
-    def test_update_repeat_button_hides_when_repeat_absent_or_disabled(self):
-        html = _render_remote_home_page()
-        assert (
-            "if (!repeat || !repeat.enabled) {\n"
-            "      btn.hidden = true;\n"
-            "      __repeatOptimistic = null;\n"
-            "      _setRepeatStopping(false);\n"
-            "      return;\n"
-            "    }" in html
-        )
-
-    def test_update_repeat_button_gates_disabled_on_buffer_bytes(self):
-        html = _render_remote_home_page()
-        assert "var hasBuffer = Number(recording.bytes || 0) > 0;" in html
-        assert "btn.disabled = stopping || (!hasBuffer && !replaying && !on);" in html
-
-    def test_update_repeat_button_uses_replay_last_label_when_idle_with_buffer(self):
-        html = _render_remote_home_page()
-        assert "\\u21bb Replay Last" in html
-        assert "btn.textContent = stopping ? 'Stopping\\u2026' : (showReplayLast ? '\\u21bb Replay Last' : '\\u21bb Repeat Play');" in html
-
-    def test_update_repeat_button_applies_active_outline_when_armed_or_replaying(self):
-        html = _render_remote_home_page()
-        assert "var polledOn = replaying || armed;" in html
-        assert "btn.classList.toggle('active', on || stopping);" in html
-        # The .active outline rule lives in the nginx-served theme now.
+    def test_the_active_outline_rule_lives_in_the_theme(self):
         theme_css = (REPO_ROOT / "nginx" / "static" / "theme.css").read_text(encoding="utf-8")
-
         assert ".repeat-btn.active" in theme_css
-
-    def test_update_repeat_button_shows_progress_and_truncated_hint_in_title(self):
-        """truncated_head is the DEFINED wrap semantic (keeps the last N
-        minutes), not a pressure symptom -- the tooltip suffix says what's
-        held ('most recent kept'), not the old capacity-loss framing
-        ('tail only')."""
-        html = _render_remote_home_page()
-        assert "if (recording.truncated_head) title += ' \\u00b7 most recent kept';" in html
-        assert "· tail only" not in html
-        assert "btn.title = title;" in html
-
-    def test_click_handler_stops_replay_or_disarms_or_arms(self):
-        html = _render_remote_home_page()
-        assert "var newArmed = (state === 'repeating' || state === 'armed') ? false : true;" in html
-
-    def test_click_handler_reverts_active_state_on_post_failure(self):
-        html = _render_remote_home_page()
-        assert "var wasActive = btn.classList.contains('active');" in html
-        assert "btn.classList.toggle('active', wasActive);" in html
 
 
 class TestRepeatUiWordingRegression:
@@ -714,7 +630,6 @@ def _render_equaliser_page(*, repeat_enabled: bool = True) -> str:
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("webui.browser.equaliser.get_all_appliances", return_value=[]),
         patch("webui.browser.equaliser.get_system_hostname", return_value="autostream"),
         patch("webui.browser.equaliser.build_top_banner_html", return_value=("", "")),
     ]

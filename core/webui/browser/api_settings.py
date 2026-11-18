@@ -22,8 +22,6 @@ import json
 import logging
 from collections.abc import Mapping
 from autostream_config import (
-    OUTPUT_USAGE_POLL_INTERVAL_MAX,
-    OUTPUT_USAGE_POLL_INTERVAL_MIN,
     is_valid_monitor_device_id,
     normalize_update_channel,
 )
@@ -54,18 +52,6 @@ def _validate_bool(value: object) -> bool:
     if isinstance(value, bool):
         return value
     raise ValueError("Value must be true or false")
-
-
-def _validate_poll_interval(value: object) -> int:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("Value must be a number")
-    iv = int(value)
-    if iv < OUTPUT_USAGE_POLL_INTERVAL_MIN or iv > OUTPUT_USAGE_POLL_INTERVAL_MAX:
-        raise ValueError(
-            f"Value must be between {OUTPUT_USAGE_POLL_INTERVAL_MIN}"
-            f" and {OUTPUT_USAGE_POLL_INTERVAL_MAX}"
-        )
-    return iv
 
 
 def _validate_update_channel(value: object) -> str:
@@ -110,7 +96,6 @@ _SETTINGS_FIELDS: dict = {
     "webui.show_input_detail":                  _reg_settings_field("webui.show_input_detail", "webui", "show_input_detail", _validate_bool),
     "webui.show_hostname_on_home":              _reg_settings_field("webui.show_hostname_on_home", "webui", "show_hostname_on_home", _validate_bool, cross_validate=cross_validate_hostname_visibility_cascade),
     "webui.control_other_appliances":           _reg_settings_field("webui.control_other_appliances", "webui", "control_other_appliances", _validate_bool),
-    "webui.output_usage_poll_interval_seconds": _reg_settings_field("webui.output_usage_poll_interval_seconds", "webui", "output_usage_poll_interval_seconds", _validate_poll_interval),
     "updates.update_channel":                   _reg_settings_field("updates.update_channel", "updates", "update_channel", _validate_update_channel),
 }
 
@@ -189,7 +174,6 @@ def send_settings_get_json(handler, state) -> None:
         "webui.show_input_detail":                 parsed.webui.show_input_detail,
         "webui.show_hostname_on_home":             parsed.webui.show_hostname_on_home,
         "webui.control_other_appliances":          parsed.webui.control_other_appliances,
-        "webui.output_usage_poll_interval_seconds": parsed.webui.output_usage_poll_interval_seconds,
         "updates.update_channel":                  parsed.updates.update_channel,
         "general.audio_path":                      parsed.general.audio_path,
         "repeat.enabled":                          parsed.repeat.enabled,

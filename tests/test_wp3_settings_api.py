@@ -49,7 +49,6 @@ def _minimal_cfg(tmp_path: Path) -> Path:
             "show_input_detail": False,
             "show_hostname_on_home": False,
             "control_other_appliances": True,
-            "output_usage_poll_interval_seconds": 3,
         },
         "updates": {"auto_update": False, "update_channel": "stable"},
     })
@@ -140,7 +139,6 @@ class TestSettingsGetJson:
         assert "webui.show_input_detail" in values
         assert "webui.show_hostname_on_home" in values
         assert "webui.control_other_appliances" in values
-        assert "webui.output_usage_poll_interval_seconds" in values
         assert "updates.update_channel" in values
 
     def test_values_match_config(self, tmp_path):
@@ -157,7 +155,6 @@ class TestSettingsGetJson:
         assert v["webui.show_master_volume"] is True
         assert v["webui.show_input_detail"] is False
         assert v["webui.show_hostname_on_home"] is False
-        assert v["webui.output_usage_poll_interval_seconds"] == 3
         assert v["updates.update_channel"] == "stable"
 
     def test_get_reflects_store_mutations(self, tmp_path):
@@ -215,22 +212,6 @@ class TestSettingsPostJsonSuccess:
         assert code == 200
         assert body["ok"] is True
         assert body["value"] is False
-
-    def test_sets_poll_interval(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "webui.output_usage_poll_interval_seconds", "value": 10},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
-        assert body["value"] == 10
 
     def test_sets_update_channel_dev(self, tmp_path):
         from webui.browser.api_settings import send_settings_post_json
@@ -464,29 +445,14 @@ class TestSettingsPostJsonValidation:
         assert code == 400
         assert body["ok"] is False
 
-    def test_poll_interval_below_min_returns_400(self, tmp_path):
+    def test_a_removed_setting_is_refused(self, tmp_path):
         from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
         handler = _make_handler()
         try:
             send_settings_post_json(
                 handler, state,
-                {"field": "webui.output_usage_poll_interval_seconds", "value": 0},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 400
-        assert body["ok"] is False
-
-    def test_poll_interval_above_max_returns_400(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "webui.output_usage_poll_interval_seconds", "value": 999},
+                {"field": "webui.output_usage_poll_interval_seconds", "value": 10},
             )
         finally:
             store.close(save=False)
@@ -536,22 +502,6 @@ class TestSettingsPostJsonValidation:
         assert code == 400
         assert body["ok"] is False
 
-    def test_bool_for_poll_interval_returns_400(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "webui.output_usage_poll_interval_seconds", "value": True},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 400
-        assert body["ok"] is False
-
-
 # ---------------------------------------------------------------------------
 # POST /api/settings — store unavailable fallback
 # ---------------------------------------------------------------------------
@@ -573,24 +523,6 @@ class TestStoreUnavailable:
 # ---------------------------------------------------------------------------
 
 class TestNormalisation:
-    def test_poll_interval_float_truncated_to_int(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "webui.output_usage_poll_interval_seconds", "value": 5.9},
-            )
-            snapshot = store.snapshot()
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
-        assert body["value"] == 5
-        assert snapshot.webui.output_usage_poll_interval_seconds == 5
-
     def test_update_channel_dev_case_insensitive(self, tmp_path):
         from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
@@ -757,12 +689,6 @@ class TestSetupPageAutosaveWiring:
         html = self._render_setup(tmp_path)
         assert "settingsSaveField('webui.control_other_appliances'" in html
 
-    def test_poll_interval_not_exposed_on_setup_page(self, tmp_path):
-        html = self._render_setup(tmp_path)
-        assert "Output sharing refresh" not in html
-        assert "webui_output_usage_poll_interval_seconds" not in html
-        assert "settingsSaveFieldDebounced('webui.output_usage_poll_interval_seconds'" not in html
-
     def test_update_channel_wired(self, tmp_path):
         html = self._render_setup(tmp_path)
         assert "settingsSaveField('updates.update_channel'" in html
@@ -819,6 +745,6 @@ class TestOutputPolicyFields:
         assert set(body["values"]) == {
             "webui.dark_mode", "webui.show_master_volume", "webui.show_input_detail",
             "webui.show_hostname_on_home", "webui.control_other_appliances",
-            "webui.output_usage_poll_interval_seconds", "updates.update_channel",
+            "updates.update_channel",
             "general.audio_path", "repeat.enabled", "repeat.codec", "repeat.target_minutes",
         }

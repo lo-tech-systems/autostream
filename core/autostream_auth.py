@@ -95,17 +95,14 @@ ALLOWLIST_PATHS = {
     "/api/log-level",
     "/api/service/reset",
     "/api/service/config",
-    "/api/audio/status",
     "/api/v1/events",
     "/api/v1/state",
     "/api/dial/capabilities",
-    "/api/appliances",
 }
 
 # Path prefixes exempt from authentication (dynamic segments).
 # Implement prefix matching rather than adding literal remote IDs to the allowlist.
 ALLOWLIST_PREFIXES = (
-    "/api/appliances/",
     "/api/v1/peers/",
     "/a/",
 )

@@ -133,7 +133,6 @@ def _minimal_cfg(tmp_path: Path) -> Path:
             "control_other_appliances": True,
             "advertise_appliance": True,
             "hidden_outputs": [],
-            "output_usage_poll_interval_seconds": 3,
         },
         "updates": {"auto_update": True, "update_channel": "stable"},
     }), encoding="utf-8")

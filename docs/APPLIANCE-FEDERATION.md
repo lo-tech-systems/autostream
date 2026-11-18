@@ -1,32 +1,34 @@
-# Appliance Federation Protocol
+# Multi-Appliance Control
 
-This document describes the protocol used by autostream multi-appliance control:
-the mDNS advertisement schema, appliance identity format, federation API, token
-lifecycle, versioning rules, architecture boundaries, and HTTP-only threat-model
+This document describes how one autostream appliance shows and controls another:
+the mDNS advertisement schema, appliance identity format, the relay routes,
+versioning rules, architecture boundaries, and HTTP-only threat-model
 limitations.
 
 ---
 
 ## Architecture Overview
 
-Multi-appliance control uses a **bound-appliance gateway** pattern. The browser and
+Multi-appliance control uses a **bound-appliance relay** pattern. The browser and
 iOS Home Screen application are permanently bound to the appliance from which they
-were launched. When the user selects a remote appliance, the bound appliance's server
-makes server-to-server requests to the remote appliance's federation API and relays
-the result.
+were launched. Every appliance follows the others it sees on the network: it reads
+each one's state, keeps it current from the other's change stream, and sends the
+other's controls as intents. When the user selects another appliance, the browser
+reads and controls it through the bound appliance's relay routes, with the same
+page code and the same message shapes it uses for the bound appliance itself.
 
 Key boundaries:
 
 | Layer | Responsibility |
 |---|---|
 | Shared mDNS transport (`autostream_mdns.py`) | Raw Avahi event parsing; no policy |
-| Appliance discovery adapter (`autostream_appliances.py`) | `_autostream._tcp` event handling; in-memory registry |
-| Bound-appliance gateway (`webui/peer/gateway.py`) | Token acquisition, request forwarding, error normalization |
-| Browser-facing gateway API (`/api/appliances/<id>/…`) | Thin proxy; returns browser-contract JSON |
-| Target federation API (`/api/federation/v1/…`) | Reads and mutates local state; validates bearer tokens |
+| Peer registry (`autostream_peer_registry.py`) | `_autostream._tcp` event handling; in-memory registry of sightings |
+| Peer client (`autostream_peer_client.py`) | One live copy of another appliance: state, change stream, intents |
+| Appliance follower (`autostream_appliances.py`) | One client per sighting; the `peers` state part; occupancy; resolving an appliance id |
+| Relay (`webui/peer/relay.py`) | The browser-facing routes for another appliance |
 
-The browser never navigates to a remote appliance and never receives the remote
-appliance's cookies, CSRF tokens, federation tokens, IP address, or direct URL.
+The browser never navigates to another appliance and never receives its cookies,
+CSRF tokens, IP address, or direct URL.
 
 ---
 
@@ -49,13 +51,13 @@ LAN as an `_autostream._tcp` Avahi service. The service file is written by
 | Key | Example value | Description |
 |---|---|---|
 | `id` | `a1b2c3d4e5f6a7b8c9d0` | Appliance identity (see below) |
-| `ui` | `v1` | Web UI API version |
-| `federation` | `v1` | Federation API version |
-| `version` | `0.4.1` | Installed autostream version string |
+| `version` | `0.8.0` | Installed autostream version string |
+| `control` | `on` | Whether other appliances may control this one |
+| `proto` | `4` | The client protocol version the appliance speaks |
 
-A missing or malformed `id` TXT record causes the sighting to be ignored. A missing
-`federation` key is treated as incompatible (the peer is listed in the selector but
-the gateway will reject federation attempts with `remote_bad_response`).
+A missing or malformed `id` TXT record causes the sighting to be ignored. An
+appliance that speaks a different protocol version is listed but not followed
+until its version matches.
 
 ### Registry refresh and expiry
 
@@ -107,138 +109,50 @@ creates or repairs it.
 * The same identity and same hostname may appear on multiple IP addresses during
   normal multi-homing or adapter failover.
 * The same identity with multiple hostnames is treated as a genuine conflict; the
-  peer is suppressed with `appliance_conflicted` and a log warning.
+  peer is suppressed and a warning is logged.
 
 ---
 
-## Federation API
+## The Relay Routes
 
-### Version
-
-Current version: **v1**
-
-All federation endpoints are under `/api/federation/v1/`. The version is fixed in
-the URL path. A gateway will not attempt federation with a peer that does not
-advertise `federation=v1` in its TXT record.
-
-### Token acquisition
-
-Before making any federation request, the gateway acquires a short-lived bearer token
-from the target:
-
-```
-POST /api/federation/v1/session
-Content-Type: application/json
-Body: {}
-
-Response 200:
-{
-  "ok": true,
-  "token": "<40-char hex string>",
-  "expires_in": 600,
-  "federation_version": 1
-}
-```
-
-The token is issued per source IP and stored in memory on the target appliance. It
-expires after **600 seconds (10 minutes)** and is evicted on service restart.
-
-**Rate limit:** 5 successful issuances per 60-second rolling window per source IP.
-The target returns HTTP 429 with a `retry_after` field when the limit is exceeded.
-
-All subsequent federation requests include:
-
-```
-Authorization: Bearer <token>
-```
-
-### Endpoints
+The relay serves another appliance in the shapes the appliance's own routes use,
+so a page that draws this appliance draws another one with the same code. `<id>` is
+the other appliance's 20-character identity.
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/api/federation/v1/session` | Acquire bearer token |
-| `GET` | `/api/federation/v1/home` | Read Home state (volume, outputs, play state) |
-| `POST` | `/api/federation/v1/output` | Toggle or select an AirPlay output |
-| `GET` | `/api/federation/v1/equaliser` | Read Equaliser state (bands, gain) |
-| `POST` | `/api/federation/v1/equaliser/config` | Apply one EQ band or gain field |
-| `POST` | `/api/federation/v1/equaliser/reset` | Zero all EQ fields |
-| `GET` | `/api/federation/v1/equaliser/status` | Read live auto-trim state |
-| `POST` | `/api/federation/v1/repeat` | Arm or disarm repeat-buffer replay |
+| `GET` | `/api/v1/peers/<id>/state` | The other appliance's state, whole or by part (`?parts=`) |
+| `GET` | `/api/v1/peers/<id>/events` | Its change stream, passed on as it comes, with its own event ids |
+| `POST` | `/api/v1/peers/<id>/intents/<name>` | One of its controls, sent as an intent |
 
-The **home** response additionally carries `session` (the unified playback-session
-flag/source, always present), `repeat` (the daemon's repeat-buffer status block,
-present only when the target's repeat feature has ever reported one) and
-`start_failure` (the latest speaker that could not start, present only when there is
-one; the Home page's object, `requester` included). All three fields
-are additive within v1: a target running an older release simply omits them, and a
-gateway UI that does not recognise them hides the corresponding control rather than
-erroring.
+The state and the stream carry the other appliance's versions, so a browser that
+reconnects resumes against them. The pages `/a/<id>/` and `/a/<id>/equaliser`
+show the Home and Equaliser pages for that appliance.
 
-The **session** response (`POST /api/federation/v1/session`) includes `"federation_version": 1`
-and `"expires_in": 600`. The gateway validates that both values match these exact constants
-and rejects the response (returning `remote_bad_response`) if they do not. Other federation
-endpoints do not include `federation_version` in their responses.
+The `peers` part of this appliance's own state lists the appliances it follows
+(identity, hostname, version, whether it can be reached, whether it may be
+controlled) and is what the appliance selector shows.
 
-### Error codes returned by the target
+### Refusals
 
 | Code | Meaning |
 |---|---|
-| `appliance_unconfigured` | Target has no speakers configured yet |
-| `appliance_identity_unavailable` | Target has no stable identity |
+| `unknown_appliance` | Unknown appliance id, or one that is not followed |
+| `bound_appliance` | The id is this appliance's own; use its own routes |
+| `control_disabled` | The other appliance does not allow control by other appliances |
+| `appliance_conflict` | The id is announced under several hostnames |
+| `appliance_unconfigured` | The other appliance is reachable but not set up yet |
 
-### Error codes produced by the gateway (browser-contract)
-
-| Code | Source | Meaning |
-|---|---|---|
-| `not_found` | Gateway | Unknown appliance ID |
-| `appliance_conflicted` | Gateway | Appliance ID has multiple conflicting identities |
-| `appliance_offline` | Gateway | No sighting in the local registry |
-| `appliance_unconfigured` | Gateway (relayed) | Target not ready |
-| `appliance_identity_unavailable` | Gateway (relayed) | Target identity unavailable |
-| `remote_timeout` | Gateway | Target did not respond within timeout |
-| `remote_bad_response` | Gateway | Target response malformed or version mismatch |
-| `remote_backoff` | Gateway | Token rate-limit hit; includes `retry_after` field |
-
----
-
-## Token Lifecycle
-
-```
-Gateway                          Target
-  │  POST /api/federation/v1/session  │
-  │ ────────────────────────────────► │  issues 160-bit hex token
-  │ ◄────────────────────────────────  bound to gateway IP, TTL 600 s
-  │                                   │
-  │  GET /api/federation/v1/home      │
-  │  Authorization: Bearer <token>    │
-  │ ────────────────────────────────► │  validates: token exists, not expired,
-  │ ◄────────────────────────────────  source IP matches
-  │                                   │
-  │  (token expires after 600 s)      │
-  │  (gateway evicts on error / 401)  │
-  │  POST /api/federation/v1/session  │
-  │ ────────────────────────────────► │  re-issues
-```
-
-* Tokens are in-memory only. All sessions are lost when `autostream.service` restarts.
-* The gateway evicts its cached token and re-acquires on any 401 response.
-* The target enforces strict IP binding: a token issued to `192.168.1.10` cannot be
-  used from `192.168.1.11`.
-* Gateway token cache entries are keyed by target appliance identity, not by the
-  target's IP address. If the target appliance changes IP but the gateway's source
-  IP is unchanged, the existing token remains valid and the gateway only needs the
-  refreshed discovery address. If the target restarts or the gateway source IP
-  changes, the next 401 response triggers the existing retry-once re-auth path.
+A transport failure while following an appliance is retried with a growing delay
+(1, 2, 4, 8, 15, then 30 seconds) for as long as it lasts, and the appliance is
+shown as unreachable meanwhile.
 
 ---
 
 ## Versioning and Compatibility
 
-* The federation version is advertised as `federation=v1` in the TXT record.
-* Future protocol changes that are not backwards-compatible will increment the version
-  (e.g. `federation=v2`) and use a new URL path (`/api/federation/v2/…`).
-* A gateway that discovers a peer advertising only `federation=v2` will not attempt v1
-  federation and will return `remote_bad_response` to the browser.
+* The protocol version is advertised as `proto=<n>` in the TXT record, and an
+  appliance on another version is not followed.
 * The `version` TXT key carries the human-readable autostream release string for
   display in the selector UI; it does not affect protocol compatibility.
 
@@ -250,15 +164,12 @@ autostream uses plain HTTP. This is intentional: publicly trusted TLS certificat
 are not available for `.local` hostnames, and distributing a private CA to every
 phone would conflict with autostream's zero-configuration design.
 
-**What this means for the federation token:**
+**What this means for the relay:**
 
-* The bearer token is transmitted in plaintext over the LAN.
-* A passive observer on the same LAN can capture the token and replay it before it
-  expires (TTL 10 minutes).
-* The IP binding provides no meaningful protection against an on-path attacker.
-* **The federation token does not upgrade the existing LAN threat model.** It
-  provides the same level of protection as the existing session cookie: it restricts
-  casual cross-origin use but offers no cryptographic confidentiality.
+* The relay routes are open to the LAN, as the appliance's own state route is. An
+  intent sent through them identifies the browser by the token the page carries,
+  and is refused when the other appliance does not allow control.
+* A passive observer on the same LAN can read what the appliances exchange.
 
 **Appropriate use:**
 
@@ -280,7 +191,7 @@ an iPhone or iPad.
 
 - [ ] Both appliances are reachable at their own `http://<hostname>.local/` addresses.
 - [ ] `avahi-browse _autostream._tcp -t -r` on each appliance shows the other's
-      `id`, `federation=v1`, `ui=v1`, and `version` TXT records.
+      `id`, `proto`, `control`, and `version` TXT records.
 - [ ] The appliance selector pill appears on the Home page when both are online.
 - [ ] Selecting the remote appliance shows the remote appliance's hostname in the pill.
 - [ ] Volume changes on the Home page apply to the remote appliance.
@@ -305,7 +216,7 @@ an iPhone or iPad.
 - [ ] With a remote appliance selected, rotate the device; confirm the selector and
       controls reflow correctly.
 - [ ] With a remote appliance selected, background the PWA for 30+ seconds, then
-      resume; confirm polling resumes and the remote appliance state is re-fetched.
+      resume; confirm the remote appliance state is re-fetched.
 
 If hardware is unavailable, record that these checks were not performed and complete
 all automated verification instead.
@@ -320,49 +231,41 @@ take over a speaker that is already playing.
 
 ### How it works
 
-Each autostream appliance that is currently playing announces itself on the LAN as
-an `_autostream-playing._tcp` Avahi service. The appliance includes
-`dial_api=v1 audio_status=v1` TXT keys in this announcement.
+Each appliance follows the others it sees (see the architecture above). From the
+state it holds for each one, it works out which speakers that appliance is
+playing: an appliance counts while it is reachable and has a playback session,
+and each speaker it has switched on, that the player reports and that is not
+waiting for a PIN, is in use. When two appliances report one speaker name, the
+first by hostname wins.
 
-A background poller on each appliance browses `_autostream-playing._tcp`, queries
-`GET /api/audio/status` from each discovered neighbour, and populates a local
-in-memory occupancy cache.
+The result is handed to the output authority, which marks each speaker with the
+appliance using it. The Home page shows "In Use by &lt;hostname&gt;" on that
+speaker's card.
 
-The occupancy cache drives the Home page UI and prevents automatic or user-initiated
-enablement of an output that is actively used by a neighbour.
+Speaker names are **not** placed in mDNS TXT records; they are read from the other
+appliance's state over HTTP.
 
-Output names are **not** placed in mDNS TXT records; they are fetched over HTTP only.
+### Event-driven, best-effort
 
-### TTL-based, best-effort
-
-The cache is TTL-based, not a distributed lock. Occupancy entries expire
-automatically. If Wi-Fi is lost or the remote appliance crashes without sending a
-goodbye packet, stale entries persist until their TTL elapses (at most a few seconds
-longer than twice the poll interval).
-
-There is no push or subscription mechanism; the poller is purely pull-based.
-
-### Poll interval
-
-The poll interval defaults to 3 seconds. A shorter interval reduces the time a
-stale occupied state is shown; a longer interval reduces LAN traffic.
+The occupancy follows the other appliances' change streams, so a change shows as
+soon as the other appliance reports it. If Wi-Fi is lost or the other appliance
+crashes, the appliance is shown as unreachable after its stream falls silent and
+its speakers are released.
 
 ### Navigation shortcut
 
 When *Allow Control of Other Appliances* is enabled (Setup → Personalisation), an
 output card that shows "In Use by &lt;hostname&gt;" becomes tappable. Tapping anywhere
 on the card (except the toggle switch or volume slider) navigates directly to that
-appliance's Home page in proxy mode - equivalent to selecting it from the appliance
+appliance's Home page - equivalent to selecting it from the appliance
 selector dropdown. The card remains visually greyed-out; only the status pill gains
 a green outline to indicate the remote ownership.
 
 ### Constraints
 
-- Only appliances announcing `dial_api=v1` **and** `audio_status=v1` are polled.
-- At most 4 neighbours are queried concurrently.
 - Locally selected outputs are never marked as occupied regardless of remote reports.
-- The occupancy check is cache-only on all browser-facing request paths; no remote
-  HTTP is performed during a toggle or page load.
+- The occupancy is held in memory and read from there on every browser-facing request
+  path; no remote HTTP is performed during a toggle or page load.
 
 ---
 
@@ -375,12 +278,9 @@ non-stale address for the appliance identity. When an adapter change produces a
 remove event followed by an add event with a new IP:
 
 - The old sighting is removed or allowed to expire after the mDNS grace period.
-- HTTP requests to a peer automatically use the updated address after the next discovery poll.
+- Requests to a peer automatically use the updated address after the next discovery poll.
 - A brief gap (typically one to a few seconds) may occur between the remove and add events. The peer appliance's UI shows the remote as offline during this window.
 - If a graceful remove event is missed, the periodic dump marks the old address
   stale after one refresh cycle and selection moves to the live address.
-- Gateway backoff recorded against the old IP is cleared when the resolved
-  sighting changes to a new IP, so stale-address failures do not keep returning
-  429 once discovery has refreshed.
 
 `dnsmasq` is used only during the setup hotspot (captive portal DHCP/DNS). It is not involved in normal mDNS service announcements.

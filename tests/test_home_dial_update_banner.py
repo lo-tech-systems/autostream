@@ -9,9 +9,8 @@ now count.
 from __future__ import annotations
 
 import sys
-from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import _source_text
 
@@ -20,13 +19,8 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import fake_levels, fake_outputs, fake_playback, fake_track
-import webui.browser.home_model as models
-from autostream_state import store
 import autostream_dials as dials
-from webui.browser.home import send_airplay_page
 import webui.browser.setup.cards_dials as cards_dials
-import webui.browser.home_model as webui_home_model
 
 _BANNER = "Dial updates required"
 _BANNER_OPEN = "<a id='dial-update-warning-banner' href='/setup#dials' style='display:"
@@ -75,46 +69,6 @@ class TestBannerText:
     def test_dial_newer_than_the_appliance_gives_no_banner(self):
         with _sightings(_sighting("a", "v4")):
             assert dials.build_dial_update_banner_text() == ""
-
-
-# ---------------------------------------------------------------------------
-# Home state
-# ---------------------------------------------------------------------------
-
-def _home_state(tmp_path) -> dict:
-    cfg = tmp_path / "autostream.json"
-    cfg.write_text("{}", encoding="utf-8")
-    playback = MagicMock()
-    playback.to_public_dict.return_value = {}
-    playback.stylus_banner_text = ""
-    playback.belt_banner_text = ""
-    playback.bearing_banner_text = ""
-    with ExitStack() as stack:
-        for p in (
-            patch("autostream_start_buffer_cache.current_ms", return_value=2250),
-            fake_outputs([]),
-            fake_levels([]),
-            fake_playback(playback),
-            patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"),
-            patch("webui.browser.home_model.get_system_hostname", return_value="host"),
-            patch("webui.system.updates.get_app_version", return_value="2.0.0"),
-        ):
-            stack.enter_context(p)
-        return webui_home_model.build_home_state(store().snapshot(), MagicMock())
-
-
-class TestHomeState:
-    def test_warning_present_for_legacy_dial(self, tmp_path):
-        with _sightings(_sighting("a", "")):
-            assert _home_state(tmp_path)["warnings"]["dial_update"] == _BANNER
-
-    def test_warning_empty_when_all_current(self, tmp_path):
-        with _sightings(_sighting("a", "v3")):
-            assert _home_state(tmp_path)["warnings"]["dial_update"] == ""
-
-    def test_warning_empty_when_scanner_fails(self, tmp_path):
-        with patch("autostream_dials.get_all_sightings", side_effect=RuntimeError("x")):
-            assert _home_state(tmp_path)["warnings"]["dial_update"] == ""
 
 
 # ---------------------------------------------------------------------------

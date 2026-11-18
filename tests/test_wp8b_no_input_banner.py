@@ -15,7 +15,6 @@ import json
 import sys
 from contextlib import ExitStack
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -99,7 +98,6 @@ class TestMainPageBanner:
         patches = [
             patch("webui.browser.home.build_top_banner_html", return_value=("", "")),
             patch("autostream_rpi.get_appliance_id", return_value="local-id"),
-            patch("webui.browser.home.get_all_appliances", return_value=[]),
             patch("webui.browser.home.get_system_hostname", return_value="autostream"),
             fake_levels([]),
             fake_playback(_make_playback_snapshot()),
@@ -143,8 +141,7 @@ class TestEqualiserPageBannerAbsent:
         handler._csrf_token = "tok"
 
         with patch("webui.browser.equaliser.build_top_banner_html", return_value=("", "")), \
-             patch("autostream_rpi.get_appliance_id", return_value="local-id"), \
-             patch("webui.browser.equaliser.get_all_appliances", return_value=[]):
+             patch("autostream_rpi.get_appliance_id", return_value="local-id"):
             send_equaliser_page(handler, state)
 
         store.close(save=False)

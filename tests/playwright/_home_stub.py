@@ -25,8 +25,7 @@ The protocol routes serve ``PARTS``, the state parts a test arranges
   entry of ``REPLIES`` merged over it. ``POSTS`` has the body of each POST or
   PUT, ``POST_PATHS`` its path and ``POST_TOKENS`` its ``X-CSRF-Token``.
 
-The remote Home poll is served from ``REMOTE_HOME`` while that dict is
-non-empty. ``PATHS`` lists the path of
+``PATHS`` lists the path of
 every ``/api/*`` GET answered, and ``API`` maps a GET path to its reply.
 ``start_server``, ``set_page`` and ``render_home`` reset the stream.
 """
@@ -50,13 +49,9 @@ import _page_stub
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 
-REMOTE_APPLIANCE_ID = "aabbccdd1122334455aa"
-
 PAGE: bytes = b""
 REPLIES: list = []
 POSTS: list = []
-REMOTE_HOME: dict = {}
-REMOTE_HOME_POLLS: list = []
 PATHS: list = []
 API: dict = {}
 POST_PATHS: list = []
@@ -197,7 +192,6 @@ def render_home(
             patch("webui.common._config_snapshot",
                   return_value=_parsed_config(show_input_detail, show_master_volume, control_other)),
             patch("autostream_rpi.get_appliance_id", return_value="0" * 20),
-            patch("webui.browser.home.get_all_appliances", return_value=[]),
             patch("webui.browser.home.get_system_hostname", return_value="autostream"),
             patch("webui.browser.home.state_for_page", return_value=state_body()),
             patch("webui.browser.home.get_setting", return_value=MagicMock(ok=True, value="2250")),
@@ -205,23 +199,6 @@ def render_home(
         ):
             stack.enter_context(p)
         send_airplay_page(handler, state, auth)
-    return b"".join(chunks)
-
-
-def render_remote_home(appliance_id: str = REMOTE_APPLIANCE_ID) -> bytes:
-    """Render the remote (federated) Home shell for ``appliance_id``."""
-    sys.path.insert(0, str(REPO_ROOT / "core"))
-    from webui.browser.home import send_remote_home_page  # noqa: PLC0415
-
-    handler, chunks = _fake_handler()
-    state = MagicMock()
-    state.config_path = "dummy.ini"
-    with patch("webui.common._config_snapshot",
-               return_value=_parsed_config(False, False, False)), \
-         patch("autostream_rpi.get_appliance_id", return_value="0" * 20), \
-         patch("webui.browser.home.get_all_appliances", return_value=[]), \
-         patch("webui.browser.home.get_system_hostname", return_value="autostream"):
-        send_remote_home_page(handler, state, appliance_id)
     return b"".join(chunks)
 
 
@@ -326,9 +303,6 @@ class Handler(BaseHTTPRequestHandler):
             self._send(json.dumps(state_body(names)).encode(), "application/json")
         elif path == "/api/v1/events" and STREAM["mode"] == "serve":
             self._serve_stream()
-        elif path.startswith("/api/appliances/") and path.endswith("/home") and REMOTE_HOME:
-            REMOTE_HOME_POLLS.append(1)
-            self._send(json.dumps(REMOTE_HOME).encode(), "application/json")
         elif path in API:
             self._send(json.dumps(API[path]).encode(), "application/json")
         elif self.path.startswith("/api/"):

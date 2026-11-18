@@ -10,11 +10,8 @@ from the per-input levels.  The input card's rate line (shown only with the
 from __future__ import annotations
 
 import contextlib
-import re
 import sys
-from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import _source_text
 
@@ -23,12 +20,8 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import FakeStore, fake_outputs, fake_playback, fake_track
-import webui.browser.home_model as models
-from autostream_state import store
+from fake_store import FakeStore
 from autostream_input_status import SAMPLE_RATE_MISMATCH_BANNER_TEXT
-from webui.browser.home import send_airplay_page
-import webui.browser.home_model as webui_home_model
 
 _BANNER = "Sample Rate Mismatch: Please enable Dynamic Rate Matching"
 _BANNER_OPEN = "<a id='sample-rate-warning-banner' href='/setup#input"
@@ -53,41 +46,6 @@ def _monitors(*mismatching: int):
 class TestBannerText:
     def test_the_text_is_the_agreed_string(self):
         assert SAMPLE_RATE_MISMATCH_BANNER_TEXT == _BANNER
-
-
-# ---------------------------------------------------------------------------
-# Home state
-# ---------------------------------------------------------------------------
-
-def _home_state(tmp_path) -> dict:
-    cfg = tmp_path / "autostream.json"
-    cfg.write_text("{}", encoding="utf-8")
-    playback = MagicMock()
-    playback.to_public_dict.return_value = {}
-    playback.stylus_banner_text = ""
-    playback.belt_banner_text = ""
-    playback.bearing_banner_text = ""
-    with ExitStack() as stack:
-        for p in (
-            patch("autostream_start_buffer_cache.current_ms", return_value=2250),
-            fake_outputs([]),
-            fake_playback(playback),
-            patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"),
-            patch("webui.browser.home_model.get_system_hostname", return_value="host"),
-            patch("webui.system.updates.get_app_version", return_value="2.0.0"),
-        ):
-            stack.enter_context(p)
-        return webui_home_model.build_home_state(store().snapshot(), MagicMock())
-
-
-class TestHomeState:
-    def test_warning_present_for_a_mismatch(self, tmp_path):
-        with _monitors(2):
-            assert _home_state(tmp_path)["warnings"]["sample_rate"] == _BANNER
-
-    def test_warning_empty_without_a_mismatch(self, tmp_path):
-        with _monitors():
-            assert _home_state(tmp_path)["warnings"]["sample_rate"] == ""
 
 
 # ---------------------------------------------------------------------------

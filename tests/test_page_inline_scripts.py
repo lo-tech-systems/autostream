@@ -27,9 +27,7 @@ _INLINE = re.compile(r"<script\b([^>]*)>(.*?)</script>", re.DOTALL | re.IGNORECA
 # The most inline scripts each page may carry. A page may only come down.
 MAX_INLINE = {
     "home": 1,
-    "remote_home": 1,
     "equaliser": 0,
-    "remote_equaliser": 1,
     "about": 0,
     "align": 1,
     "service": 0,
@@ -46,7 +44,7 @@ MAX_INLINE = {
 
 # Pages whose scripts are all files: nothing inline but the token bootstrap.
 EXTRACTED = (
-    "home", "remote_home", "equaliser", "remote_equaliser", "about", "align", "service", "logs",
+    "home", "equaliser", "about", "align", "service", "logs",
     "owntone", "owntone_restarting", "rebooting", "first_boot_owntone", "first_boot_appliance",
     "hostname_changed", "auth", "setup",
 )
@@ -55,9 +53,7 @@ _BOOTSTRAP = "window.__CSRF='t';"
 # The local equaliser reads its token from a hidden field, so it carries no inline script.
 EXPECTED_INLINE = {
     "home": [_BOOTSTRAP],
-    "remote_home": [_BOOTSTRAP],
     "equaliser": [],
-    "remote_equaliser": [_BOOTSTRAP],
     "about": [],
     "align": [_BOOTSTRAP],
     "service": [],
@@ -74,9 +70,7 @@ EXPECTED_INLINE = {
 # The page's own scripts; the island must come before the first of them.
 FIRST_FILES = {
     "home": ("home/home_main.js",),
-    "remote_home": ("home_cards.js",),
     "equaliser": ("equaliser_curve.js", "equaliser.js"),
-    "remote_equaliser": ("remote_equaliser.js", "equaliser_curve.js"),
     "about": ("about.js",),
     "logs": ("logs.js",),
     "owntone": ("owntone.js",),
@@ -89,17 +83,10 @@ FIRST_FILES = {
 
 # Island keys each extracted page may carry, and the route that serves it.
 _HOME_KEYS = {"state", "csrf", "prefs", "icons", "local_id", "base", "own", "selector"}
-_REMOTE_HOME_KEYS = {
-    "preset_volume", "show_input_detail", "vu_delay_ms", "icons", "local_id",
-    "selector_current_id", "output_url", "repeat_url", "outputs_empty_tolerance_ms",
-    "pin_prompt_fallback", "control_other_appliances",
-}
 _EQ_KEYS = {"local_id", "selector_current_page", "eq_bands", "eq_fs", "curve"}
 ISLAND_KEYS = {
     "home": _HOME_KEYS,
-    "remote_home": _REMOTE_HOME_KEYS | {"remote_aid", "remote_hostname", "poll_url"},
     "equaliser": _EQ_KEYS | {"state", "base", "own", "selector"},
-    "remote_equaliser": _EQ_KEYS | {"poll_url", "save_url", "reset_url", "status_url", "remote_aid", "remote_hostname"},
     "about": {"license_text"},
     "align": set(),
     "service": set(),
@@ -118,9 +105,7 @@ ISLAND_KEYS = {
 }
 PAGE_PATH = {
     "home": "/",
-    "remote_home": "/a/" + _page_stub.REMOTE_APPLIANCE_ID + "/",
     "equaliser": "/equaliser",
-    "remote_equaliser": "/a/" + _page_stub.REMOTE_APPLIANCE_ID + "/equaliser",
     "about": "/about",
     "align": "/align",
     "service": "/service",
@@ -218,19 +203,6 @@ def test_the_island_of_the_home_page_holds_the_state_the_page_starts_from():
     assert "outputs" in state["parts"] and "warnings" in state["parts"]
 
 
-def test_the_island_of_the_remote_home_page_points_at_the_remote_appliance():
-    rid = _page_stub.REMOTE_APPLIANCE_ID
-    island = _source_text.page_data(_render("remote_home"))
-    assert island["remote_aid"] == rid
-    assert island["selector_current_id"] == rid
-    assert island["poll_url"] == f"/api/appliances/{rid}/home"
-    assert island["output_url"] == f"/api/appliances/{rid}/output"
-    assert island["repeat_url"] == f"/api/appliances/{rid}/repeat"
-    assert island["show_input_detail"] is False
-    assert island["vu_delay_ms"] == 2250
-    assert island["outputs_empty_tolerance_ms"] == 6000
-
-
 def test_an_island_value_cannot_end_its_script_element():
     from webui.static import page_data_island  # noqa: PLC0415
     text = page_data_island({"name": "</script><b>&"})
@@ -239,10 +211,9 @@ def test_an_island_value_cannot_end_its_script_element():
     assert json.loads(body) == {"name": "</script><b>&"}
 
 
-@pytest.mark.parametrize("page", ("equaliser", "remote_equaliser"))
-def test_the_equaliser_island_holds_the_curve_geometry_and_the_bands(page):
+def test_the_equaliser_island_holds_the_curve_geometry_and_the_bands():
     from autostream_eq_bands import OUTPUT_PEQ_BANDS  # noqa: PLC0415
-    island = _source_text.page_data(_render(page))
+    island = _source_text.page_data(_render("equaliser"))
     assert island["curve"] == {
         "w": webui_equaliser._CURVE_W, "h": webui_equaliser._CURVE_H, "f_min": webui_equaliser._CURVE_F_MIN, "f_max": webui_equaliser._CURVE_F_MAX,
         "db_range": webui_equaliser._CURVE_DB_RANGE, "pad_y": webui_equaliser._CURVE_PAD_Y, "n_pts": webui_equaliser._CURVE_N_PTS}

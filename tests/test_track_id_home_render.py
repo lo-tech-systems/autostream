@@ -1,8 +1,8 @@
 """test_track_id_home_render.py — HTML rendering tests for track ID integration.
 
-Verifies that send_airplay_page() and send_remote_home_page() embed track ID
-state in the Now Playing card (np-name / np-signal / np-icon) and no longer
-emit a separate ti-card element.
+Verifies that send_airplay_page() embeds track ID state in the Now Playing
+card (np-name / np-signal / np-icon) and does not emit a separate ti-card
+element.
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from _source_text import page_data, page_with_static
+from _source_text import page_with_static
 
 from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 
@@ -21,14 +21,9 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 try:
-    from webui.browser.home import send_remote_home_page
     from webui.browser.home import send_airplay_page
     from track_id.models import (
         STATE_ANALYSING,
-        STATE_ERROR,
-        STATE_NOT_FOUND,
-        STATE_IDENTIFIED,
-        STATE_WAITING,
         TrackIdentificationSnapshot,
         disabled_snapshot,
     )
@@ -41,7 +36,6 @@ _skip = pytest.mark.skipif(
 )
 
 _LOCAL_ID = "00000000000000000000"
-_REMOTE_ID = "aabbccdd1122334455aa"
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +94,6 @@ def _render_airplay_page(ti_snapshot=None, playback_snapshot=None, levels=None) 
     patches = [
         patch("webui.common._config_snapshot", return_value=parsed),
         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("webui.browser.home.get_all_appliances", return_value=[]),
         patch("webui.browser.home.get_system_hostname", return_value="autostream"),
         fake_levels(levels or []),
         fake_playback(playback),
@@ -120,41 +113,8 @@ def _render_airplay_page(ti_snapshot=None, playback_snapshot=None, levels=None) 
     return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
-def _render_remote_home() -> str:
-    """Invoke send_remote_home_page() with all external deps mocked."""
-    handler = MagicMock()
-    chunks: list[bytes] = []
-    handler.wfile.write = lambda d: chunks.append(d)
-    handler._csrf_token = "testcsrf"
-    handler._pending_set_cookies = []
-
-    state = MagicMock()
-    state.config_path = "dummy.ini"
-
-    parsed = MagicMock()
-    parsed.owntone.volume_percent = 20
-    parsed.webui.dark_mode = False
-    parsed.webui.show_hostname_on_home = False
-    parsed.webui.control_other_appliances = False
-
-    patches = [
-        patch("webui.common._config_snapshot", return_value=parsed),
-        patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID),
-        patch("webui.browser.home.get_all_appliances", return_value=[]),
-        patch("webui.browser.home.get_system_hostname", return_value="autostream"),
-    ]
-
-    from contextlib import ExitStack
-    with ExitStack() as stack:
-        for p in patches:
-            stack.enter_context(p)
-        send_remote_home_page(handler, state, _REMOTE_ID)
-
-    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
-
-
 # ---------------------------------------------------------------------------
-# No ti-card in either page
+# No ti-card in the page
 # ---------------------------------------------------------------------------
 
 @_skip
@@ -169,12 +129,6 @@ class TestNoTiCard:
         )
         html = _render_airplay_page(ti_snapshot=snap)
         assert 'id="ti-card"' not in html
-
-    def test_remote_home_page_has_no_ti_card(self):
-        html = _render_remote_home()
-        assert 'id="ti-card"' not in html
-
-
 # ---------------------------------------------------------------------------
 # TI disabled — Now Playing card uses normal label
 # ---------------------------------------------------------------------------
@@ -198,13 +152,3 @@ class TestNoTiCard:
 # ---------------------------------------------------------------------------
 # Now Playing icon: three-way turntable / bluetooth / line-in selection
 # ---------------------------------------------------------------------------
-
-
-@_skip
-class TestRemoteHomeCdIcon:
-    def test_remote_home_emits_cd_icon_for_js(self):
-        html = _render_remote_home()
-        assert page_data(html)["icons"]["cd"].startswith("<svg")
-        assert "window.__ICON_CD = pageIcons.cd;" in html
-
-

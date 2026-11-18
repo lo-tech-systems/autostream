@@ -209,7 +209,6 @@ _BROWSER_GET_EXPECTED = [
     ("/owntone-restarting",        AuthRequirement.FULL, "page", True, False),
     # /first-boot/owntone and /first-boot/appliance are covered in the
     # stateful table below (they also carry unconfigured_only).
-    ("/api/audio/status",          AuthRequirement.NONE, "api", False, True),
     ("/api/v1/events",            AuthRequirement.NONE, "api", True, True),
     ("/api/v1/state",             AuthRequirement.NONE, "api", True, True),
     ("/api/about/system",          AuthRequirement.NONE, "api", False, False),
@@ -258,7 +257,7 @@ class TestBrowserGetRouteParity:
 
     def test_polling_paths_removed_from_legacy_tuple(self):
         migrated_pollers = {
-            "/api/audio/status", "/api/network/status",
+            "/api/network/status",
         }
         for p in migrated_pollers:
             assert p not in webui_server._POLLING_LOG_PATHS, (
@@ -347,16 +346,14 @@ class TestBrowserPostApiParity:
 
 
 # ---------------------------------------------------------------------------
-# 1d. Special-scheme routes: federation (bearer-authenticated remote-control
-#     API), dial (device-authenticated smart-dial API), and loopback-aware
+# 1d. Special-scheme routes: dial (device-authenticated smart-dial API),
+#     the protocol routes, and loopback-aware
 #     (relaxed auth when called from the appliance's own loopback address).
 # ---------------------------------------------------------------------------
 
 # (key, method, scheme) for the non-browser-scheme routes -- key is path or
 # (prefix,) to disambiguate lookup.
 _SPECIAL_SCHEME_EXPECTED = [
-    ("/api/federation/v1", True, "GET", "bearer"),
-    ("/api/federation/v1", True, "POST", "bearer"),
     ("/api/v1/intents/", True, "POST", "protocol"),
     ("/api/v1/peers/", True, "POST", "protocol"),
     ("/api/v1/peers/", True, "GET", "browser"),
@@ -371,7 +368,7 @@ _SPECIAL_SCHEME_EXPECTED = [
 
 @_skip_no_webui
 class TestSpecialSchemeRouteParity:
-    """Federation, dial, and loopback-aware routes carry a non-default
+    """Dial, protocol, and loopback-aware routes carry a non-default
     `scheme`, which selects an alternate authentication path from the
     plain browser-session one every other route uses."""
 
@@ -415,13 +412,16 @@ class TestSpecialSchemeRouteParity:
         assert matches[0].kind == "api"
         assert matches[0].allow_unconfigured is False
 
-    def test_gateway_routes_registered(self):
-        get_exact = webui_routes._resolve("/api/appliances", "GET")
-        assert get_exact is not None and get_exact.auth is AuthRequirement.NONE
-        get_sub = webui_routes._resolve("/api/appliances/aabbccdd1122334455aa/home", "GET")
-        assert get_sub is not None and get_sub.auth is AuthRequirement.NONE
-        post_sub = webui_routes._resolve("/api/appliances/aabbccdd1122334455aa/output", "POST")
-        assert post_sub is not None and post_sub.auth is AuthRequirement.CSRF
+    def test_the_removed_gateway_and_federation_routes_are_gone(self):
+        for path, method in (
+            ("/api/appliances", "GET"),
+            ("/api/appliances/aabbccdd1122334455aa/home", "GET"),
+            ("/api/appliances/aabbccdd1122334455aa/output", "POST"),
+            ("/api/federation/v1/home", "GET"),
+            ("/api/federation/v1/output", "POST"),
+            ("/api/audio/status", "GET"),
+        ):
+            assert webui_routes._resolve(path, method) is None, (path, method)
 
     def test_remote_page_route_registered(self):
         r = webui_routes._resolve("/a/aabbccdd1122334455aa", "GET")

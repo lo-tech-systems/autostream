@@ -1,9 +1,8 @@
 """Priority 7 — appliance_models unit tests.
 
-Covers build_output_list (filtering, ordering, normalization),
-build_equaliser_state (schema, live status),
+Covers build_output_list (filtering, ordering, normalization) and
 apply_eq_field / apply_eq_reset (validation, clamping, persistence,
-live-apply routing), and build_home_state.
+live-apply routing).
 """
 from __future__ import annotations
 
@@ -21,9 +20,8 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 from autostream_config import DefaultOutput, parse_config
-from autostream_state import store
 from autostream_players import ActionResult, OutputInfo
-from fake_store import FakeStore, fake_outputs
+from fake_store import FakeStore
 
 
 # ---------------------------------------------------------------------------
@@ -289,41 +287,6 @@ class TestBuildOutputList:
 
 
 # ---------------------------------------------------------------------------
-# build_equaliser_state — schema and live status
-# ---------------------------------------------------------------------------
-
-class TestBuildEqualizerState:
-    def test_ok_true_on_valid_config(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=None):
-            result = webui_home_model.build_equaliser_state(_parsed_from(cfg_path))
-        assert result["ok"] is True
-
-    def test_required_keys_present(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=None):
-            result = webui_home_model.build_equaliser_state(_parsed_from(cfg_path))
-        for field in ("gain_db", "auto_trim_enabled", "peq1_db", "peq2_db",
-                      "peq3_db", "peq4_db", "peq5_db", "peq6_db"):
-            assert field in result, f"Missing key: {field}"
-
-    def test_config_values_returned(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path, {"output_eq": {"gain_db": 3.5, "peq2_db": -1.0}})
-        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=None):
-            result = webui_home_model.build_equaliser_state(_parsed_from(cfg_path))
-        assert result["gain_db"] == pytest.approx(3.5)
-        assert result["peq2_db"] == pytest.approx(-1.0)
-
-    def test_live_status_merged_when_available(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        live = {"output_auto_trim_enabled": True, "output_auto_trim_db": -1.2}
-        with patch("webui.browser.home_model.get_live_output_eq_status", return_value=live):
-            result = webui_home_model.build_equaliser_state(_parsed_from(cfg_path))
-        assert result.get("output_auto_trim_enabled") is True
-        assert result.get("output_auto_trim_db") == pytest.approx(-1.2)
-
-
-# ---------------------------------------------------------------------------
 # apply_eq_field — validation, clamping, persistence, routing
 # ---------------------------------------------------------------------------
 
@@ -460,275 +423,12 @@ class TestApplyEqReset:
 
 
 # ---------------------------------------------------------------------------
-# build_home_state — local mode
-# ---------------------------------------------------------------------------
-
-class TestBuildHomeStateLocal:
-    def _patch_home(self, cfg_path, *, outputs=None, vu_ms=100):
-        playback = MagicMock()
-        playback.to_public_dict.return_value = {}
-        playback.stylus_banner_text = ""
-        playback.belt_banner_text = ""
-        playback.bearing_banner_text = ""
-        return (
-            patch("autostream_start_buffer_cache.current_ms", return_value=vu_ms),
-            fake_outputs(outputs or []),
-            fake_levels([]),
-            fake_playback(playback),
-            patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"),
-            patch("webui.browser.home_model.get_system_hostname", return_value="test-host"),
-            patch("webui.system.updates.get_app_version", return_value="2.0.0"),
-        )
-
-    def test_ok_true_returned(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6]:
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert result["ok"] is True
-
-    def test_required_keys_present(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6]:
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        for key in ("appliance", "preferences", "playback", "input_levels",
-                    "warnings", "outputs", "vu_delay_ms"):
-            assert key in result, f"Missing key: {key}"
-
-    def test_warnings_carry_the_sample_rate_banner_text(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6], \
-             fake_levels([], banner="banner text"):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert result["warnings"]["sample_rate"] == "banner text"
-
-    def test_sample_rate_warning_is_empty_with_no_mismatch(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6]:
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert result["warnings"]["sample_rate"] == ""
-
-    def test_vu_delay_ms_from_owntone_setting(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path, vu_ms=350)
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6]:
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert result["vu_delay_ms"] == 350
-
-    def test_appliance_info_shape(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6]:
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        app = result["appliance"]
-        assert "id" in app and "hostname" in app and "version" in app
-        assert app["hostname"] == "test-host"
-        assert app["version"] == "2.0.0"
-
-    def test_hostname_local_suffix_stripped(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], \
-             patch("webui.system.updates.get_app_version", return_value="1.0"):
-            with patch("webui.browser.home_model.get_system_hostname",
-                       return_value="mybox.local"):
-                result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert result["appliance"]["hostname"] == "mybox"
-
-    def test_session_key_always_present(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        session = {"active": True, "source": "replay"}
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6], \
-             fake_session(session), \
-             fake_repeat(None):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert result["session"] == session
-
-    def test_repeat_key_present_when_daemon_reports_it(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        repeat_block = {"enabled": True, "armed": False}
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6], \
-             fake_session({"active": False, "source": None}), \
-             fake_repeat(repeat_block):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert result["repeat"] == repeat_block
-
-    def test_repeat_requested_minutes_survives_passthrough(self, tmp_path):
-        """requested_minutes (the requested-vs-delivered honesty surface)
-        is a new daemon-side field with no local whitelist to update --
-        the repeat block is passed through verbatim, so it must survive
-        untouched like any other repeat key."""
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        repeat_block = {
-            "enabled": True, "armed": False,
-            "requested_minutes": 80, "max_recording_seconds": 3120,
-        }
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6], \
-             fake_session({"active": False, "source": None}), \
-             fake_repeat(repeat_block):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert result["repeat"]["requested_minutes"] == 80
-        assert result["repeat"] == repeat_block
-
-    def test_repeat_key_absent_when_daemon_never_reported(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        patches = self._patch_home(cfg_path)
-        with patches[0], patches[1], patches[2], patches[3], \
-             patches[4], patches[5], patches[6], \
-             fake_session({"active": False, "source": None}), \
-             fake_repeat(None):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        assert "repeat" not in result
-
-
-# ---------------------------------------------------------------------------
-# build_home_state — no player call
-# ---------------------------------------------------------------------------
-
-class TestBuildHomeStateNoPlayerCall:
-    def test_the_player_is_not_asked_and_vu_delay_follows_the_cache(self, tmp_path):
-        import autostream_start_buffer_cache as cache
-        cfg_path = _make_config_file(tmp_path)
-        playback = MagicMock()
-        playback.to_public_dict.return_value = {}
-        playback.stylus_banner_text = ""
-        playback.belt_banner_text = ""
-        playback.bearing_banner_text = ""
-
-        with patch("autostream_start_buffer_cache._fetch",
-                   side_effect=AssertionError("the player was asked")), \
-             fake_outputs([]), \
-             fake_levels([]), \
-             fake_playback(playback), \
-             patch("autostream_rpi.get_appliance_id", return_value=""), \
-             patch("webui.browser.home_model.get_system_hostname", return_value=""), \
-             patch("webui.system.updates.get_app_version", return_value=""):
-            cache.note_saved(1500)
-            try:
-                result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-            finally:
-                cache.reset()
-
-        assert result["ok"] is True
-        assert result["vu_delay_ms"] == 1500
-
-
-# ---------------------------------------------------------------------------
-# build_home_state — remote occupancy annotation
-# ---------------------------------------------------------------------------
-
-class TestBuildHomeStateAnnotation:
-    """Tests that build_home_state annotates outputs with remote_in_use fields."""
-
-    def _patch_home_with_outputs(self, cfg_path, owntone_outputs, *, usage_snapshot=None):
-        """Returns context manager that patches all required dependencies."""
-        from types import SimpleNamespace
-        from unittest.mock import MagicMock, patch
-        import autostream_appliances
-
-        playback = MagicMock()
-        playback.to_public_dict.return_value = {}
-        playback.stylus_banner_text = ""
-        playback.belt_banner_text = ""
-        playback.bearing_banner_text = ""
-
-        # The occupancy the peers worker holds: casefolded name -> (id, hostname).
-        snapshot = usage_snapshot or {}
-
-        from contextlib import contextmanager
-
-        @contextmanager
-        def _ctx():
-            with patch("autostream_start_buffer_cache.current_ms", return_value=100), \
-                 fake_outputs(owntone_outputs), \
-                 fake_levels([]), \
-                 fake_playback(playback), \
-                 patch("autostream_rpi.get_appliance_id", return_value=""), \
-                 patch("webui.browser.home_model.get_system_hostname", return_value="host"), \
-                 patch("webui.system.updates.get_app_version", return_value="1.0"), \
-                 patch.dict(autostream_appliances._usage, snapshot, clear=True):
-                yield
-
-        return _ctx()
-
-    def _make_out(self, id_, name, selected=False):
-        return _out(id_, name, selected=selected)
-
-    def test_unselected_occupied_output_marked_remote_in_use(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        snapshot = {"kitchen": ("c" * 20, "living-room")}
-
-        outputs = [self._make_out("1", "Kitchen", selected=False)]
-        with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-
-        assert result["ok"] is True
-        out_dict = result["outputs"][0]
-        assert out_dict["remote_in_use"] is True
-        assert out_dict["remote_owner"] == "living-room"
-
-    def test_locally_selected_output_not_marked_remote_in_use(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        snapshot = {"kitchen": ("c" * 20, "living-room")}
-
-        outputs = [self._make_out("1", "Kitchen", selected=True)]
-        with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-
-        out_dict = result["outputs"][0]
-        assert out_dict["remote_in_use"] is False
-
-    def test_unoccupied_output_has_false_fields(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path)
-        outputs = [self._make_out("1", "Bedroom", selected=False)]
-        with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-            result = webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-
-        out_dict = result["outputs"][0]
-        assert out_dict["remote_in_use"] is False
-        assert out_dict["remote_owner"] == ""
-
-    def test_sorting_preserved_default_first(self, tmp_path):
-        cfg_path = _make_config_file(tmp_path,
-                                     extra={"owntone": {"output_name": "Zulu"}})
-        outputs = [
-            self._make_out("3", "Zulu"),
-            self._make_out("1", "Alpha"),
-            self._make_out("2", "Mango"),
-        ]
-        with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-            parsed = _parsed_from(cfg_path)
-            result = webui_home_model.build_home_state(store().snapshot(), parsed)
-
-        names = [o["name"] for o in result["outputs"]]
-        assert names[0] == "Zulu"
-        assert names[1:] == sorted(names[1:])
-
-
-# ---------------------------------------------------------------------------
 # PIN pairing: sanitiser rule, claim in the list, combined pin-and-enable
 # ---------------------------------------------------------------------------
 
 import logging as _logging
 
 import autostream_pin_pairing as _pairing
-from fake_store import fake_levels, fake_playback, fake_repeat, fake_session
 import autostream_monitor_control as monitor_control
 import webui.browser.home_model as webui_home_model
 

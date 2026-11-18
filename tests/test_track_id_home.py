@@ -1,17 +1,15 @@
-"""Tests for track-identification state in build_home_state().
+"""Tests for the track-identification state the Home state carries.
 
-Verifies that the `track_identification` field is always present in the Home
-state dict, covers all states, and that build_home_state() never calls provider
-or network code to satisfy it.
+Verifies that the public form of the active track covers all states and that
+reading it never calls provider or network code.
 """
 from __future__ import annotations
 
 import json
 import sys
 import time
-from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -20,11 +18,9 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import fake_levels, fake_outputs, fake_playback, fake_track
-import webui.browser.home_model as models
+from fake_store import fake_track
 from autostream_config import parse_config
-from autostream_state import store
-import autostream_core as core
+from autostream_state import active_track, store
 from track_id.models import (
     STATE_DISABLED,
     STATE_WAITING,
@@ -36,7 +32,6 @@ from track_id.models import (
     waiting_snapshot,
 )
 import autostream_runtime as runtime
-import webui.browser.home_model as webui_home_model
 
 
 # ---------------------------------------------------------------------------
@@ -81,29 +76,11 @@ def _parsed_from(cfg_path: Path):
 
 
 def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
-    """Call build_home_state() with all external dependencies patched."""
-    playback = MagicMock()
-    playback.to_public_dict.return_value = {}
-    playback.stylus_banner_text = ""
-    playback.belt_banner_text = ""
-    playback.bearing_banner_text = ""
-
+    """The track identification as the Home state carries it: the public form
+    of the active track, read from the held state with no provider call."""
     snap = ti_snapshot if ti_snapshot is not None else disabled_snapshot()
-
-    patches = [
-        patch("autostream_start_buffer_cache.current_ms", return_value=100),
-        fake_outputs([]),
-        fake_levels([]),
-        fake_playback(playback),
-        patch("autostream_rpi.get_appliance_id", return_value="aabbcc"),
-        patch("webui.browser.home_model.get_system_hostname", return_value="test-host"),
-        patch("webui.system.updates.get_app_version", return_value="1.0.0"),
-        fake_track(snap),
-    ]
-    with ExitStack() as stack:
-        for p in patches:
-            stack.enter_context(p)
-        return webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
+    with fake_track(snap):
+        return {"track_identification": active_track(store().snapshot()).to_public_dict()}
 
 
 # ---------------------------------------------------------------------------
@@ -224,10 +201,10 @@ class TestPublicDictShape:
 
 
 # ---------------------------------------------------------------------------
-# No network or provider calls in build_home_state
+# No network or provider calls reading the track
 # ---------------------------------------------------------------------------
 
-class TestNoProviderCallsInBuildHomeState:
+class TestNoProviderCallsReadingTheTrack:
 
     def test_identify_not_called(self, tmp_path):
         cfg_path = _make_config_file(tmp_path)

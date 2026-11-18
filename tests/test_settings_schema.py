@@ -105,7 +105,6 @@ _EXPECTED_SETTINGS_FIELD_PATHS = frozenset({
     "webui.show_input_detail",
     "webui.show_hostname_on_home",
     "webui.control_other_appliances",
-    "webui.output_usage_poll_interval_seconds",
     "updates.update_channel",
     "audio1.gain_db",
     "audio2.gain_db",

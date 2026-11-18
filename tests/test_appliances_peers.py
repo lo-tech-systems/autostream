@@ -368,23 +368,3 @@ class TestStart:
         appliances.stop()
         assert not first.is_alive() and appliances._thread is None
         appliances.stop()
-
-
-class TestOldNames:
-    def test_the_lookups_the_pages_use_follow_the_registry(self, rig):
-        assert appliances.get_all_appliances() == []
-        assert appliances.get_appliance_sighting(peer_id(2)) is None
-        rig.start()
-        rig.registry.conflicting = frozenset({peer_id(4)})
-        rig.peer(2, "Zulu")
-        rig.peer(3, "alpha")
-        rig.peer(5, "Off", control=False)
-        assert [s.hostname for s in appliances.get_all_appliances()] == ["alpha", "Zulu"]
-        assert appliances.get_appliance_sighting(peer_id(2)).hostname == "Zulu"
-        assert appliances.get_appliance_sighting(peer_id(5)) is None
-        assert appliances.get_conflict_ids() == frozenset({peer_id(4)})
-
-    def test_a_sighting_built_the_old_way_is_a_sighting(self):
-        s = appliances.ApplianceSighting(id=peer_id(2), service_name="s", hostname="h",
-                                         ip=IP, port=80, version="1")
-        assert isinstance(s, Sighting) and s.control is True and s.proto is None

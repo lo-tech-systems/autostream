@@ -1,13 +1,6 @@
-"""test_appliance_failure_recovery.py — tests for appliance failure recovery.
-
-Covers:
-  - Flash message strings embedded in remote Home and Equaliser pages
-  - Definitive error codes handled in JS (not_found, unconfigured, etc.)
-  - Transport failure threshold (3 strikes → redirect)
-  - backoff excluded from failure count
-  - Independent Home and Equaliser counters
-  - ?msg= parsing supports error: prefix on the landing page
-  - Canonical redirect from /a/<bound-id>/equaliser → /equaliser
+"""test_appliance_failure_recovery.py — the bound appliance's own id on a
+remote page path redirects to the page it names here:
+/a/<bound-id>/equaliser → /equaliser and /a/<bound-id>/ → /.
 """
 from __future__ import annotations
 
@@ -17,7 +10,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from _source_text import page_with_static
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -26,7 +18,6 @@ if _CORE not in sys.path:
 
 try:
     from webui.server import ConfigWebHandler
-    import webui.server as _webui
     _HAS_WEBUI = True
 except ImportError:
     _HAS_WEBUI = False
@@ -73,174 +64,6 @@ def _make_get(path: str) -> "ConfigWebHandler":
     h._pending_auth_cookie = None
     h._pending_set_cookies = []
     return h
-
-
-def _render_remote_home(aid: str = _REMOTE_ID) -> str:
-    from webui.browser.home import send_remote_home_page
-    state = MagicMock()
-    state.config_path = "dummy.ini"
-    handler = MagicMock()
-    chunks = []
-    handler.wfile.write = lambda d: chunks.append(d)
-    handler._csrf_token = "csrf"
-    handler._pending_set_cookies = []
-    parsed = MagicMock()
-    parsed.owntone.volume_percent = 20
-    parsed.webui.dark_mode = False
-    parsed.webui.show_hostname_on_home = False
-    parsed.webui.control_other_appliances = False
-    with patch("webui.common._config_snapshot", return_value=parsed), \
-         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-         patch("webui.browser.home.get_all_appliances", return_value=[]), \
-         patch("webui.browser.home.get_system_hostname", return_value="bound"):
-        send_remote_home_page(handler, state, aid)
-    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
-
-
-def _render_remote_equaliser(aid: str = _REMOTE_ID) -> str:
-    from webui.browser.equaliser import send_remote_equaliser_page
-    state = MagicMock()
-    state.config_path = "dummy.ini"
-    handler = MagicMock()
-    chunks = []
-    handler.wfile.write = lambda d: chunks.append(d)
-    handler._csrf_token = "csrf"
-    handler._pending_set_cookies = []
-    parsed = MagicMock()
-    parsed.webui.dark_mode = False
-    with patch("webui.common._config_snapshot", return_value=parsed), \
-         patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-         patch("webui.browser.equaliser.get_all_appliances", return_value=[]), \
-         patch("webui.browser.equaliser.get_system_hostname", return_value="bound"):
-        send_remote_equaliser_page(handler, state, aid)
-    return page_with_static(b"".join(chunks).decode("utf-8", errors="replace"))
-
-
-# ---------------------------------------------------------------------------
-# Flash message strings — remote Home
-# ---------------------------------------------------------------------------
-
-@_skip
-class TestRemoteHomeFlashMessages:
-    """Exact failure flash message strings must appear in the remote Home page JS."""
-
-    def test_transport_failure_redirect_message(self):
-        html = _render_remote_home()
-        assert "is unavailable. Returned to this appliance." in html
-
-    def test_not_found_message(self):
-        html = _render_remote_home()
-        assert "The selected appliance address is invalid. Returned to this appliance." in html
-
-    def test_unconfigured_message(self):
-        html = _render_remote_home()
-        assert "is not ready for remote control. Returned to this appliance." in html
-
-    def test_conflicted_message(self):
-        html = _render_remote_home()
-        assert "has a network identity conflict and cannot be selected safely. Returned to this appliance." in html
-
-    def test_identity_unavailable_message(self):
-        html = _render_remote_home()
-        assert "cannot currently provide multi-appliance access. Returned to this appliance." in html
-
-    def test_definitive_errors_list_in_js(self):
-        html = _render_remote_home()
-        for code in ("not_found", "appliance_unconfigured", "appliance_conflicted",
-                     "appliance_identity_unavailable"):
-            assert code in html, f"Expected definitive error code {code!r} in remote Home JS"
-
-    def test_transport_errors_list_in_js(self):
-        html = _render_remote_home()
-        for code in ("remote_timeout", "remote_bad_response", "appliance_offline"):
-            assert code in html, f"Expected transport error code {code!r} in remote Home JS"
-
-    def test_backoff_not_in_transport_errors(self):
-        """remote_backoff must NOT trigger the failure counter."""
-        html = _render_remote_home()
-        # remote_backoff is only referenced in the backoff check (not in __TRANSPORT_ERRORS)
-        assert "remote_backoff" not in html or "__TRANSPORT_ERRORS" not in html.split("remote_backoff")[0][-200:]
-
-
-# ---------------------------------------------------------------------------
-# Flash message strings — remote Equaliser
-# ---------------------------------------------------------------------------
-
-@_skip
-class TestRemoteEqualiserFlashMessages:
-    """Exact failure flash message strings must appear in the remote Equaliser page JS."""
-
-    def test_transport_failure_redirect_message(self):
-        html = _render_remote_equaliser()
-        assert "is unavailable. Returned to this appliance." in html
-
-    def test_not_found_message(self):
-        html = _render_remote_equaliser()
-        assert "The selected appliance address is invalid. Returned to this appliance." in html
-
-    def test_unconfigured_message(self):
-        html = _render_remote_equaliser()
-        assert "is not ready for remote control. Returned to this appliance." in html
-
-    def test_conflicted_message(self):
-        html = _render_remote_equaliser()
-        assert "has a network identity conflict and cannot be selected safely. Returned to this appliance." in html
-
-    def test_identity_unavailable_message(self):
-        html = _render_remote_equaliser()
-        assert "cannot currently provide multi-appliance access. Returned to this appliance." in html
-
-    def test_definitive_errors_list_in_js(self):
-        html = _render_remote_equaliser()
-        for code in ("not_found", "appliance_unconfigured", "appliance_conflicted",
-                     "appliance_identity_unavailable"):
-            assert code in html, f"Expected definitive error code {code!r} in remote Equaliser JS"
-
-    def test_degraded_mode_replaces_three_strike_redirect(self):
-        html = _render_remote_equaliser()
-        assert "_eqDegraded" in html
-        assert "_EQ_DEGRADED_POLL_MS" in html
-        assert "_eqFailCount>=3" not in html and "_eqFailCount >= 3" not in html
-
-    def test_save_url_referenced_in_js(self):
-        html = _render_remote_equaliser()
-        assert "__SAVE_URL" in html
-
-    def test_reset_url_referenced_in_js(self):
-        html = _render_remote_equaliser()
-        assert "__RESET_URL" in html
-
-    def test_write_seq_for_field_supersession(self):
-        """Per-field sequence counter must be present for write ordering."""
-        html = _render_remote_equaliser()
-        assert "_eqWriteSeq" in html
-
-
-# ---------------------------------------------------------------------------
-# Independent failure counters
-# ---------------------------------------------------------------------------
-
-@_skip
-class TestIndependentFailureCounters:
-    """Home and Equaliser pages have independent failure state variables."""
-
-    def test_home_uses_remote_fail_count(self):
-        html = _render_remote_home()
-        assert "__remoteFailCount" in html
-
-    def test_equaliser_uses_degraded_flag(self):
-        html = _render_remote_equaliser()
-        assert "_eqDegraded" in html
-
-    def test_home_counter_not_in_equaliser(self):
-        """The Equaliser page must not reference the Home page counter."""
-        html = _render_remote_equaliser()
-        assert "__remoteFailCount" not in html
-
-    def test_home_page_no_eq_degraded(self):
-        """The Home page must not reference the Equaliser degraded flag."""
-        html = _render_remote_home()
-        assert "_eqDegraded" not in html
 
 
 # ---------------------------------------------------------------------------

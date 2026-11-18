@@ -1,1 +1,1 @@
-"""webui.peer -- the routes between appliances: federation and the gateway."""
+"""webui.peer -- the routes that show another appliance (the relay)."""

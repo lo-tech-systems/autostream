@@ -1,6 +1,6 @@
 """WP9 — mDNS transition verification.
 
-Key plan invariant: mDNS service types, TXT records, and federation APIs are
+Key plan invariant: mDNS service types, TXT records, and peer APIs are
 unchanged by the Wi-Fi adapter selection / recovery feature.  The wifi_watcher
 and autostream_wifi_network.py must never touch these.
 
@@ -8,11 +8,8 @@ Tests are static source-analysis and config-file checks; no runtime required.
 """
 from __future__ import annotations
 
-import ast
-import sys
 from pathlib import Path
 
-import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -30,7 +27,6 @@ MDNS_SERVICE_TYPES = (
 FEDERATION_MODULES = (
     "autostream_appliances",
     "autostream_dials",
-    "autostream_federation",
     "autostream_mdns",
 )
 
@@ -132,24 +128,3 @@ class TestAvahiServiceFileIntegrity:
     def test_playing_service_port_unchanged(self):
         txt = AVAHI_PLAYING_SVC.read_text(encoding="utf-8")
         assert "<port>80</port>" in txt
-
-
-# ---------------------------------------------------------------------------
-# federation API handler unchanged
-# ---------------------------------------------------------------------------
-
-class TestFederationApiUnchanged:
-    """Verify federation API files contain no wifi/adapter references that
-    would indicate an interface change."""
-
-    FEDERATION_SRC = (REPO_ROOT / "core" / "autostream_federation.py").read_text(encoding="utf-8")
-
-    def test_federation_module_has_no_usb_adapter_references(self):
-        """The federation API must be completely unaware of USB adapters."""
-        assert "usb_adapter" not in self.FEDERATION_SRC
-        assert "active_adapter" not in self.FEDERATION_SRC
-
-    def test_federation_module_has_no_wifi_watcher_references(self):
-        """The federation module must not call into the wifi watcher."""
-        assert "wifi_watcher" not in self.FEDERATION_SRC
-        assert "network_control" not in self.FEDERATION_SRC

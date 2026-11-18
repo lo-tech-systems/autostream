@@ -196,76 +196,8 @@ class TestRetiredFormRoutes:
 
 
 @_skip_no_webui
-class TestFederationRoutesSkipBrowserAuth:
-    """Federation routes must bypass browser auth/CSRF before reaching the handler."""
-
-    def _make_post_handler(self, path: str, body: bytes = b"") -> "ConfigWebHandler":
-        h = ConfigWebHandler.__new__(ConfigWebHandler)
-        h.path = path
-        h.command = "POST"
-        h.request_version = "HTTP/1.1"
-        h.headers = {
-            "Content-Type": "application/json",
-            "Content-Length": str(len(body)),
-            "Authorization": "",
-            "X-CSRF-Token": "",
-            "Cookie": "",
-            "X-Forwarded-For": "",
-            "X-Real-IP": "",
-        }
-        h.client_address = ("127.0.0.1", 0)
-        h.rfile = io.BytesIO(body)
-        h.wfile = io.BytesIO()
-        h.send_response = MagicMock()
-        h.send_header = MagicMock()
-        h.end_headers = MagicMock()
-        h.send_error = MagicMock()
-        h._pending_auth_cookie = None
-        h._pending_set_cookies = []
-        return h
-
-    def test_federation_post_skips_csrf_with_pin_enabled(self):
-        """A POST to a federation route must not trigger CSRF rejection."""
-        import autostream_federation as fed
-        with fed._lock:
-            fed._sessions.clear()
-            fed._rate.clear()
-        mgr = _make_manager(pin="secret")
-        handler = self._make_post_handler("/api/federation/v1/session")
-        sent = []
-        fake_cfg = MagicMock()
-        fake_cfg.webui.advertise_appliance = True
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"), \
-             patch("webui.common._config_snapshot", return_value=fake_cfg), \
-             patch("webui.common.send_json", side_effect=lambda h, c, d: sent.append((c, d))):
-            handler.do_POST()
-        codes = [c for c, _ in sent]
-        assert 403 not in codes, "Federation route must not return 403 CSRF error"
-
-    def test_federation_post_does_not_call_validate_csrf(self):
-        """validate_csrf must not be called for federation POST routes."""
-        import autostream_federation as fed
-        with fed._lock:
-            fed._sessions.clear()
-            fed._rate.clear()
-        mgr = _make_manager(pin="secret")
-        handler = self._make_post_handler("/api/federation/v1/session")
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value="aabbccdd1122"), \
-             patch("webui.common.send_json"), \
-             patch.object(mgr, "validate_csrf") as mock_csrf:
-            handler.do_POST()
-        mock_csrf.assert_not_called()
-
-
-@_skip_no_webui
-class TestGatewayRoutesAuth:
-    """Gateway GET routes must bypass PIN auth; POST routes require CSRF only."""
+class TestPeerRoutesAuth:
+    """The relay's routes bypass PIN auth; the removed gateway paths do not."""
 
     def _make_get(self, path: str) -> "ConfigWebHandler":
         import io
@@ -285,57 +217,15 @@ class TestGatewayRoutesAuth:
         h._pending_set_cookies = []
         return h
 
-    def test_appliances_list_accessible_without_auth(self):
-        """GET /api/appliances must not redirect even with PIN enabled."""
-        mgr = _make_manager(pin="secret")
-        handler = self._make_get("/api/appliances")
-        redirect_codes = []
-        handler.send_response = lambda c, *a: redirect_codes.append(c)
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("webui.peer.gateway.send_appliances_json"):
-            handler.do_GET()
-        assert 302 not in redirect_codes, "Gateway list must not redirect to /auth"
-
-    def test_gateway_home_accessible_without_auth(self):
-        """GET /api/appliances/<id>/home must not redirect with PIN enabled."""
-        mgr = _make_manager(pin="secret")
-        handler = self._make_get("/api/appliances/aabbccdd1122334455aa/home")
-        redirect_codes = []
-        handler.send_response = lambda c, *a: redirect_codes.append(c)
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("webui.peer.gateway.send_gateway_home_json"):
-            handler.do_GET()
-        assert 302 not in redirect_codes
-
-    def test_requires_auth_returns_false_for_appliances(self):
-        """AuthManager.requires_auth must return False for /api/appliances."""
+    @pytest.mark.parametrize("path", ["/api/appliances", "/api/appliances/aabbccdd1122334455aa/home",
+                                      "/api/audio/status"])
+    def test_requires_auth_returns_true_for_the_removed_paths(self, path):
         from autostream_auth import AuthManager
         mgr = AuthManager(config_path="dummy.ini")
         mgr._pin_loaded = True
         mgr._pin_value = "secret"
         mgr._pin_status = "ok"
-        assert mgr.requires_auth("/api/appliances") is False
-
-    def test_requires_auth_returns_false_for_appliances_id_home(self):
-        """AuthManager.requires_auth must return False for /api/appliances/<id>/home."""
-        from autostream_auth import AuthManager
-        mgr = AuthManager(config_path="dummy.ini")
-        mgr._pin_loaded = True
-        mgr._pin_value = "secret"
-        mgr._pin_status = "ok"
-        assert mgr.requires_auth("/api/appliances/aabbccdd1122334455aa/home") is False
-
-    def test_requires_auth_returns_false_for_appliances_id_equaliser(self):
-        from autostream_auth import AuthManager
-        mgr = AuthManager(config_path="dummy.ini")
-        mgr._pin_loaded = True
-        mgr._pin_value = "secret"
-        mgr._pin_status = "ok"
-        assert mgr.requires_auth("/api/appliances/aabbccdd1122334455aa/equaliser") is False
+        assert mgr.requires_auth(path) is True
 
     @pytest.mark.parametrize("tail", ["state", "events", "intents/outputs.set"])
     def test_requires_auth_returns_false_for_the_peer_relay(self, tail):

@@ -5,7 +5,7 @@ current between two poll cycles.
 
 The coordinator publishes the daemon's top-level "repeat" status block once
 per poll cycle through publish_from_daemon(). A transport or arm command sent
-from a request thread (dial, Web UI, gateway) returns an ack; apply_repeat_ack()
+from a request thread (dial, Web UI) returns an ack; apply_repeat_ack()
 folds that ack into the block at once, so the answer to "is it replaying" does
 not wait for the next cycle. The next cycle's publish overwrites the overlay
 with the daemon's own report.
@@ -150,7 +150,7 @@ def apply_repeat_ack(ack: Optional[dict], *, requester: Optional[str] = None) ->
     """Fold an accepted transport/arm ack into the published repeat block.
 
     Called on the API thread by send_live_repeat_transport and
-    set_live_repeat_armed_ack, so every entry point (dial, Web UI, gateway)
+    set_live_repeat_armed_ack, so every entry point (dial, Web UI)
     gets it. *requester* names who asked; the change is published with it and
     with the "repeat" tag, so dials are hinted except the one that asked.
     Returns *ack* unchanged. No-op for None, ok:false, or a shape

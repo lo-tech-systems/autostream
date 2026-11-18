@@ -1895,8 +1895,6 @@ def _write_appliance_service(args) -> int:
     <type>_autostream._tcp</type>
     <port>80</port>
     <txt-record>id={_html.escape(args.id)}</txt-record>
-    <txt-record>ui=v1</txt-record>
-    <txt-record>federation=v1</txt-record>
     <txt-record>version={_html.escape(args.version)}</txt-record>
     <txt-record>control={control}</txt-record>
     <txt-record>proto={PROTOCOL}</txt-record>

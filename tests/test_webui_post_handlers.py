@@ -217,7 +217,6 @@ class TestOutputUpdateForwarding:
 
 from autostream_state import Origin
 import webui.browser.home_model as webui_home_model
-import webui.peer.federation as webui_federation
 
 
 def _speaker(id_: str, name: str, *, selected: bool = False):
@@ -455,20 +454,6 @@ class TestOutputChangeOrigin:
         assert snap().silence_chosen is True
 
 
-# ---------------------------------------------------------------------------
-# Poll-driven PIN prompt: source-string checks (same "grep the source"
-# style used elsewhere for embedded JS -- there is no browser/DOM harness
-# in this test suite).
-# ---------------------------------------------------------------------------
-
-class TestPollDrivenPinPromptSource:
-    def test_home_cards_script_defines_run_pin_flow(self):
-        assert "function runPinFlow" in _source_text.static_text("page/home_cards.js")
-
-    def test_home_cards_script_defines_maybe_prompt_for_pin(self):
-        assert "function maybePromptForPin" in _source_text.static_text("page/home_cards.js")
-
-
 class TestOutputRequesterPassed:
     def test_the_local_handler_names_the_webui_as_requester(self, tmp_path):
         state = _make_state(tmp_path)
@@ -479,50 +464,19 @@ class TestOutputRequesterPassed:
         assert mut.call_args.kwargs["requester"] == "webui"
         assert mut.call_args.kwargs["pin_requester"] == "webui"
 
-    def test_the_federation_route_names_the_webui_as_requester(self):
-        parsed = MagicMock()
-        parsed.owntone.base_url = "http://localhost:3689"
-        parsed.owntone.output_offsets_ms = {}
-        parsed.owntone.output_airplay_modes = {}
-        with patch("webui.common.send_json"), \
-             patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("webui.browser.home_model.submit_output_change",
-                   return_value={"ok": True}) as mut:
-            webui_federation.send_federation_output_json(
-                MagicMock(), MagicMock(), json.dumps({"id": "1", "selected": True}))
-        assert mut.call_args.kwargs["requester"] == "peer"
-        assert mut.call_args.kwargs["pin_requester"] == "webui"
-
-
 # ---------------------------------------------------------------------------
 # Home page PIN dialog (page script text)
 # ---------------------------------------------------------------------------
 
 class TestHomePinDialogScript:
-    def test_pin_flow_posts_one_pair_and_enable_request(self):
-        src = _source_text.static_text("page/home_cards.js")
-        assert "postPairAndEnable" in src
-        assert "selected: true" in src
-        assert "op:'pin'" in src
-        assert "postPinOnly" not in src
-        # The pin-only second request is gone: a good PIN is the last call.
-        flow = src[src.index("async function runPinFlow"):src.index("async function maybePromptForPin")]
-        assert "postOutputUpdate" not in flow
-
-    def test_poll_prompt_stands_down_for_a_foreign_claim(self):
-        src = _source_text.static_text("page/home_cards.js")
-        body = src[src.index("async function maybePromptForPin"):src.index("async function sendUpdate")]
-        assert "pin_claim" in body
-        assert "'webui'" in body
-
     def test_pin_dialog_input_is_numeric_and_bounded(self):
         import webui.browser.home as page
         src = inspect.getsource(page)
-        assert src.count('pattern="[0-9]*" maxlength="8"') == 2
+        assert src.count('pattern="[0-9]*" maxlength="8"') == 1
         assert 'id="pinModalNote"' in src
 
     def test_rate_limited_reply_shows_the_wait(self):
-        src = _source_text.static_text("page/home_cards.js")
+        src = _source_text.static_text("page/home/home_speakers.js")
         assert "rate_limited" in src
         assert "retry_after_s" in src
         assert "before retry" in src

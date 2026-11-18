@@ -1204,8 +1204,8 @@ class TestApplianceService:
         content = svc_file.read_text(encoding="utf-8")
         assert "_autostream._tcp" in content
         assert "id=" + args.id in content
-        assert "ui=v1" in content
-        assert "federation=v1" in content
+        assert "ui=v1" not in content
+        assert "federation=v1" not in content
         assert "version=" + args.version in content
         assert "control=on" in content
         assert "dial_api=v1" in content
@@ -2153,7 +2153,7 @@ _FROZEN_PLAYING_KEYS = (
     "dial_status", "dial_outputs", "dial_eq", "id",
 )
 _FROZEN_APPLIANCE_KEYS = (
-    "id", "ui", "federation", "version", "control", "proto", "dial_api",
+    "id", "version", "control", "proto", "dial_api",
     "dial_proto", "dial_status", "dial_outputs", "dial_eq", "repeat",
 )
 _FROZEN_CAPABILITY_VALUES = {

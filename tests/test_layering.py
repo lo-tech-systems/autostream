@@ -26,12 +26,12 @@ ORDER = ["L0", "L1a", "L1b", "L2", "L3", "L4"]
 _L0 = """
 align_tone appliance_identity artwork auth backend_events bluetooth_client
 bluetooth_facts bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
-federation licensing logging mdns monitor_client nowplaying
+licensing logging mdns monitor_client nowplaying
 owntone owntone_mini peer_client peer_http peer_registry pin_pairing playback_stats player_service players protocol rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliance_state appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal services session startup warnings".split()
+_L2 = "align announce appliance_state appliances audio_monitor dial_push dial_warnings identification input_status live_config log_policy monitor_control output_intents output_policy playback_tracking repeat selfheal services session startup warnings".split()
 
 LAYERS: dict[str, str] = {
     **{f"autostream_{n}": "L0" for n in _L0},
@@ -91,7 +91,6 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
     "autostream_commissioning": frozenset({"*"}),
     "autostream_dials": frozenset({"*"}),
     "autostream_protocol": frozenset({"*"}),
-    "autostream_federation": frozenset({"*"}),
     "autostream_sysutils": frozenset({"*"}),
     "autostream_debounce": frozenset({"*"}),
     "autostream_rpi": frozenset({"*"}),
@@ -119,11 +118,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
         "InputPlaybackSnapshot",
         "make_fallback_input_snapshot", "format_hours",
     }),
-    "autostream_appliances": frozenset({
-        "get_all_appliances", "get_appliance_sighting", "get_conflict_ids",
-        "scanner_ready", "grace_remaining_ms", "ApplianceSighting",
-        "resolve",
-    }),
+    "autostream_appliances": frozenset({"resolve"}),
     "autostream_pin_pairing": frozenset({"PIN_RE", "REQUESTER_WEBUI", "dial_requester"}),
     "autostream_align": frozenset({
         "parse_result_entries", "AlignArrival",

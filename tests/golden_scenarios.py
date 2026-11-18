@@ -30,7 +30,6 @@ from settings_fixtures import fixed_view
 import webui.browser.home as webui_home
 import webui.browser.home_api as webui_home_api
 import webui.dial.api as webui_dial_api
-import webui.peer.federation as webui_federation
 
 _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
@@ -431,10 +430,8 @@ def _unpatched(recorder: Recorder, name: str) -> Callable:
 def apply(scenario: Scenario, monkeypatch) -> Recorder:
     """Install *scenario* into every seam the golden routes read; return the recorder."""
     import webui.browser.home_model as models
-    import webui.peer.gateway as gateway
     import autostream_dial_warnings  # noqa: F401  binds the live warnings reads
     import autostream_monitor_client as monitor_client
-    import autostream_federation as federation
     import autostream_player_service as player_service
     import autostream_repeat
     import autostream_state as state
@@ -513,22 +510,15 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     setattrs(webui_dial_api,
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
              dial_speaks_v2=lambda dial_id: True)
-    setattrs(webui_federation, get_live_output_eq_status=lambda: scenario.eq_status)
-    setattrs(models,
-             get_system_hostname=lambda: "golden.local",
-             _wall=lambda: FIXED_WALL_CLOCK,
-             _dial_update_banner_text=lambda: "",
-             get_live_output_eq_status=lambda: scenario.eq_status)
+    setattrs(models, _wall=lambda: FIXED_WALL_CLOCK)
     setattrs(airplay,
              get_setting=get_setting,
-             get_all_appliances=lambda: [],
              get_system_hostname=lambda: "golden.local",
              build_top_banner_html=lambda **kwargs: ("", ""))
     setattrs(autostream_repeat, apply_repeat_ack=lambda ack, requester=None: ack)
     setattrs(monitor_client, _connected_monitor=connected_monitor)
     setattrs(start_buffer_cache, current_ms=lambda base_url=None: START_BUFFER_MS)
     setattrs(system_stats, _read_get_throttled_value=lambda: scenario.throttled)
-    setattrs(federation, create_session=lambda ip: ("golden-token", 0))
     # The seek rate limit is per process; every case starts outside it.
     import autostream_intents.table as intent_table
     intent_table.reset_for_tests()
@@ -590,29 +580,13 @@ def _dial(extra: Optional[dict] = None) -> dict:
 
 
 def routes() -> list[Route]:
-    import webui.browser.home as airplay
-
     state = make_state()
-
-    def federation_session(handler):
-        webui_federation.send_federation_session_json(handler, PEER_IP)
-
-    def refuse_sessions(monkeypatch):
-        import autostream_federation as federation
-        monkeypatch.setattr(federation, "create_session", lambda ip: (None, 12))
 
     table = [
         Route("status", "POST /api/dial/status",
               lambda h: webui_dial_api.send_dial_status_post_json(h, state, _dial())),
-        Route("status", "GET /api/audio/status",
-              lambda h: webui_home_api.send_audio_status_json(h, state)),
         Route("status", "GET /api/playing-status",
               lambda h: webui_home_api.send_playing_status_json(h)),
-        Route("status", "POST /api/federation/v1/session", federation_session),
-        Route("status", "POST /api/federation/v1/session (rate limited)", federation_session,
-              prepare=refuse_sessions),
-        Route("status", "GET /api/federation/v1/home",
-              lambda h: webui_federation.send_federation_home_json(h, state)),
         Route("status", "GET /",
               lambda h: webui_home.send_airplay_page(h, state, make_auth()), html=True),
         Route("outputs", "POST /api/dial/outputs",
@@ -627,8 +601,6 @@ def routes() -> list[Route]:
               lambda h: webui_dial_api.send_dial_mute_post_json(h, state, _dial({"action": "restore"}))),
         Route("eq", "POST /api/dial/eq",
               lambda h: webui_dial_api.send_dial_eq_post_json(h, state, _dial())),
-        Route("eq", "GET /api/federation/v1/equaliser/status",
-              lambda h: webui_federation.send_federation_eq_status_json(h, state)),
         Route("repeat", "POST /api/dial/repeat seek",
               lambda h: webui_dial_api.send_dial_repeat_post_json(
                   h, state, _dial({"action": "seek", "position_seconds": 0}))),

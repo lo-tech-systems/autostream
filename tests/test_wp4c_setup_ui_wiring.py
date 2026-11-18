@@ -76,7 +76,6 @@ def _minimal_cfg(tmp_path: Path) -> Path:
             "show_input_detail": False,
             "show_hostname_on_home": False,
             "control_other_appliances": False,
-            "output_usage_poll_interval_seconds": 3,
         },
         "updates": {"auto_update": False, "update_channel": "stable"},
     }), encoding="utf-8")

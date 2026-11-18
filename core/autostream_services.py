@@ -1,8 +1,7 @@
 """autostream_services -- coordinator work that runs beside the poll loop until
 the process stops: the capture-device and Bluetooth scan (with the Bluetooth
-rate-follow and lockout-heal reloads), the dial and appliance scanners, the
-dial warnings watcher, the appliance announcement, the cross-appliance output
-usage poller, and the one-off identification-provider version read. The
+rate-follow and lockout-heal reloads), the dial scanner, the
+dial warnings watcher, the appliance announcement, and the one-off identification-provider version read. The
 device scan publishes the devices part.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.

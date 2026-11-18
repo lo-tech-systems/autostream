@@ -46,8 +46,6 @@ import webui.browser.service
 import webui.browser.setup.page
 import webui.dial.api
 import webui.dial.management
-import webui.peer.federation
-import webui.peer.gateway
 import webui.peer.relay
 import webui.protocol.hub
 import webui.protocol.intents
@@ -62,7 +60,6 @@ import webui.system.updates
 import webui.routes
 
 from webui import common, session_state
-from webui.peer import federation
 from webui.routes import dispatch as _route_dispatch, is_poll_log as _route_is_poll_log
 from webui.system import updates
 
@@ -85,8 +82,6 @@ _ROUTE_MODULES = (
     webui.browser.setup.page,
     webui.dial.api,
     webui.dial.management,
-    webui.peer.federation,
-    webui.peer.gateway,
     webui.peer.relay,
     webui.protocol.state,
     webui.protocol.stream,
@@ -102,8 +97,8 @@ _ROUTE_MODULES = (
 # DEBUG (see ConfigWebHandler.log_message) since they dominate the resting
 # INFO log volume without carrying diagnostic value.
 #
-# All of these polling paths (/api/audio/status, /api/network/status,
-# /api/appliances, /api/playing-status, GET /api/log-level) are now
+# All of these polling paths (/api/network/status, /api/playing-status,
+# GET /api/log-level) are now
 # declared poll_log=True on their route-table entries instead (PUT
 # /api/log-level stays poll_log=False, preserving the GET-only demotion
 # the method check below used to implement). This tuple is empty now;
@@ -259,17 +254,13 @@ class ConfigWebHandler(BaseHTTPRequestHandler):
 
         super().end_headers()
 
-    def _dispatch_federation(self, method: str, path: str, body_str: str = "") -> None:
-        """Dispatch a federation API request before browser auth/CSRF."""
-        federation.dispatch(self, method, path, body_str)
-
     def do_GET(self):  # noqa: N802
         path = self._normalized_path()
 
         # Route-table dispatch (see webui/routes.py). This
         # covers every GET path/scheme the server recognizes (browser
-        # pages/APIs, federation, dial protocol/management, the
-        # loopback-aware fast paths, the gateway, remote pages, first-boot,
+        # pages/APIs, dial protocol/management, the
+        # loopback-aware fast paths, remote pages, first-boot,
         # /auth, /logs/download). Falls through untouched for anything not
         # in ROUTES.
         if _route_dispatch(self, "GET", path):

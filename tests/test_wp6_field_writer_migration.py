@@ -7,7 +7,6 @@ Tests cover:
   - apply_eq_field: dB field via store (uses pre-write snapshot), dB fallback
   - apply_eq_reset: zeroes all bands via store, fallback path
   - send_service_config_json: persistence via store, fallback when no store
-  - Callers in webui_api and gateway pass settings= to apply_eq_field/reset
 """
 from __future__ import annotations
 
@@ -16,13 +15,12 @@ import os
 import sys
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 from settings_fixtures import fixed_view
 from fake_store import fake_playback_mock
-from autostream_settings import SettingsStore, as_view, writable_store
+from autostream_settings import SettingsStore, as_view
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -115,65 +113,3 @@ class TestApplyEqFieldBoolViaStore:
         send_service_config_json(handler, state, body)
         assert sent["code"] == 400
         assert sent["body"]["ok"] is False
-
-
-# ── Callers pass settings= ────────────────────────────────────────────────────
-
-class TestCallerPassSettings:
-    """Verify that webui_api callers forward settings= to apply_eq_field/reset."""
-
-    def test_send_federation_eq_config_passes_settings(self, tmp_path):
-        """send_federation_eq_config_json passes settings=getattr(state,'settings',None)."""
-        from webui.peer.federation import send_federation_eq_config_json
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        state = _make_state(config_path, store)
-        handler, sent = _make_handler()
-        body = json.dumps({"field": "gain_db", "value": "2.0"})
-        with patch("autostream_monitor_control.apply_eq_field", return_value=(True, "2.0", "")) as m_apply:
-            send_federation_eq_config_json(handler, state, body)
-        m_apply.assert_called_once()
-        _, kwargs = m_apply.call_args
-        assert writable_store(kwargs.get("settings")) is store
-
-    def test_send_federation_eq_reset_passes_settings(self, tmp_path):
-        """send_federation_eq_reset_json passes settings=getattr(state,'settings',None)."""
-        from webui.peer.federation import send_federation_eq_reset_json
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        state = _make_state(config_path, store)
-        handler, sent = _make_handler()
-        with patch("autostream_monitor_control.apply_eq_reset", return_value=(True, "")) as m_reset:
-            send_federation_eq_reset_json(handler, state)
-        m_reset.assert_called_once()
-        _, kwargs = m_reset.call_args
-        assert writable_store(kwargs.get("settings")) is store
-
-    def test_gateway_eq_field_passes_settings(self, tmp_path):
-        """send_gateway_eq_config_json passes settings=getattr(state,'settings',None)."""
-        from webui.peer.gateway import send_gateway_eq_config_json
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        state = _make_state(config_path, store)
-        handler, sent = _make_handler()
-        body = json.dumps({"field": "gain_db", "value": "1.0"})
-        with patch("webui.peer.gateway.resolve_appliance", return_value=("bound", None)), \
-             patch("autostream_monitor_control.apply_eq_field", return_value=(True, "1.0", "")) as m_apply:
-            send_gateway_eq_config_json(handler, state, "self", body)
-        m_apply.assert_called_once()
-        _, kwargs = m_apply.call_args
-        assert writable_store(kwargs.get("settings")) is store
-
-    def test_gateway_eq_reset_passes_settings(self, tmp_path):
-        """send_gateway_eq_reset_json passes settings=getattr(state,'settings',None)."""
-        from webui.peer.gateway import send_gateway_eq_reset_json
-        config_path = _make_config(str(tmp_path))
-        store = _make_store(config_path)
-        state = _make_state(config_path, store)
-        handler, sent = _make_handler()
-        with patch("webui.peer.gateway.resolve_appliance", return_value=("bound", None)), \
-             patch("autostream_monitor_control.apply_eq_reset", return_value=(True, "")) as m_reset:
-            send_gateway_eq_reset_json(handler, state, "self")
-        m_reset.assert_called_once()
-        _, kwargs = m_reset.call_args
-        assert writable_store(kwargs.get("settings")) is store
