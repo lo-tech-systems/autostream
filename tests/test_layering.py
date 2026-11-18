@@ -335,7 +335,7 @@ RATCHET: frozenset[tuple[str, str, str, str]] = frozenset({
     ('A', 'autostream_appliance_models', 'autostream_core', 'clear_user_silence_latch'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'get_live_output_eq_status'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'note_user_output_action'),
-    ('C', 'autostream_appliance_models', 'autostream_session', 'request_nowplaying_republish'),
+    ('C', 'autostream_appliance_models', 'autostream_runtime', 'request_nowplaying_republish'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'set_live_output_auto_trim'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'set_live_output_eq'),
     ('A', 'autostream_appliance_models', 'autostream_core', 'set_live_output_gain'),

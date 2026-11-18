@@ -34,7 +34,7 @@ from autostream_core import (
 )
 from autostream_eq_bands import OUTPUT_PEQ_BANDS
 from autostream_dial_push import notify_state_changed
-from autostream_session import request_nowplaying_republish
+from autostream_runtime import request_nowplaying_republish
 from autostream_state import active_track, store
 from autostream_player_service import (
     config_airplay_mode_to_backend,

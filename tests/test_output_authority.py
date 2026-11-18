@@ -1,0 +1,1233 @@
+"""tests/test_output_authority.py
+
+The output authority: adoption, reads and retries, every intent with the
+exact calls it makes on the player, how each answer of the player is taken,
+the start-failure field, the event source choice, and the behaviour that only
+real threads show (a wait that expires, writes that coalesce, a late outcome
+that must not undo a newer request, stop() while a write is in flight).
+
+Without threads the authority writes inline, so most tests run one thread and
+read the result straight away. The real-thread tests use the
+started_authority fixture and a backend whose calls wait on an Event.
+"""
+from __future__ import annotations
+
+import logging
+import sys
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+_CORE = str(Path(__file__).resolve().parent.parent / "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+
+import autostream_runtime as runtime
+import autostream_state as state
+import autostream_state.outputs as outputs
+from autostream_backend_events import DEGRADED, ConnectInfo, DeviceEvent
+from autostream_players import ActionResult, ListOutputsResult, SpeakersSummary
+from autostream_state import Origin
+from output_fakes import FakeBackend, FakeSource, error, group_row, row, snap
+from autostream_state.outputs import (
+    START_PENDING_S,
+    PlayerServiceBackend,
+    WriteOutcome,
+    get_authority,
+    wait_outcome,
+)
+
+T0 = 1000.0
+
+
+@pytest.fixture
+def w(monkeypatch):
+    a = get_authority()
+    fb = FakeBackend(a)
+    clock = [T0]
+    monkeypatch.setattr(a, "_clock", lambda: clock[0])
+    a.start(fb)
+    return SimpleNamespace(a=a, fb=fb, t=clock)
+
+
+def merge(w, rows, **kw):
+    w.a.merge_for_tests(list(rows), boot=kw.pop("boot", "b0"), now=w.t[0], **kw)
+
+
+# ---------------------------------------------------------------------------
+# Reads, adoption and the reachable flag
+# ---------------------------------------------------------------------------
+
+class TestAdoption:
+    def test_the_first_read_adopts_selection_and_volume_without_a_command(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
+        p = snap()
+        one, two = p.unit("1"), p.unit("2")
+        assert one.selected and one.volume == 40 and one.cause is Origin.ADOPTED
+        assert not two.selected
+        assert p.connected is True
+        assert w.fb.calls == []
+
+    def test_a_unit_that_appears_later_is_adopted_on_first_sight(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.select("1", Origin.USER, volume=25)
+        merge(w, [row(1, selected=True, volume_percent=25), row(2, volume_percent=30)])
+        p = snap()
+        assert p.unit("2").cause is Origin.ADOPTED and p.unit("2").volume == 30
+        assert p.unit("1").cause is Origin.USER
+
+    def test_units_keep_the_order_of_the_rows(self, w):
+        merge(w, [row(3), row(1), row(2)])
+        assert [u.id for u in snap().units] == ["3", "1", "2"]
+        merge(w, [row(2), row(3), row(1)])
+        assert [u.id for u in snap().units] == ["2", "3", "1"]
+
+    def test_a_pin_wait_shows_as_off_but_is_not_a_command(self, w):
+        merge(w, [row(1, needs_auth_key=True)])
+        u = snap().unit("1")
+        assert u.availability == "password" and u.shown_selected is False
+
+    def test_availability_follows_the_session_when_rows_carry_one(self, w):
+        merge(w, [
+            group_row(1, "streaming", selected=True),
+            group_row(2, "startup", selected=True),
+            group_row(3, "failed"),
+            group_row(4, "password"),
+            group_row(5, "stopped", selected=True),
+            group_row(6, "stopped"),
+        ])
+        got = {u.id: u.availability for u in snap().units}
+        assert got == {"1": "ok", "2": "starting", "3": "failed", "4": "password",
+                       "5": "starting", "6": "ok"}
+
+    def test_availability_of_a_tv_group_without_the_tv_follows_its_speakers(self, w):
+        speakers = SpeakersSummary(ids=("x", "y"), count=2, state="streaming")
+        merge(w, [group_row(
+            1, "stopped", selected=True, group_role="tv_leader", include_tv=False, speakers=speakers)])
+        assert snap().unit("1").availability == "ok"
+
+    def test_a_pair_member_that_failed_lowers_the_availability_of_a_selected_pair(self, w):
+        speakers = SpeakersSummary(ids=("x",), count=1, state="failed")
+        merge(w, [group_row(1, "streaming", selected=True, group_role="pair", speakers=speakers)])
+        assert snap().unit("1").availability == "failed"
+
+
+class TestReading:
+    def test_a_change_during_a_read_causes_exactly_one_more_read(self, w):
+        w.fb.rows = [row(1)]
+        w.fb.on_list = w.a.on_outputs_changed       # arrives mid-read, once
+        w.a.on_outputs_changed()
+        w.a.step(now=T0)
+        assert w.fb.reads == 1
+        w.a.step(now=T0 + 0.1)
+        assert w.fb.reads == 2
+        w.a.step(now=T0 + 0.2)
+        assert w.fb.reads == 2
+
+    def test_a_failed_read_keeps_dirty_and_retries_with_back_off(self, w):
+        w.fb.list_result = ListOutputsResult(ok=False, error="x", error_code="request_failed")
+        w.a.on_outputs_changed()
+        reads_at = []
+        for t in (0, 0.4, 0.5, 1.4, 1.5, 3.4, 3.5, 8.4, 8.5, 13.0, 13.5):
+            before = w.fb.reads
+            w.a.step(now=T0 + t)
+            if w.fb.reads > before:
+                reads_at.append(t)
+        # 0.5, 1, 2, 5, then 5 again
+        assert reads_at == [0, 0.5, 1.5, 3.5, 8.5, 13.5]
+
+    def test_a_read_that_succeeds_clears_the_retry(self, w):
+        w.fb.list_result = ListOutputsResult(ok=False, error="x", error_code="request_failed")
+        w.a.on_outputs_changed()
+        w.a.step(now=T0)
+        w.fb.list_result = None
+        w.fb.rows = [row(1)]
+        w.a.step(now=T0 + 0.5)
+        assert snap().connected is True
+        before = w.fb.reads
+        w.a.step(now=T0 + 0.6)
+        assert w.fb.reads == before
+
+    def test_connected_goes_false_only_after_three_failures(self, w):
+        merge(w, [row(1)])
+        w.fb.list_result = ListOutputsResult(ok=False, error="x", error_code="request_failed")
+        w.a.on_outputs_changed()
+        w.a.step(now=T0)
+        w.a.step(now=T0 + 0.5)
+        assert snap().connected is True
+        w.a.step(now=T0 + 1.5)
+        assert snap().connected is False
+        # and the unit is kept as it was
+        assert snap().unit("1") is not None
+
+    def test_the_part_is_connected_again_after_a_good_read(self, w):
+        merge(w, [row(1)])
+        w.a.mark_unreachable_for_tests()
+        assert snap().connected is False
+        merge(w, [row(1)])
+        assert snap().connected is True
+
+    def test_timeouts_during_a_pending_start_do_not_count(self, w):
+        merge(w, [row(1), row(2)])
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER, volume=30)
+        assert snap().connected is True
+        w.fb.list_result = ListOutputsResult(ok=False, error="slow", error_code="timeout")
+        w.a.on_outputs_changed()
+        for i in range(8):
+            w.a.step(now=T0 + 10 * i)
+        assert snap().connected is True
+        # A refused connection is down, whatever is pending.
+        w.fb.list_result = ListOutputsResult(ok=False, error="refused", error_code="request_failed")
+        w.a.on_outputs_changed()
+        for i in range(8, 12):
+            w.a.step(now=T0 + 10 * i)
+        assert snap().connected is False
+
+    def test_timeouts_while_a_write_is_in_flight_do_not_count(self, w):
+        merge(w, [row(1)])
+        w.fb.list_result = ListOutputsResult(ok=False, error="slow", error_code="timeout")
+
+        def read_during_the_write(output_id, fields):
+            for i in range(5):
+                w.a.on_outputs_changed()
+                w.a.step(now=T0 + 10 * i)
+
+        w.fb.on_update = read_during_the_write
+        w.a.select("1", Origin.USER, volume=30)
+        assert snap().connected is True
+        # With nothing in flight the same timeouts count.
+        w.fb.on_update = None
+        for i in range(5, 9):
+            w.a.on_outputs_changed()
+            w.a.step(now=T0 + 10 * i)
+        assert snap().connected is False
+
+    def test_the_safety_read_comes_every_sixty_seconds(self, w):
+        w.fb.rows = [row(1)]
+        w.a.on_outputs_changed()
+        w.a.step(now=T0)
+        assert w.fb.reads == 1
+        w.a.step(now=T0 + 59)
+        assert w.fb.reads == 1
+        w.a.step(now=T0 + 60)
+        assert w.fb.reads == 2
+        w.a.step(now=T0 + 119)
+        assert w.fb.reads == 2
+        w.a.step(now=T0 + 120)
+        assert w.fb.reads == 3
+
+    def test_start_makes_no_call_to_the_player(self, w):
+        assert w.fb.calls == [] and w.fb.reads == 0 and w.fb.channel_calls == 0
+
+
+class TestBootChange:
+    def test_a_new_boot_keeps_desired_and_units_without_a_row(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)], boot="b0")
+        merge(w, [], boot="b1")
+        p = snap()
+        one = p.unit("1")
+        assert one is not None and one.selected and one.volume == 40
+        assert one.reported is None and one.availability == "gone"
+        assert p.backend_boot == "b1"
+
+    def test_units_without_a_row_are_dropped_after_sixty_seconds(self, w):
+        merge(w, [row(1), row(2)], boot="b0")
+        merge(w, [row(2)], boot="b1")
+        w.fb.rows = [row(2)]
+        assert snap().unit("1") is not None
+        w.a.step(now=T0 + 59)
+        assert snap().unit("1") is not None
+        w.a.step(now=T0 + 61)
+        assert snap().unit("1") is None and snap().unit("2") is not None
+
+    def test_a_unit_that_vanishes_without_a_restart_goes_at_once(self, w):
+        merge(w, [row(1), row(2)])
+        merge(w, [row(2)])
+        assert snap().unit("1") is None
+
+    def test_a_unit_removed_while_streaming_keeps_silence_chosen_and_comes_back(self, w):
+        merge(w, [group_row(1, "streaming", selected=True), group_row(2, "stopped")])
+        w.a.deselect("1", Origin.USER)
+        assert snap().silence_chosen is True
+        merge(w, [group_row(2, "stopped")])             # its row leaves for a while
+        assert snap().silence_chosen is True
+        assert snap().unit("1") is not None
+        merge(w, [group_row(1, "stopped"), group_row(2, "stopped")])
+        assert snap().unit("1").reported is not None
+        assert snap().silence_chosen is True
+
+    def test_a_backend_without_a_boot_counts_its_restarts_in_epochs(self, w):
+        w.a.merge_for_tests([row(1)], now=T0)
+        assert snap().backend_boot == "epoch:1"
+        w.a.mark_unreachable_for_tests()
+        w.a.merge_for_tests([row(1)], now=T0)
+        assert snap().backend_boot == "epoch:2"
+
+    def test_connect_info_with_a_new_boot_is_a_boot_change(self, w):
+        w.fb.rows = [row(1)]
+        w.a.on_connected(ConnectInfo("b0", 5, frozenset(), "unix_socket"))
+        w.a.step(now=T0)
+        assert snap().backend_boot == "b0"
+        w.fb.rows = []
+        w.a.on_connected(ConnectInfo("b1", 5, frozenset(), "unix_socket"))
+        w.a.step(now=T0 + 1)
+        assert snap().backend_boot == "b1"
+        assert snap().unit("1").availability == "gone"
+
+
+class TestUnitForDevice:
+    def test_ids_resolve_through_the_unit_and_its_group(self, w):
+        merge(w, [
+            group_row(10, group_role="pair", speakers=SpeakersSummary(ids=("11",), count=1)),
+            group_row(20, group_role="tv_leader", speakers=SpeakersSummary(ids=("21", "22"), count=2)),
+        ])
+        a = w.a
+        assert a.unit_for_device("10") == "10"
+        assert a.unit_for_device("11") == "10"
+        assert a.unit_for_device("22") == "20"
+        assert a.unit_for_device("99") is None
+
+    def test_a_device_volume_for_zero_reaches_every_selected_unit(self, w, caplog):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50), row(3)])
+        w.a.mute_all(Origin.USER)
+        assert snap().muted_all is True
+        w.a.on_device_event(DeviceEvent("device_volume", "0", None, "dmcp.volume", "60", 1, 1.0))
+        w.a.step(now=T0)
+        assert snap().muted_all is False and not any(u.muted for u in snap().units)
+
+    def test_events_that_map_to_no_unit_or_have_no_policy_are_logged_and_dropped(self, w, caplog):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        with caplog.at_level(logging.INFO, logger="autostream.outputs"):
+            w.a.on_device_event(DeviceEvent("device_volume", "77", "Ghost", "volumeup", "10", 1, 1.0))
+            w.a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "paus", None, 2, 2.0))
+            w.a.step(now=T0)
+        text = "\n".join(r.getMessage() for r in caplog.records)
+        assert "Ghost" in text and "dropped" in text
+        assert "receiver command paus from Speaker 1: no policy, ignored" in text
+        assert w.fb.calls == []
+        assert snap().unit("1").selected is True
+
+
+# ---------------------------------------------------------------------------
+# Intents
+# ---------------------------------------------------------------------------
+
+class TestSelect:
+    def test_it_selects_and_writes_the_exact_call(self, w):
+        merge(w, [row(1), row(2)])
+        before = state.store().snapshot().version
+        applied = w.a.select("2", Origin.USER, volume=30, offset_ms=-20, mode="airplay2")
+        assert w.fb.calls == [("update_output", ("2",), dict(
+            enabled=True, volume_percent=30, offset_ms=-20, mode="airplay2", timeout=3.0))]
+        u = snap().unit("2")
+        assert u.selected and u.volume == 30 and u.cause is Origin.USER
+        assert applied.version > before and applied.refused is None
+        assert applied.outcome.result() == (WriteOutcome(ok=True),)
+
+    def test_an_unknown_unit_is_refused_and_nothing_is_written(self, w):
+        merge(w, [row(1)])
+        applied = w.a.select("9", Origin.USER, volume=30)
+        assert applied.refused == "unknown_output" and applied.outcome is None
+        assert w.fb.calls == []
+
+    def test_a_successful_select_is_starting_until_a_read_shows_otherwise(self, w):
+        merge(w, [group_row(1)])
+        w.a.select("1", Origin.USER, volume=30)
+        assert snap().unit("1").availability == "starting"
+        merge(w, [group_row(1, "streaming", selected=True, volume_percent=30)])
+        assert snap().unit("1").availability == "ok"
+
+    def test_joining_a_muted_session_is_silent_and_remembers_the_level(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.select("2", Origin.SESSION, volume=35)
+        assert w.fb.updates() == [("2", dict(
+            enabled=True, volume_percent=0, offset_ms=None, mode=None, timeout=3.0))]
+        u = snap().unit("2")
+        assert u.muted is True and u.volume == 35
+
+    def test_a_user_select_ends_the_silence_choice_on_success_only(self, w):
+        merge(w, [row(1, selected=True), row(2)])
+        w.a.deselect("1", Origin.USER)
+        assert snap().silence_chosen is True
+        w.fb.results = [error("http_error")]
+        w.a.select("2", Origin.USER, volume=10)
+        assert snap().silence_chosen is True
+        w.a.select("2", Origin.USER, volume=10)
+        assert snap().silence_chosen is False
+
+    def test_the_volume_is_left_to_the_player_when_none_is_given(self, w):
+        merge(w, [row(1, volume_percent=44)])
+        w.a.select("1", Origin.SESSION)
+        assert w.fb.updates()[0][1]["volume_percent"] is None
+        assert snap().unit("1").volume == 44
+
+
+class TestDeselect:
+    def test_it_deselects_and_forgets_the_mute(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=20)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.deselect("1", Origin.USER)
+        assert w.fb.updates() == [("1", dict(enabled=False, timeout=3.0))]
+        u = snap().unit("1")
+        assert not u.selected and not u.muted
+        assert snap().unit("2").muted is True
+
+    @pytest.mark.parametrize("cause,expected", [
+        (Origin.USER, True), (Origin.POLICY, True), (Origin.DEVICE, True),
+        (Origin.SESSION, False), (Origin.SYSTEM, False),
+    ])
+    def test_the_silence_choice_depends_on_the_cause(self, w, cause, expected):
+        merge(w, [row(1, selected=True)])
+        w.a.deselect("1", cause)
+        assert snap().silence_chosen is expected
+
+    def test_the_silence_choice_needs_the_last_unit_to_go(self, w):
+        merge(w, [row(1, selected=True), row(2, selected=True)])
+        w.a.deselect("1", Origin.USER)
+        assert snap().silence_chosen is False
+        w.a.deselect("2", Origin.USER)
+        assert snap().silence_chosen is True
+
+    def test_a_session_end_clears_the_choice(self, w):
+        merge(w, [row(1, selected=True)])
+        w.a.deselect("1", Origin.USER)
+        w.a.note_session(False)
+        assert snap().silence_chosen is False
+
+
+class TestDeselectAll:
+    def test_a_session_edge_stops_and_disables(self, w):
+        merge(w, [row(1, selected=True), row(2, selected=True)])
+        w.a.deselect_all(Origin.SESSION)
+        assert w.fb.calls == [("stop_and_disable_all", (), dict(timeout=3.0))]
+        assert not snap().selected_units()
+
+    @pytest.mark.parametrize("cause", [Origin.USER, Origin.POLICY, Origin.DEVICE, Origin.SYSTEM])
+    def test_any_other_cause_only_deselects(self, w, cause):
+        merge(w, [row(1, selected=True)])
+        w.a.deselect_all(cause)
+        assert w.fb.calls == [("set_selected_outputs", ([],), dict(timeout=3.0))]
+
+    def test_a_session_edge_ends_every_mute_and_the_held_mute(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        w.a.deselect(  "1", Origin.USER)
+        assert snap().muted_all is True               # held with nothing selected
+        w.a.deselect_all(Origin.SESSION)
+        assert snap().muted_all is False and not any(u.muted for u in snap().units)
+
+    def test_the_choice_of_silence_follows_the_cause(self, w):
+        merge(w, [row(1, selected=True)])
+        w.a.deselect_all(Origin.SESSION)
+        assert snap().silence_chosen is False
+        merge(w, [row(1, selected=True)])
+        w.a.deselect_all(Origin.USER)
+        assert snap().silence_chosen is True
+
+
+class TestSetVolume:
+    def test_it_sets_and_writes(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.set_volume("1", 65, Origin.USER)
+        assert w.fb.updates() == [("1", dict(volume_percent=65, timeout=3.0))]
+        assert snap().unit("1").volume == 65
+
+    def test_the_level_is_clamped(self, w):
+        merge(w, [row(1, selected=True)])
+        w.a.set_volume("1", 400, Origin.USER)
+        assert snap().unit("1").volume == 100
+
+    def test_a_user_change_on_a_muted_unit_unmutes_that_unit_only(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.set_volume("1", 70, Origin.USER)
+        assert w.fb.updates() == [("1", dict(volume_percent=70, timeout=3.0))]
+        p = snap()
+        assert p.unit("1").muted is False and p.unit("1").volume == 70
+        assert p.unit("2").muted is True and p.unit("2").volume == 50
+        assert p.muted_all is False
+
+    def test_another_cause_on_a_muted_unit_only_moves_the_level_it_returns_to(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        applied = w.a.set_volume("1", 30, Origin.SESSION)
+        assert w.fb.calls == [] and applied.outcome is None
+        u = snap().unit("1")
+        assert u.muted is True and u.volume == 30
+
+    def test_an_unknown_unit_is_refused(self, w):
+        assert w.a.set_volume("9", 10, Origin.USER).refused == "unknown_output"
+
+
+class TestStepVolume:
+    def start(self, w, *levels):
+        merge(w, [row(i + 1, selected=True, volume_percent=v) for i, v in enumerate(levels)])
+        w.a.merge_for_tests(list(snap().units[i].reported for i in range(len(levels))), now=T0, boot="b0")
+        w.fb.calls.clear()
+
+    @pytest.mark.parametrize("levels,delta,expected", [
+        ((40,), 10, {"1": 50}),
+        ((40, 60), 10, {"1": 48, "2": 72}),      # 50 -> 60: each scaled by 60/50
+        ((40, 60), -10, {"1": 32, "2": 48}),     # 50 -> 40
+        ((0, 0), 10, {"1": 10, "2": 10}),        # from silence every speaker takes the master
+        ((90, 100), 20, {"1": 95, "2": 100}),    # master capped at 100
+        ((10, 20), -50, {"1": 0, "2": 0}),
+    ])
+    def test_the_arithmetic(self, w, levels, delta, expected):
+        self.start(w, *levels)
+        w.a.step_volume(delta, Origin.USER, default_level=50)
+        got = {uid: f["volume_percent"] for uid, f in w.fb.updates()}
+        assert got == {k: v for k, v in expected.items() if levels[int(k) - 1] != v}
+        assert {u.id: u.volume for u in snap().units} == expected
+
+    def test_a_unit_that_does_not_move_is_not_written(self, w):
+        self.start(w, 100, 100)
+        w.a.step_volume(10, Origin.USER, default_level=50)
+        assert w.fb.updates() == []
+
+    def test_writes_are_one_per_unit_in_unit_order_and_report_each_outcome(self, w):
+        self.start(w, 40, 60, 20)
+        w.fb.results = [ActionResult(ok=True), error("http_error"), ActionResult(ok=True)]
+        applied = w.a.step_volume(10, Origin.USER, default_level=50, requester="dial:abc")
+        assert [uid for uid, _ in w.fb.updates()] == ["1", "2", "3"]
+        outcomes = applied.outcome.result()
+        assert [o.ok for o in outcomes] == [True, False, True]
+
+    def test_no_selected_unit_and_no_player_are_refused(self, w):
+        merge(w, [row(1)])
+        assert w.a.step_volume(5, Origin.USER, default_level=50).refused == "no_active_outputs"
+        w.a.mark_unreachable_for_tests()
+        assert w.a.step_volume(5, Origin.USER, default_level=50).refused == "not_connected"
+
+    def test_down_while_muted_changes_nothing(self, w):
+        self.start(w, 40, 60)
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        applied = w.a.step_volume(-10, Origin.USER, default_level=50)
+        assert w.fb.calls == [] and applied.outcome is None
+        assert snap().muted_all is True and [u.volume for u in snap().units] == [40, 60]
+
+    def test_up_while_muted_is_a_plain_restore_with_no_step_on_top(self, w):
+        self.start(w, 40, 60)
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.step_volume(10, Origin.USER, default_level=50)
+        assert dict(w.fb.updates()) == {"1": dict(volume_percent=40, timeout=3.0),
+                                        "2": dict(volume_percent=60, timeout=3.0)}
+        assert snap().muted_all is False
+
+    def test_the_requester_is_on_the_change(self, w):
+        self.start(w, 40)
+        changes = []
+        state.store().subscribe(changes.append)
+        w.a.step_volume(10, Origin.USER, default_level=50, requester="dial:abc")
+        mine = [c for c in changes if "outputs" in c.parts]
+        assert mine and all(c.requester == "dial:abc" for c in mine[:1])
+
+
+class TestMute:
+    def test_mute_all_remembers_levels_and_silences_each_audible_unit(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=0), row(3)])
+        applied = w.a.mute_all(Origin.USER)
+        assert w.fb.updates() == [("1", dict(volume_percent=0, timeout=3.0))]
+        p = snap()
+        assert p.muted_all is True
+        assert p.unit("1").muted and p.unit("1").volume == 40     # the level it returns to
+        assert p.unit("2").muted and p.unit("2").volume == 0
+        assert not p.unit("3").muted
+        assert [o.ok for o in applied.outcome.result()] == [True]
+
+    def test_a_second_mute_does_not_overwrite_what_the_first_remembered(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        merge(w, [row(1, selected=True, volume_percent=0)])
+        applied = w.a.mute_all(Origin.USER)
+        assert applied.outcome is None
+        assert snap().unit("1").volume == 40
+
+    def test_unmute_all_returns_each_unit_to_its_level_or_the_default(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=0)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.a.unmute_all(Origin.USER, default_level=55)
+        assert dict(w.fb.updates()) == {"1": dict(volume_percent=40, timeout=3.0),
+                                        "2": dict(volume_percent=55, timeout=3.0)}
+        assert snap().muted_all is False
+
+    def test_unmute_all_lifts_a_silent_unit_that_was_never_muted(self, w):
+        merge(w, [row(1, selected=True, volume_percent=0), row(2, selected=True, volume_percent=30)])
+        w.a.unmute_all(Origin.USER, default_level=55)
+        assert dict(w.fb.updates()) == {"1": dict(volume_percent=55, timeout=3.0)}
+
+    def test_muted_all_needs_a_selected_unit_or_a_held_mute(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
+        assert snap().muted_all is False
+        w.a.mute_all(Origin.USER)
+        assert snap().muted_all is True
+        w.a.deselect("1", Origin.USER)
+        assert snap().muted_all is True               # held
+        w.a.deselect_all(Origin.SESSION)
+        assert snap().muted_all is False
+
+    def test_a_partly_muted_selection_reads_unmuted(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=50)])
+        w.a.mute_all(Origin.USER)
+        w.a.set_volume("1", 20, Origin.USER)
+        assert snap().muted_all is False
+
+    def test_per_unit_mute_and_unmute(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute("1", Origin.POLICY)
+        assert snap().unit("1").muted and w.fb.updates() == [("1", dict(volume_percent=0, timeout=3.0))]
+        w.fb.calls.clear()
+        w.a.unmute("1", Origin.POLICY, default_level=50)
+        assert not snap().unit("1").muted
+        assert w.fb.updates() == [("1", dict(volume_percent=40, timeout=3.0))]
+
+    def test_a_device_volume_ends_the_mute_at_once(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        merge(w, [row(1, selected=True, volume_percent=0)])
+        w.a.device_volume_seen("1")
+        u = snap().unit("1")
+        assert not u.muted and u.cause is Origin.DEVICE
+
+
+class TestPinAndReapply:
+    def test_a_pin_is_a_write_only(self, w):
+        merge(w, [row(1)])
+        version = state.store().snapshot().version
+        applied = w.a.submit_pin("1", "1234")
+        assert w.fb.calls == [("submit_output_pin", ("1", "1234"), dict(timeout=3.0))]
+        assert state.store().snapshot().version == version
+        assert applied.outcome.result() == (WriteOutcome(ok=True),)
+
+    def test_a_pin_the_player_refuses_comes_back_with_its_code(self, w):
+        w.fb.results = [error("pin_invalid", "wrong")]
+        out = w.a.submit_pin("1", "0000").outcome.result()[0]
+        assert out.ok is False and out.error_code == "pin_invalid" and out.error == "wrong"
+
+    def test_reapply_sends_the_selection_then_refreshes_then_lifts_silent_units(self, w):
+        merge(w, [row(1, selected=True, volume_percent=0), row(2, selected=True, volume_percent=40), row(3)])
+        w.fb.results = [ActionResult(ok=True), error("unsupported")]
+        w.a.reapply_selected(recovery_volume=45)
+        assert [c[0] for c in w.fb.calls] == [
+            "set_selected_outputs", "refresh_runtime_state", "update_output"]
+        assert w.fb.calls[0][1] == (["1", "2"],)
+        assert w.fb.updates() == [("1", dict(volume_percent=45, timeout=3.0))]
+
+    def test_reapply_leaves_a_muted_unit_silent(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        merge(w, [row(1, selected=True, volume_percent=0)])
+        w.fb.calls.clear()
+        w.a.reapply_selected(recovery_volume=45)
+        assert w.fb.updates() == []
+
+    def test_reapply_with_nothing_selected_sends_nothing(self, w):
+        merge(w, [row(1)])
+        w.a.reapply_selected(recovery_volume=45)
+        assert w.fb.calls == []
+
+
+# ---------------------------------------------------------------------------
+# How the player's answers are taken
+# ---------------------------------------------------------------------------
+
+class TestOutcomes:
+    @pytest.mark.parametrize("cause", [Origin.USER, Origin.SESSION, Origin.SYSTEM])
+    @pytest.mark.parametrize("code,reason", [
+        ("pin_required", "pin_required"), ("encoder_capacity", "encoder_capacity"),
+        ("pin_invalid", "refused"),
+    ])
+    def test_a_refusal_by_the_device_reverts_for_every_cause(self, w, cause, code, reason):
+        merge(w, [row(1)])
+        w.fb.results = [error(code)]
+        applied = w.a.select("1", cause, volume=30)
+        u = snap().unit("1")
+        assert u.selected is False and u.cause is cause
+        assert (u.availability == "password") == (code == "pin_required")
+        sf = snap().start_failure
+        assert (sf.unit_id, sf.name, sf.reason, sf.seq) == ("1", "Speaker 1", reason, 1)
+        out = applied.outcome.result()[0]
+        assert out.ok is False and out.error_code == code and out.pending is False
+
+    def test_a_user_select_reverts_on_any_other_failure(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("http_error", "bad request")]
+        out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert snap().unit("1").selected is False
+        assert out.ok is False and out.error == "bad request"
+        assert snap().start_failure.reason == "refused"
+
+    def test_a_request_failed_is_not_pending(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("request_failed")]
+        out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert out.pending is False and out.ok is False
+        assert snap().unit("1").selected is False
+
+    def test_a_timeout_is_a_start_pending(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("timeout", "slow")]
+        out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert out.ok is True and out.pending is True
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "starting"
+        assert snap().connected is True and snap().start_failure is None
+
+    def test_a_pending_start_ends_with_the_first_read_that_shows_a_result(self, w):
+        merge(w, [group_row(1)])
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER, volume=30)
+        merge(w, [group_row(1, "stopped", selected=True)])
+        assert snap().unit("1").availability == "starting"
+        merge(w, [group_row(1, "streaming", selected=True)])
+        assert snap().unit("1").availability == "ok"
+        w.t[0] += START_PENDING_S + 5
+        w.a.step(now=w.t[0])
+        assert snap().start_failure is None
+
+    def test_a_pending_start_that_never_shows_a_result_fails_at_120_seconds(self, w):
+        merge(w, [group_row(1)])
+        w.fb.rows = [group_row(1)]
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.SESSION, volume=30)
+        w.a.note_session(True)
+        w.a.step(now=w.t[0] + START_PENDING_S - 1)
+        assert snap().start_failure is None
+        w.a.step(now=w.t[0] + START_PENDING_S + 1)
+        sf = snap().start_failure
+        assert sf is not None and sf.reason == "timed_out" and sf.seq == 1
+        # a coordinator-made select is kept and retried on a back-off
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "failed"
+
+    def test_a_disconnect_ends_every_pending_start(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER, volume=30)
+        w.a.on_disconnected("eof")
+        w.a.step(now=T0 + 1)
+        w.fb.list_result = ListOutputsResult(ok=False, error="slow", error_code="timeout")
+        w.a.on_outputs_changed()
+        for i in range(2, 8):
+            w.a.step(now=T0 + 10 * i)
+        # no pending start exempts the timeouts any more
+        assert snap().connected is False
+
+    def test_a_coordinator_select_that_fails_is_kept_and_retried_during_a_session(self, w):
+        merge(w, [group_row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("http_error")]
+        out = w.a.select("1", Origin.SESSION, volume=30).outcome.result()[0]
+        assert out.ok is False
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "failed"
+        assert snap().start_failure.reason == "failed"
+        assert w.a._units["1"].retry_at is not None
+
+    def test_a_coordinator_select_that_fails_reverts_outside_a_session(self, w):
+        merge(w, [group_row(1)])
+        w.fb.results = [error("http_error")]
+        w.a.select("1", Origin.SESSION, volume=30)
+        assert snap().unit("1").selected is False
+        assert snap().start_failure is None
+
+    def test_a_coordinator_select_reverts_on_a_player_without_group_fields(self, w):
+        merge(w, [row(1)])
+        w.a.note_session(True)
+        w.fb.results = [error("http_error")]
+        w.a.select("1", Origin.SESSION, volume=30)
+        assert snap().unit("1").selected is False
+
+    def test_a_later_read_showing_failed_reverts_a_user_select_and_publishes_it(self, w):
+        merge(w, [group_row(1)])
+        w.a.select("1", Origin.USER, volume=30)
+        assert snap().unit("1").selected is True
+        merge(w, [group_row(1, "failed", selected=True)])
+        assert snap().unit("1").selected is False
+        sf = snap().start_failure
+        assert sf.reason == "failed" and sf.seq == 1
+        merge(w, [group_row(1, "failed", selected=False)])
+        assert snap().start_failure.seq == 1
+
+    def test_a_later_failed_read_of_a_coordinator_select_is_published_once(self, w):
+        merge(w, [group_row(1)])
+        w.a.note_session(True)
+        w.a.select("1", Origin.SESSION, volume=30)
+        for _ in range(3):
+            merge(w, [group_row(1, "failed", selected=True)])
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "failed"
+        assert snap().start_failure.seq == 1
+
+    def test_reselect_required_is_logged_and_not_retried(self, w, caplog):
+        merge(w, [group_row(1, "streaming", selected=True)])
+        w.fb.results = [error("reselect_required")]
+        with caplog.at_level(logging.WARNING, logger="autostream.outputs"):
+            out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert out.ok is False
+        assert any("include_tv change refused" in r.getMessage() for r in caplog.records)
+        assert len(w.fb.calls) == 1
+
+    def test_group_not_present_keeps_the_unit_wanted_and_pending(self, w):
+        merge(w, [group_row(1)])
+        w.fb.results = [error("group_not_present")]
+        out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert out.ok is True and out.pending is True
+        u = snap().unit("1")
+        assert u.selected is True and u.availability == "starting"
+
+    def test_a_failed_volume_write_keeps_desired(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.fb.results = [error("http_error")]
+        out = w.a.set_volume("1", 70, Origin.USER).outcome.result()[0]
+        assert out.ok is False
+        assert snap().unit("1").volume == 70
+
+    def test_a_failed_deselect_keeps_desired(self, w):
+        merge(w, [row(1, selected=True)])
+        w.fb.results = [error("http_error")]
+        w.a.deselect("1", Origin.USER)
+        assert snap().unit("1").selected is False
+
+
+class TestStartFailureField:
+    def test_each_failure_takes_the_next_sequence_number(self, w):
+        merge(w, [row(1), row(2)])
+        w.fb.results = [error("pin_required"), error("encoder_capacity")]
+        w.a.select("1", Origin.USER)
+        first = snap().start_failure
+        w.a.select("2", Origin.USER)
+        second = snap().start_failure
+        assert (first.seq, first.unit_id) == (1, "1")
+        assert (second.seq, second.unit_id) == (2, "2")
+
+    def test_the_sequence_moves_the_digest_and_the_version(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("encoder_capacity"), error("encoder_capacity")]
+        w.a.select("1", Origin.USER)
+        v1 = state.store().snapshot().part_versions["outputs"]
+        w.a.select("1", Origin.USER)
+        v2 = state.store().snapshot().part_versions["outputs"]
+        assert v2 > v1
+
+    def test_the_timestamp_is_wall_clock_and_not_in_the_digest(self, w, monkeypatch):
+        monkeypatch.setattr(w.a, "_wall", lambda: 1_700_000_000.0)
+        merge(w, [row(1)])
+        w.fb.results = [error("pin_required")]
+        w.a.select("1", Origin.USER)
+        assert snap().start_failure.at == 1_700_000_000.0
+
+    def test_boot_and_sequence_name_a_failure_for_ever(self, w):
+        merge(w, [row(1)])
+        w.fb.results = [error("pin_required")]
+        w.a.select("1", Origin.USER)
+        first = (state.store().snapshot().boot, snap().start_failure.seq)
+        state.store().reset_for_tests()
+        w.a.reset_for_tests()
+        w.a.start(w.fb)
+        merge(w, [row(1)])
+        w.fb.results = [error("pin_required")]
+        w.a.select("1", Origin.USER)
+        second = (state.store().snapshot().boot, snap().start_failure.seq)
+        assert first != second
+
+    def test_a_success_publishes_no_failure(self, w):
+        merge(w, [row(1)])
+        w.a.select("1", Origin.USER)
+        assert snap().start_failure is None
+
+
+class TestRepublishRequest:
+    def test_an_ok_select_raises_it(self, w):
+        merge(w, [row(1)])
+        runtime.consume_nowplaying_republish()
+        w.a.select("1", Origin.USER)
+        assert runtime.consume_nowplaying_republish() is True
+
+    def test_a_failure_never_raises_it(self, w):
+        merge(w, [row(1), row(2), row(3)])
+        runtime.consume_nowplaying_republish()
+        for code in ("pin_required", "encoder_capacity", "http_error", "request_failed"):
+            w.fb.results = [error(code)]
+            w.a.select("1", Origin.USER)
+        w.fb.results = [error("timeout")]
+        w.a.select("2", Origin.USER)
+        assert runtime.consume_nowplaying_republish() is False
+
+    def test_a_unit_that_goes_from_starting_to_ok_raises_it(self, w):
+        merge(w, [group_row(1)])
+        w.fb.results = [error("timeout")]
+        w.a.select("1", Origin.USER)
+        runtime.consume_nowplaying_republish()
+        merge(w, [group_row(1, "startup", selected=True)])
+        assert runtime.consume_nowplaying_republish() is False
+        merge(w, [group_row(1, "streaming", selected=True)])
+        assert runtime.consume_nowplaying_republish() is True
+
+    def test_a_volume_or_a_deselect_does_not_raise_it(self, w):
+        merge(w, [row(1, selected=True, volume_percent=30)])
+        runtime.consume_nowplaying_republish()
+        w.a.set_volume("1", 50, Origin.USER)
+        w.a.deselect("1", Origin.USER)
+        assert runtime.consume_nowplaying_republish() is False
+
+
+class TestIncludeTv:
+    def tv_rows(self, role="tv_leader", **fields):
+        return [group_row(1, "stopped", group_role=role, include_tv=True if role == "tv_leader" else None, **fields)]
+
+    def test_the_field_is_never_sent_when_the_reader_has_no_value(self, w):
+        merge(w, self.tv_rows())
+        w.a.select("1", Origin.USER, volume=30)
+        assert "include_tv" not in w.fb.updates()[0][1]
+
+    def test_false_is_sent_only_once_the_row_shows_a_tv_leader(self, w):
+        w.a.set_include_tv_reader(lambda uid: False)
+        merge(w, self.tv_rows(role="none"))
+        out = w.a.select("1", Origin.USER, volume=30).outcome.result()[0]
+        assert w.fb.calls == [] and out.pending is True
+        assert snap().unit("1").selected is True and snap().unit("1").availability == "starting"
+        merge(w, self.tv_rows())
+        w.a.select("1", Origin.USER, volume=30)
+        assert w.fb.updates()[0][1]["include_tv"] is False
+
+    def test_true_is_sent_to_a_tv_leader_and_nothing_to_another_row(self, w):
+        w.a.set_include_tv_reader(lambda uid: True)
+        merge(w, self.tv_rows() + [group_row(2, "stopped")])
+        w.a.select("1", Origin.USER)
+        w.a.select("2", Origin.USER)
+        calls = dict(w.fb.updates())
+        assert calls["1"]["include_tv"] is True
+        assert "include_tv" not in calls["2"]
+
+    def test_a_player_without_group_fields_is_never_sent_the_field(self, w):
+        w.a.set_include_tv_reader(lambda uid: False)
+        merge(w, [row(1)])
+        w.a.select("1", Origin.USER)
+        assert "include_tv" not in w.fb.updates()[0][1]
+
+    def test_a_mismatch_on_a_playing_group_is_logged_at_first_sight_and_left(self, w, caplog):
+        w.a.set_include_tv_reader(lambda uid: False)
+        with caplog.at_level(logging.INFO, logger="autostream.outputs"):
+            merge(w, [group_row(1, "streaming", selected=True, group_role="tv_leader", include_tv=True)])
+        assert any("applies at the next start" in r.getMessage() for r in caplog.records)
+        assert w.fb.calls == []
+        assert snap().unit("1").selected is True
+
+
+class TestWaitOutcome:
+    def test_a_finished_write_answers_at_once(self, w):
+        merge(w, [row(1)])
+        applied = w.a.select("1", Origin.USER)
+        assert wait_outcome(applied, 0.0) == (WriteOutcome(ok=True),)
+
+    def test_no_write_has_no_outcome(self, w):
+        merge(w, [row(1, selected=True, volume_percent=10)])
+        w.a.mute_all(Origin.USER)
+        assert wait_outcome(w.a.set_volume("1", 20, Origin.SESSION), 1.0) == ()
+
+    def test_an_unfinished_write_answers_pending_for_each_expected_write(self, w):
+        future = __import__("concurrent.futures").futures.Future()
+        future.expected = 3
+        got = wait_outcome(outputs.Applied(version=1, outcome=future), 0.01)
+        assert got == (WriteOutcome(ok=True, pending=True),) * 3
+
+
+# ---------------------------------------------------------------------------
+# Event source choice
+# ---------------------------------------------------------------------------
+
+class TestEventSource:
+    def make(self, w, monkeypatch, *kinds):
+        made = []
+        sources = iter(kinds)
+
+        def factory(info, base_url, *, poll_interval):
+            kind, connected, path = next(sources)
+            src = FakeSource(kind, connected, path)
+            made.append(src)
+            return src
+
+        w.a._source_factory = factory
+        w.a._events_enabled = True
+        return made
+
+    def test_the_first_iteration_probes_and_creates_the_source(self, w, monkeypatch):
+        made = self.make(w, monkeypatch, ("unix_socket", False, "/run/x.sock"))
+        assert w.fb.channel_calls == 0
+        w.a.step(now=T0)
+        assert w.fb.channel_calls == 1
+        assert made[0].started == 1 and snap().event_source == "unix_socket"
+
+    def test_a_connected_unix_socket_is_not_probed_again(self, w, monkeypatch):
+        made = self.make(w, monkeypatch, ("unix_socket", True, "/run/x.sock"))
+        w.a.step(now=T0)
+        for t in (60, 120, 600):
+            w.a.step(now=T0 + t)
+        assert w.fb.channel_calls == 1
+
+    def test_anything_else_is_probed_every_sixty_seconds(self, w, monkeypatch):
+        made = self.make(w, monkeypatch, ("poll", False, None), ("poll", False, None), ("poll", False, None))
+        w.a.step(now=T0)
+        w.a.step(now=T0 + 30)
+        assert w.fb.channel_calls == 1
+        w.a.step(now=T0 + 60)
+        w.a.step(now=T0 + 119)
+        assert w.fb.channel_calls == 2
+        w.a.step(now=T0 + 120)
+        assert w.fb.channel_calls == 3
+        # the same kind keeps the running source
+        assert made[0].stopped == 0 and made[0].started == 1
+
+    def test_a_change_of_kind_stops_the_old_source_and_starts_the_new(self, w, monkeypatch):
+        made = self.make(w, monkeypatch, ("poll", False, None), ("unix_socket", True, "/run/x.sock"))
+        w.a.step(now=T0)
+        w.a.step(now=T0 + 60)
+        assert made[0].stopped == 1 and made[1].started == 1
+        assert snap().event_source == "unix_socket"
+
+    def test_a_degraded_websocket_is_replaced_by_polling(self, w, monkeypatch):
+        made = self.make(w, monkeypatch, ("websocket", False, None))
+        polls = []
+
+        class Poll(FakeSource):
+            def __init__(self, interval):
+                super().__init__("poll")
+                polls.append(self)
+
+        monkeypatch.setattr(outputs, "PollEventSource", Poll)
+        w.a.step(now=T0)
+        w.a.on_disconnected(DEGRADED)
+        w.a.step(now=T0 + 1)
+        assert made[0].stopped == 1 and polls and polls[0].started == 1
+        assert snap().event_source == "poll"
+
+    def test_a_failed_probe_means_polling(self, w, monkeypatch):
+        seen = []
+        w.a._source_factory = lambda info, base_url, *, poll_interval: (seen.append(info), FakeSource())[1]
+        w.a._events_enabled = True
+        w.fb.event_channel_info = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+        w.a.step(now=T0)
+        assert seen[0].kind == "poll"
+
+    def test_set_backend_asks_for_a_fresh_probe(self, w, monkeypatch):
+        made = self.make(w, monkeypatch, ("unix_socket", True, "/run/a.sock"), ("unix_socket", True, "/run/b.sock"))
+        w.a.step(now=T0)
+        other = FakeBackend(w.a)
+        other.base_url = "http://elsewhere:3689"
+        w.a.set_backend(other)
+        w.a.step(now=T0 + 1)
+        assert other.channel_calls == 1 and made[0].stopped == 1
+        assert w.a.base_url == "http://elsewhere:3689"
+
+    def test_the_sink_methods_only_enqueue(self, w):
+        w.a.on_outputs_changed()
+        w.a.on_connected(ConnectInfo("b9", 1, frozenset({"device_volume", "receiver_command"}), "unix_socket"))
+        w.a.on_disconnected("eof")
+        w.a.on_device_event(DeviceEvent("device_volume", "1", None, "x", "1", 1, 1.0))
+        assert w.fb.reads == 0 and w.fb.calls == []
+        assert w.a._items.qsize() == 4
+
+
+# ---------------------------------------------------------------------------
+# Resetting and the production backend
+# ---------------------------------------------------------------------------
+
+class TestReset:
+    def test_a_clean_reset_costs_nothing(self):
+        a = get_authority()
+        a.reset_for_tests()
+        before = threading.active_count()
+        for _ in range(1000):
+            a.reset_for_tests()
+        assert threading.active_count() == before
+        assert a._touched is False
+
+    def test_a_reset_returns_to_the_default_backend_and_no_units(self, w):
+        merge(w, [row(1, selected=True)])
+        w.a.set_policy(object())
+        w.a.reset_for_tests()
+        assert w.a._units == {} and w.a._policy is None
+        assert isinstance(w.a._backend, PlayerServiceBackend)
+        assert w.a.base_url == "http://localhost:3689"
+
+    def test_no_thread_runs_without_the_fixture(self, w):
+        assert w.a._started is False and w.a._threads == []
+
+
+class TestPlayerServiceBackend:
+    def test_each_method_calls_the_player_service_looked_up_at_call_time(self, monkeypatch):
+        import autostream_player_service as ps
+        seen = []
+        for name in ("list_outputs", "update_output", "set_selected_outputs", "stop_and_disable_all",
+                     "submit_output_pin", "refresh_runtime_state", "get_capabilities", "event_channel_info"):
+            monkeypatch.setattr(ps, name, lambda *a, _n=name, **k: seen.append((_n, a, k)) or "r")
+        b = PlayerServiceBackend("http://p:1")
+        assert b.list_outputs(10.0) == "r"
+        b.update_output("5", volume_percent=7, timeout=3.0)
+        b.set_selected_outputs(["1"], 3.0)
+        b.stop_and_disable_all(3.0)
+        b.submit_output_pin("5", "1234", 3.0)
+        b.refresh_runtime_state(3.0)
+        b.capabilities()
+        b.event_channel_info()
+        assert seen == [
+            ("list_outputs", ("http://p:1",), {"timeout": 10.0}),
+            ("update_output", ("http://p:1", "5"), {"volume_percent": 7, "timeout": 3.0}),
+            ("set_selected_outputs", ("http://p:1", ["1"]), {"timeout": 3.0}),
+            ("stop_and_disable_all", ("http://p:1",), {"timeout": 3.0}),
+            ("submit_output_pin", ("http://p:1", "5", "1234"), {"timeout": 3.0}),
+            ("refresh_runtime_state", ("http://p:1",), {"timeout": 3.0}),
+            ("get_capabilities", ("http://p:1",), {}),
+            ("event_channel_info", ("http://p:1",), {}),
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Reconcile is built but off
+# ---------------------------------------------------------------------------
+
+class TestWhileReconcileIsOff:
+    def test_a_change_made_on_the_player_is_followed(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40), row(2)])
+        w.t[0] += 10
+        merge(w, [row(1, selected=True, volume_percent=55), row(2, selected=True, volume_percent=20)])
+        p = snap()
+        assert p.unit("1").volume == 55 and p.unit("2").selected and p.unit("2").volume == 20
+        assert p.unit("2").cause is Origin.BACKEND
+        assert w.fb.calls == []
+
+    def test_no_command_is_issued_by_a_step(self, w):
+        merge(w, [group_row(1, "stopped", selected=False)])
+        w.a.select("1", Origin.USER)
+        w.fb.calls.clear()
+        for i in range(10):
+            w.a.step(now=T0 + 5 * i)
+        assert w.fb.calls == []
+
+    def test_a_level_written_a_moment_ago_is_not_overwritten_by_a_stale_read(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40)])
+        w.a.set_volume("1", 70, Origin.USER)
+        merge(w, [row(1, selected=True, volume_percent=40)])      # a read begun before the write
+        assert snap().unit("1").volume == 70
+
+
+# ---------------------------------------------------------------------------
+# Real threads
+# ---------------------------------------------------------------------------
+
+def wait_for(predicate, timeout=5.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
+
+
+@pytest.fixture
+def live(started_authority):
+    a = started_authority
+    fb = FakeBackend(a)
+    fb.rows = [row(1, selected=True, volume_percent=40), row(2)]
+    a._source_factory = lambda info, base_url, *, poll_interval: FakeSource()
+    a.start(fb)
+    assert wait_for(lambda: snap().connected), "the worker never read the player"
+    fb.calls.clear()
+    return SimpleNamespace(a=a, fb=fb)
+
+
+class TestRealThreads:
+    def test_the_worker_and_the_apply_thread_are_running(self, live):
+        names = {t.name for t in threading.enumerate()}
+        assert {"outputs-authority", "outputs-apply"} <= names
+
+    def test_a_wait_that_expires_replies_pending_and_the_real_outcome_arrives_later(self, live):
+        live.fb.gate = threading.Event()
+        live.fb.results = [error("pin_required", "needs pin")]
+        applied = live.a.select("2", Origin.USER, volume=30)
+        assert live.fb.entered.wait(5)
+        t0 = time.monotonic()
+        got = wait_outcome(applied, 0.05)
+        assert time.monotonic() - t0 < 2.0
+        assert got == (WriteOutcome(ok=True, pending=True),)
+        assert not applied.outcome.done()
+        live.fb.gate.set()
+        real = applied.outcome.result(5)
+        assert real[0].ok is False and real[0].error_code == "pin_required"
+        assert snap().unit("2").availability == "password"
+
+    def test_volume_writes_queued_behind_a_stalled_write_coalesce_to_the_last_level(self, live):
+        live.fb.gate = threading.Event()
+        first = live.a.set_volume("1", 10, Origin.USER)
+        assert live.fb.entered.wait(5)
+        later = [live.a.set_volume("1", 11 + i, Origin.USER) for i in range(10)]
+        live.fb.gate.set()
+        for applied in [first] + later:
+            assert applied.outcome.result(5)[0].ok is True
+        sent = [f["volume_percent"] for uid, f in live.fb.updates() if uid == "1"]
+        assert sent == [10, 20]
+
+    def test_each_unit_keeps_its_own_queued_write(self, live):
+        live.fb.rows = [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=40)]
+        live.a.on_outputs_changed()
+        assert wait_for(lambda: snap().unit("2").selected)
+        live.fb.calls.clear()
+        live.fb.gate = threading.Event()
+        first = live.a.set_volume("1", 10, Origin.USER)
+        assert live.fb.entered.wait(5)
+        a1 = live.a.set_volume("1", 11, Origin.USER)
+        a2 = live.a.set_volume("2", 12, Origin.USER)
+        a3 = live.a.set_volume("2", 13, Origin.USER)
+        live.fb.gate.set()
+        for applied in (first, a1, a2, a3):
+            applied.outcome.result(5)
+        sent = sorted((uid, f["volume_percent"]) for uid, f in live.fb.updates())
+        assert sent == [("1", 10), ("1", 11), ("2", 13)]
+
+    def test_a_late_outcome_cannot_undo_a_newer_request(self, live):
+        live.fb.gate = threading.Event()
+        live.fb.results = [error("pin_required"), ActionResult(ok=True), ActionResult(ok=True)]
+        first = live.a.select("2", Origin.USER, volume=30)
+        assert live.fb.entered.wait(5)
+        gone = live.a.deselect("2", Origin.USER)
+        again = live.a.select("2", Origin.USER, volume=30)
+        live.fb.gate.set()
+        assert first.outcome.result(5)[0].error_code == "pin_required"
+        gone.outcome.result(5)
+        assert again.outcome.result(5)[0].ok is True
+        assert snap().unit("2").selected is True
+        # the late refusal is still shown to the user
+        assert snap().start_failure.reason == "pin_required"
+
+    def test_stop_returns_within_its_timeout_while_a_write_is_in_flight(self, live):
+        live.fb.gate = threading.Event()
+        applied = live.a.select("2", Origin.USER, volume=30)
+        assert live.fb.entered.wait(5)
+        queued = live.a.set_volume("1", 5, Origin.USER)
+        t0 = time.monotonic()
+        live.a.stop(timeout=0.5)
+        assert time.monotonic() - t0 < 2.0
+        # a write still queued is answered, not left waiting for ever
+        assert queued.outcome.result(2)[0].ok is False
+        live.fb.gate.set()
+        assert wait_for(lambda: not any(
+            t.name in ("outputs-authority", "outputs-apply") and t.is_alive() for t in threading.enumerate()))
+
+    def test_a_change_pushed_by_the_source_is_read_and_merged(self, live):
+        live.fb.rows = [row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=15)]
+        live.a.on_outputs_changed()
+        assert wait_for(lambda: snap().unit("2").selected)
+        assert snap().unit("2").volume == 15

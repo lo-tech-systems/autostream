@@ -44,6 +44,21 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
+# The output authority never starts threads under test
+# ---------------------------------------------------------------------------
+# Set once, when this module is imported: no fixture, so no per-test cost. A
+# test that runs the process bootstrap gets an authority that writes inline;
+# the started_authority fixture turns threads on for one test.
+
+_CORE_DIR = str(Path(__file__).resolve().parent.parent / "core")
+if _CORE_DIR not in sys.path:
+    sys.path.insert(0, _CORE_DIR)
+import autostream_state.outputs as _outputs_module  # noqa: E402
+
+_outputs_module._threads_allowed = False
+
+
+# ---------------------------------------------------------------------------
 # Helpers for loading extensionless supervisor scripts
 # ---------------------------------------------------------------------------
 
@@ -370,6 +385,7 @@ def _reset_state_store():
     intents_table = _mod("autostream_intents.table")
     if intents_table is not None:
         intents_table.reset_for_tests()
+    _outputs_module.get_authority().reset_for_tests()
     yield
     leaked = autostream_state.store().take_leaked()
     if leaked:
@@ -381,16 +397,19 @@ def _reset_state_store():
 
 
 @pytest.fixture
+def started_authority(monkeypatch):
+    """The output authority with its threads running, for the one test that
+    asks. The threads are stopped afterwards, and the authority reset by the
+    store fixture."""
+    monkeypatch.setattr(_outputs_module, "_threads_allowed", True)
+    authority = _outputs_module.get_authority()
+    yield authority
+    authority.stop(timeout=5.0)
+
+
+@pytest.fixture
 def fake_store():
     """Put parts into the process state store without their owners."""
     from fake_store import FakeStore
     return FakeStore()
 
-
-@pytest.fixture(autouse=True)
-def _reset_session_requests():
-    """Forget a pending now-playing republish request after each test."""
-    yield
-    m = _mod("autostream_session")
-    if m is not None:
-        m.reset_for_tests()

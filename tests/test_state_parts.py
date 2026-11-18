@@ -317,3 +317,99 @@ class TestActiveTrack:
     def test_nothing_sourcing_without_a_service_is_disabled(self):
         s = self.build(entries=[entry(1), entry(2)], service=False)
         assert state.active_track(s) == disabled_snapshot()
+
+
+class TestOutputsPart:
+    @staticmethod
+    def unit(id="a", **kw):
+        from autostream_players import OutputInfo
+        base = dict(
+            id=id, name="Speaker " + id, selected=False, volume=0, muted=False,
+            availability="ok", cause=state.Origin.ADOPTED,
+            reported=OutputInfo(id=id, name="Speaker " + id),
+        )
+        base.update(kw)
+        return state.OutputUnitView(**base)
+
+    def test_the_defaults_describe_a_player_that_has_not_answered(self):
+        p = state.OutputsPart()
+        assert p.units == () and p.connected is False and p.muted_all is False
+        assert p.silence_chosen is False and p.start_failure is None
+        assert p.event_source == "poll" and p.backend_boot == ""
+
+    def test_lookups_and_the_desired_selection(self):
+        a, b = self.unit("a", selected=True), self.unit("b")
+        p = state.OutputsPart(units=(a, b))
+        assert p.unit("b") is b and p.unit("zz") is None
+        assert p.unit_by_name("Speaker a") is a and p.unit_by_name("nope") is None
+        assert p.selected_units() == (a,)
+
+    def test_a_unit_waiting_for_a_pin_shows_as_off(self):
+        assert self.unit(selected=True).shown_selected is True
+        assert self.unit(selected=True, availability="password").shown_selected is False
+        assert self.unit(selected=False).shown_selected is False
+
+    def test_the_digest_moves_on_what_a_client_shows(self):
+        base = state.OutputsPart(units=(self.unit("a"),), connected=True)
+        d = DIGESTS["outputs"]
+        assert d(base) == d(state.OutputsPart(units=(self.unit("a"),), connected=True))
+        for changed in (
+            state.OutputsPart(units=(self.unit("a", selected=True),), connected=True),
+            state.OutputsPart(units=(self.unit("a", volume=5),), connected=True),
+            state.OutputsPart(units=(self.unit("a", muted=True),), connected=True),
+            state.OutputsPart(units=(self.unit("a", availability="starting"),), connected=True),
+            state.OutputsPart(units=(self.unit("a", name="Other"),), connected=True),
+            state.OutputsPart(units=(self.unit("a"),), connected=False),
+            state.OutputsPart(units=(self.unit("a"),), connected=True, muted_all=True),
+            state.OutputsPart(units=(self.unit("a"),), connected=True, silence_chosen=True),
+        ):
+            assert d(changed) != d(base)
+
+    def test_the_digest_follows_the_pin_fields_and_the_failure_sequence(self):
+        from autostream_players import OutputInfo
+        d = DIGESTS["outputs"]
+        base = state.OutputsPart(units=(self.unit("a"),))
+        pin = self.unit("a", reported=OutputInfo(id="a", name="Speaker a", pin_pending=True))
+        assert d(state.OutputsPart(units=(pin,))) != d(base)
+        one = state.StartFailure(seq=1, unit_id="a", name="n", reason="refused", at=1.0)
+        later = dataclasses.replace(one, at=99.0)
+        two = dataclasses.replace(one, seq=2)
+        with_one = dataclasses.replace(base, start_failure=one)
+        assert d(with_one) != d(base)
+        assert d(with_one) == d(dataclasses.replace(base, start_failure=later))
+        assert d(with_one) != d(dataclasses.replace(base, start_failure=two))
+
+    def test_the_digest_ignores_what_no_list_shows(self):
+        from autostream_players import OutputInfo
+        d = DIGESTS["outputs"]
+        a = self.unit("a", reported=OutputInfo(id="a", name="Speaker a", offset_ms=10))
+        b = self.unit("a", reported=OutputInfo(id="a", name="Speaker a", offset_ms=40, current_mode="airplay1"))
+        c = self.unit("a", cause=state.Origin.USER)
+        assert d(state.OutputsPart(units=(a,), backend_boot="x", event_source="poll")) == d(
+            state.OutputsPart(units=(b,), backend_boot="y", event_source="unix_socket"))
+        assert d(state.OutputsPart(units=(a,))) == d(state.OutputsPart(units=(c,)))
+
+    def test_the_hint_digests_split_list_volume_and_mute(self):
+        base = state.OutputsPart(units=(self.unit("a", selected=True, volume=20),), connected=True)
+        louder = dataclasses.replace(base, units=(self.unit("a", selected=True, volume=30),))
+        muted = dataclasses.replace(base, units=(self.unit("a", selected=True, volume=20, muted=True),),
+                                    muted_all=True)
+        off = dataclasses.replace(base, units=(self.unit("a", selected=False, volume=20),))
+        assert state.outputs_volume_digest(louder) != state.outputs_volume_digest(base)
+        assert state.outputs_list_digest(louder) == state.outputs_list_digest(base)
+        assert state.outputs_mute_digest(louder) == state.outputs_mute_digest(base)
+        assert state.outputs_mute_digest(muted) != state.outputs_mute_digest(base)
+        assert state.outputs_list_digest(muted) == state.outputs_list_digest(base)
+        assert state.outputs_list_digest(off) != state.outputs_list_digest(base)
+        assert state.outputs_volume_digest(off) == state.outputs_volume_digest(base)
+
+    def test_a_part_with_a_reported_row_is_frozen_and_publishable(self):
+        from autostream_players import OutputInfo, SpeakersSummary
+        row = OutputInfo(
+            id="a", name="A", extra=(("k", [1, 2]),),
+            speakers=SpeakersSummary(ids=("x", "y"), count=2, state="streaming"),
+        )
+        part = state.OutputsPart(units=(self.unit("a", reported=row),))
+        frozen = deep_freeze(part)
+        assert frozen.units[0].reported.extra == (("k", (1, 2)),)
+        assert hash(frozen.units[0].reported.speakers) == hash(row.speakers)

@@ -23,23 +23,11 @@ import threading
 import traceback
 import weakref
 from dataclasses import dataclass
-from enum import Enum
 from typing import Callable, Iterable, Optional
 
 from .freeze import FrozenDict, deep_freeze
+from .origin import Origin
 from .parts import DIGESTS, PART_NAMES, Snapshot
-
-
-class Origin(str, Enum):
-    """Who caused a change."""
-
-    USER = "user"
-    SYSTEM = "system"
-    SESSION = "session"
-    POLICY = "policy"
-    DEVICE = "device"
-    ADOPTED = "adopted"
-    BACKEND = "backend"
 
 
 @dataclass(frozen=True)

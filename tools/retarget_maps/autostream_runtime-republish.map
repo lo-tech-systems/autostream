@@ -1,0 +1,3 @@
+# The now-playing republish request moved from the session module to the runtime module.
+autostream_session.request_nowplaying_republish -> autostream_runtime.request_nowplaying_republish  alias=runtime
+autostream_session.consume_nowplaying_republish -> autostream_runtime.consume_nowplaying_republish  alias=runtime

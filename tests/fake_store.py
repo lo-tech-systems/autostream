@@ -20,6 +20,7 @@ if _CORE not in sys.path:
 
 import autostream_state as state
 from autostream_playback_stats import PlaybackSnapshot
+from autostream_players import OutputInfo
 from autostream_state import FrozenDict
 
 _LEVEL_DEFAULTS = {
@@ -100,6 +101,25 @@ class FakeStore:
 
     def settings(self, generation: int):
         return self._put("settings", state.SettingsPart(generation))
+
+    def outputs(self, rows, *, connected: bool = True, boot: str = "b0"):
+        """Adopt *rows* (OutputInfo, or dicts of its fields) as a successful
+        read, through the output authority's own merge, so the authority and
+        the part agree."""
+        from autostream_state.outputs import get_authority
+        infos = [r if isinstance(r, OutputInfo) else OutputInfo(**r) for r in rows]
+        get_authority().merge_for_tests(infos, connected=connected, boot=boot)
+        return self.snapshot
+
+    def outputs_unreachable(self):
+        """The player does not answer: three failed reads."""
+        from autostream_state.outputs import get_authority
+        get_authority().mark_unreachable_for_tests()
+        return self.snapshot
+
+    @staticmethod
+    def output_row(id: str, name: str, **fields) -> OutputInfo:
+        return OutputInfo(id=id, name=name, **fields)
 
 
 def fake_session(value: dict):

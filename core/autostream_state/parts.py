@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 from autostream_playback_stats import PlaybackSnapshot
+from autostream_players import OutputInfo
 from track_id.models import (
     STATE_ANALYSING,
     STATE_IDENTIFIED,
@@ -26,6 +27,7 @@ from track_id.models import (
 )
 
 from .freeze import FrozenDict, thaw
+from .origin import Origin
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +152,65 @@ class SettingsPart:
     generation: int = 0
 
 
+@dataclass(frozen=True)
+class StartFailure:
+    """The latest speaker start that failed, for the "could not start" notice."""
+
+    seq: int                                # starts at 1 per process, +1 per failure; a client shows each seq once
+    unit_id: str
+    name: str                               # display name at the time of the failure
+    reason: str                             # "pin_required" | "encoder_capacity" | "refused" | "failed" | "timed_out"
+    at: float                               # wall clock; not in the digest
+    # With the store's boot id, (boot, seq) names one failure for ever: a
+    # client that keeps the last seq it showed shows nothing twice, including
+    # across its own reloads, and resets on a new boot.
+
+
+@dataclass(frozen=True)
+class OutputUnitView:
+    id: str                                 # the visible row id (the Apple TV's id for a TV group)
+    name: str
+    selected: bool                          # desired
+    volume: int                             # intended level: remembered level while muted, else desired volume
+    muted: bool
+    availability: str                       # "ok" | "starting" | "failed" | "password" | "gone"
+    cause: Origin                           # who last changed desired
+    reported: Optional[OutputInfo]          # the last row; None while the row is away after a boot change
+
+    @property
+    def shown_selected(self) -> bool:
+        """What lists show as on: desired, except that a unit waiting for a
+        PIN shows as off with its PIN offer, as the player reports it."""
+        return self.selected and self.availability != "password"
+
+
+@dataclass(frozen=True)
+class OutputsPart:
+    units: tuple[OutputUnitView, ...] = ()  # backend row order
+    connected: bool = False                 # reads succeed (or a start is pending)
+    backend_boot: str = ""                  # the player's boot id, or "epoch:<n>" when it has none
+    event_source: str = "poll"
+    muted_all: bool = False                 # the appliance-level mute shown by dials and Home
+    silence_chosen: bool = False            # per session: the user turned every speaker off
+    start_failure: Optional[StartFailure] = None
+
+    def unit(self, unit_id: str) -> Optional[OutputUnitView]:
+        for u in self.units:
+            if u.id == unit_id:
+                return u
+        return None
+
+    def unit_by_name(self, name: str) -> Optional[OutputUnitView]:
+        for u in self.units:
+            if u.name == name:
+                return u
+        return None
+
+    def selected_units(self) -> tuple[OutputUnitView, ...]:
+        """The units that are desired selected."""
+        return tuple(u for u in self.units if u.selected)
+
+
 def empty_playback_snapshot() -> PlaybackSnapshot:
     return PlaybackSnapshot(
         inputs=FrozenDict(),
@@ -180,10 +241,12 @@ class Snapshot:
     playback: PlaybackSnapshot = field(default_factory=empty_playback_snapshot)
     health: HealthPart = field(default_factory=HealthPart)
     settings: SettingsPart = field(default_factory=SettingsPart)
+    outputs: OutputsPart = field(default_factory=OutputsPart)
 
 
 PART_NAMES = (
     "session", "repeat", "track", "inputs", "monitor", "playback", "health", "settings",
+    "outputs",
 )
 
 
@@ -284,6 +347,42 @@ def _settings_digest(p: SettingsPart) -> int:
     return p.generation
 
 
+def _unit_pin_fields(u: OutputUnitView) -> tuple:
+    r = u.reported
+    if r is None:
+        return (False, False, False)
+    return (r.needs_auth_key, r.requires_auth, r.pin_pending)
+
+
+def _outputs_digest(p: OutputsPart) -> tuple:
+    return (
+        tuple(
+            (u.id, u.name, u.shown_selected, u.volume, u.muted, u.availability,
+             _unit_pin_fields(u), u.reported.type if u.reported is not None else "")
+            for u in p.units
+        ),
+        p.connected, p.muted_all, p.silence_chosen,
+        p.start_failure.seq if p.start_failure is not None else 0,
+    )
+
+
+def outputs_list_digest(p: OutputsPart) -> tuple:
+    """What a speaker list shows: each unit's name, whether it is on, whether
+    it is starting or failed, its PIN fields, and whether the player answers."""
+    return (
+        tuple((u.id, u.name, u.shown_selected, u.availability, _unit_pin_fields(u)) for u in p.units),
+        p.connected,
+    )
+
+
+def outputs_volume_digest(p: OutputsPart) -> tuple:
+    return tuple((u.id, u.volume) for u in p.units)
+
+
+def outputs_mute_digest(p: OutputsPart) -> tuple:
+    return (p.muted_all, tuple((u.id, u.muted) for u in p.units))
+
+
 DIGESTS: dict[str, Callable] = {
     "session": _session_digest,
     "repeat": _repeat_part_digest,
@@ -293,6 +392,7 @@ DIGESTS: dict[str, Callable] = {
     "playback": _playback_digest,
     "health": _health_digest,
     "settings": _settings_digest,
+    "outputs": _outputs_digest,
 }
 
 

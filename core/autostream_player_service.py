@@ -16,6 +16,7 @@ from autostream_players import (
     BACKEND_OWNTONE,
     BackendCapabilities,
     BackendStatus,
+    EventChannelInfo,
     GetOutputResult,
     ListOutputsResult,
     OUTPUT_MODE_AIRPLAY1,
@@ -1524,6 +1525,10 @@ def get_status(base_url: str, *, timeout: float = 3.0) -> BackendStatus:
 
 def get_capabilities(base_url: str, *, timeout: float = 3.0) -> BackendCapabilities:
     return resolve_backend(base_url, timeout=timeout).backend.get_capabilities()
+
+
+def event_channel_info(base_url: str, *, timeout: float = 3.0) -> EventChannelInfo:
+    return resolve_backend(base_url, timeout=timeout).backend.event_channel_info()
 
 
 def supports_live_offset(base_url: str, *, timeout: float = 3.0) -> bool:

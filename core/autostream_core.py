@@ -36,6 +36,7 @@ import autostream_repeat
 import autostream_runtime as runtime
 import autostream_session
 import autostream_state
+from autostream_state.outputs import PlayerServiceBackend, get_authority
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
     INPUT_TYPE_DEFAULT,
@@ -111,7 +112,7 @@ from autostream_sysutils import (
 # that folding it into a group below would blur its meaning):
 #   (_monitors_lock and _track_id_request_gate are in autostream_runtime;
 #    the Avahi "playing" announcement lock is in autostream_announce)
-#   (the now-playing republish-request lock is in autostream_session)
+#   (the now-playing republish-request lock is in autostream_runtime)
 #   (the repeat-block overlay lock is in autostream_repeat)
 #
 # "Output-arbitration state" group -- both read together by the
@@ -716,7 +717,7 @@ def update_live_input_type(
         target._current_nowplaying = replace(
             target._default_nowplaying_metadata(), artwork=cur.artwork
         )
-    autostream_session.request_nowplaying_republish()
+    runtime.request_nowplaying_republish()
     _publish_inputs()
 
     return _push_input_config_with_retry(target, socket_path=socket_path)
@@ -914,7 +915,7 @@ def _session_nowplaying_start(monitor: Optional["AudioMonitor"]) -> None:
 def _republish_current_nowplaying(monitor: Optional["AudioMonitor"], session_active: bool) -> None:
     """Re-send the active session's current now-playing bundle mid-session.
 
-    Consumed-flag counterpart of autostream_session.request_nowplaying_republish():
+    Consumed-flag counterpart of runtime.request_nowplaying_republish():
     fired when a newly enabled output (or a freshly restarted backend) knows
     only the queue defaults. artwork is deliberately None -- publish_refresh()'s
     "no news" value -- so the publisher re-sends whatever artwork it
@@ -1617,7 +1618,7 @@ class _SelfHeal:
             # loss: the backend's queue holds only its startup defaults, so
             # the on-screen now-playing would show those until the next
             # natural push. Have the poll loop re-send the current bundle.
-            autostream_session.request_nowplaying_republish()
+            runtime.request_nowplaying_republish()
             return
 
         monitor._owntone_recovery_log.fail(now)
@@ -4258,6 +4259,13 @@ class _BootstrapResult:
     switch_silence_seconds: float
 
 
+def _start_output_authority(cfg) -> None:
+    """Start the output authority on the player named in the configuration.
+    Only starts its threads: the first read and the choice of event source
+    are the authority's own, so the web server is never held up by the player."""
+    get_authority().start(PlayerServiceBackend(cfg.owntone.base_url))
+
+
 def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     """Run-once process bootstrap: settings store, signal handlers, logging,
     startup log-level policy, static-facts audit, playback-tracker init,
@@ -4298,6 +4306,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     )
 
     autostream_dial_push.install_state_hints(autostream_state.store())
+    _start_output_authority(cfg)
 
     # Optionally start the web UI.  Let any startup failure propagate so the
     # process exits nonzero and systemd can restart it.
@@ -4528,6 +4537,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         monitors = startup.monitors
         if startup.abort:
             return
+        if cfg.owntone.base_url != get_authority().base_url:
+            get_authority().set_backend(PlayerServiceBackend(cfg.owntone.base_url))
 
         if runtime.stop_flag.is_set() or monitors is None:
             client.close()
@@ -4793,9 +4804,9 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 )
                 # A newly enabled output or a just-recovered backend has
                 # requested the current now-playing bundle be re-sent (see
-                # autostream_session.request_nowplaying_republish()); consume
+                # runtime.request_nowplaying_republish()); consume
                 # at most one request per cycle.
-                if autostream_session.consume_nowplaying_republish():
+                if runtime.consume_nowplaying_republish():
                     _republish_current_nowplaying(
                         session_new_monitor, session_source is not None,
                     )
@@ -4917,6 +4928,8 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         if not _reloading:
             break
         # _reloading: continue outer loop → startup phase runs again with fresh config
+
+    get_authority().stop()
 
     # Final flush: persist any pending in-memory changes before process exit.
     # Also covers the case where the coordinator loop was never entered (stop_flag

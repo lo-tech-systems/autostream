@@ -901,12 +901,12 @@ class TestUpdateLiveInputType:
 
     def test_swaps_a_default_bundle_and_requests_republish(self):
         mon = _make_monitor(input_index=0)
-        session.consume_nowplaying_republish()
+        runtime.consume_nowplaying_republish()
         mon._current_nowplaying = mon._default_nowplaying_metadata()
         with patch.object(monitor_client, "_connected_monitor", _fake_connected(self._acking_client())):
             core.update_live_input_type(0, "cd", -60.0)
         assert mon._current_nowplaying.title == "CD"
-        assert session.consume_nowplaying_republish() is True
+        assert runtime.consume_nowplaying_republish() is True
 
     def test_invalid_threshold_returns_false_and_changes_nothing(self):
         mon = _make_monitor(input_index=0, silence_threshold_dbfs=-50.0)

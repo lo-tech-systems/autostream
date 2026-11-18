@@ -15,6 +15,7 @@ if _CORE not in sys.path:
 
 import autostream_session as session
 import autostream_state as state
+import autostream_runtime as runtime
 
 
 def snap():
@@ -77,14 +78,14 @@ def test_the_next_cycle_overwrites_the_note():
 
 
 def test_the_republish_request_is_consumed_once():
-    assert session.consume_nowplaying_republish() is False
-    session.request_nowplaying_republish()
-    session.request_nowplaying_republish()
-    assert session.consume_nowplaying_republish() is True
-    assert session.consume_nowplaying_republish() is False
+    assert runtime.consume_nowplaying_republish() is False
+    runtime.request_nowplaying_republish()
+    runtime.request_nowplaying_republish()
+    assert runtime.consume_nowplaying_republish() is True
+    assert runtime.consume_nowplaying_republish() is False
 
 
 def test_reset_for_tests_clears_the_republish_request():
-    session.request_nowplaying_republish()
-    session.reset_for_tests()
-    assert session.consume_nowplaying_republish() is False
+    runtime.request_nowplaying_republish()
+    runtime.reset_for_tests()
+    assert runtime.consume_nowplaying_republish() is False

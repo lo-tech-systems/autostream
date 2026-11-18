@@ -14,6 +14,9 @@ Process-wide signals (not tied to any store):
   reload_flag  -- configuration reload request; the coordinator picks it up
                   within one poll interval, tears down and re-initialises its
                   monitors, and clears it.
+
+and the now-playing republish request: set when a speaker has started (or the
+backend has been brought back), consumed once by the coordinator.
 """
 
 from __future__ import annotations
@@ -117,6 +120,34 @@ def get_task_pool() -> "TaskPool":
     return _task_pool
 
 
+# ── Now-playing republish request ────────────────────────────────────────────
+# Set when a speaker has started (the output authority raises it) or the
+# player has just been brought back: in both cases the receiver-side backend
+# only knows the bare queue defaults until the next natural metadata push, so
+# the coordinator poll loop consumes this flag once per request and re-sends
+# the active session's current now-playing bundle. The lock is a leaf: it
+# guards a bool store and nothing is called under it.
+
+_republish_lock = threading.Lock()
+_republish_pending: bool = False
+
+
+def request_nowplaying_republish() -> None:
+    """Ask the coordinator to re-send the current now-playing metadata."""
+    global _republish_pending
+    with _republish_lock:
+        _republish_pending = True
+
+
+def consume_nowplaying_republish() -> bool:
+    """Return-and-clear the pending republish request (coordinator loop)."""
+    global _republish_pending
+    with _republish_lock:
+        pending = _republish_pending
+        _republish_pending = False
+        return pending
+
+
 class RecoveryLog:
     """Emits one WARNING when a failing condition clears, so an operator
     reading WARN-level logs sees the recovery, not just the failure stream."""
@@ -175,9 +206,10 @@ def monitors_snapshot() -> list:
 
 def reset_for_tests() -> None:
     """Return the process-wide state to its start-up values: no monitors, no
-    playback tracker, no identification service, a free admission gate and
-    both events clear.  Called by an autouse fixture after every test."""
-    global _playback_tracker, _track_id_service, _track_id_request_gate
+    playback tracker, no identification service, a free admission gate, no
+    republish request and both events clear.  Called by an autouse fixture after every test."""
+    global _playback_tracker, _track_id_service, _track_id_request_gate, _republish_pending
+    _republish_pending = False
     with _monitors_lock:
         all_monitors.clear()
     _playback_tracker = None
