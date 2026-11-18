@@ -454,6 +454,11 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     # has adopted nothing.
     state.store().reset_for_tests(boot=FIXED_BOOT)
     get_authority().reset_for_tests()
+    # The Auto-Start set reaches the authority as it does at start-up.
+    owntone = cfg.owntone
+    get_authority().set_default_members(
+        [(m.id, m.name, m.volume) for m in owntone.default_outputs],
+        owntone.volume_percent)
 
     def get_setting(base_url, key, timeout=None):
         if scenario.setting_raises:
