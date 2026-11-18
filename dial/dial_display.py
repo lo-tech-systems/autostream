@@ -1743,31 +1743,35 @@ class DialDisplay:
             return
         self._backend_factory = self._backend_factory_builder(screen_type)
 
+    def _drop_backend_locked(self, during: str) -> None:
+        """Close the open backend (a close that raises is logged, with
+        *during* ("" or " during swap") in the message) and forget the
+        panel: the backend, its name and screen type, and the cached frame
+        and its source identity, which were composed at the old panel's
+        dimensions and must not survive into a degraded or reopened state.
+        Caller holds self._lock."""
+        if self._backend_open and self._backend is not None:
+            try:
+                self._backend.close()
+            except Exception as e:
+                logging.debug("dial display: backend close raised%s: %s", during, e)
+        self._backend = None
+        self._backend_open = False
+        self._backend_loaded = False
+        self._backend_name = "noop"
+        self._active_screen_type = ""
+        self._showing = "noop"
+        self._source_artwork_key = ""
+        self._current_rendered_image = None
+        self._last_frame = None
+
     def _swap_backend_locked(self) -> None:
         """Close the currently open backend and reopen via the (already
         rebuilt) factory — used when screen_type changes while fitted and
         open. If the new backend fails to open, _enable_locked()'s existing
         degrade-to-noop path holds and runtime reflects it.
         """
-        if self._backend_open and self._backend is not None:
-            try:
-                self._backend.close()
-            except Exception as e:
-                logging.debug("dial display: backend close raised during swap: %s", e)
-        self._backend = None
-        self._backend_open = False
-        self._backend_loaded = False
-        self._backend_name = "noop"
-        self._active_screen_type = ""
-        # Drop the cached frame and its source identity before reopening: it
-        # was composed at the OLD panel's dimensions. A successful
-        # _enable_locked() renders the logo (which clears these anyway), but
-        # on a failed open the stale frame and URL would otherwise survive
-        # into the degraded state and be reused by the next poll.
-        self._showing = "noop"
-        self._source_artwork_key = ""
-        self._current_rendered_image = None
-        self._last_frame = None
+        self._drop_backend_locked(" during swap")
         # A reopen after a screen_type swap starts on the main screen, not
         # wherever the list happened to be — the old panel's geometry is
         # gone anyway.
@@ -1775,20 +1779,7 @@ class DialDisplay:
         self._enable_locked()
 
     def _disable_locked(self) -> None:
-        if self._backend_open and self._backend is not None:
-            try:
-                self._backend.close()
-            except Exception as e:
-                logging.debug("dial display: backend close raised: %s", e)
-        self._backend = None
-        self._backend_open = False
-        self._backend_loaded = False
-        self._backend_name = "noop"
-        self._active_screen_type = ""
-        self._showing = "noop"
-        self._source_artwork_key = ""
-        self._current_rendered_image = None
-        self._last_frame = None
+        self._drop_backend_locked("")
         self._idle_started_at = None
         self._display_sleeping = False
         # A later re-enable starts on the main screen.
