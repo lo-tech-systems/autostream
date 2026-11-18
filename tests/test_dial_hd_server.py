@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 import dial_http_common
 import dial_hd_server as hds
+import dial_hd_static as hst
 import hd_scenarios as hs
 from hd_fake_core import FakeCore
 from dial_config import DialDisplayConfig
@@ -261,22 +262,22 @@ class TestStaticFiles:
         assert request(server, "GET", "/?x=1")[1] == PAGE
 
     def test_the_shipped_page_files_exist_and_the_index_loads_only_static_files(self):
-        root = hds.HD_STATIC_ROOT
+        root = hst.HD_STATIC_ROOT
         index = (root / "index.html").read_text(encoding="utf-8")
-        for name in hds.STATIC_FILES:
+        for name in hst.STATIC_FILES:
             if name not in ("theme.css", "logo.png") and not name.startswith("shared/"):
                 assert (root / name).is_file()
         for name in ("hd.css", "hd.js"):
             assert f"/static/{name}" in index
 
     def test_every_module_the_page_imports_is_a_served_static_file(self):
-        root = hds.HD_STATIC_ROOT
+        root = hst.HD_STATIC_ROOT
         source = "\n".join(p.read_text(encoding="utf-8") for p in sorted(root.glob("hd*.js")))
         imported = re.findall(r'from "\./([a-z-]+\.js)"', source)
         imported += re.findall(r'from "/static/(shared/[a-z_]+\.js)"', source)
         assert imported
         for name in imported:
-            assert name in hds.STATIC_FILES
+            assert name in hst.STATIC_FILES
 
 
 # ---- request checks --------------------------------------------------------
@@ -778,8 +779,8 @@ class TestBackdrop:
         assert (response.status, error_of(data)) == (404, "no_backdrop")
 
     def test_a_missing_logo_file_is_404(self, make_server, monkeypatch, tmp_path):
-        monkeypatch.setattr(hds, "LOGO_PATH", tmp_path / "none.png")
-        monkeypatch.setattr(hds, "LOGO_FALLBACK_PATH", tmp_path / "none2.png")
+        monkeypatch.setattr(hst, "LOGO_PATH", tmp_path / "none.png")
+        monkeypatch.setattr(hst, "LOGO_FALLBACK_PATH", tmp_path / "none2.png")
         server = make_server(backdrops=BackdropStore(Path("x"), render_logo=_Render()))
         response, data = request(server, "GET", "/api/v1/logo/backdrop")
         assert (response.status, error_of(data)) == (404, "not_found")
@@ -801,8 +802,8 @@ class TestBackdrop:
 
 
 def test_sniff_image_type_table():
-    assert hds.sniff_image_type(JPEG) == "image/jpeg"
-    assert hds.sniff_image_type(b"") == "application/octet-stream"
+    assert hst.sniff_image_type(JPEG) == "image/jpeg"
+    assert hst.sniff_image_type(b"") == "application/octet-stream"
 
 
 def test_the_reason_table_matches_the_core_refusals():
@@ -1082,3 +1083,10 @@ class TestIntentsTrackRequests:
         assert response.status == 200
         assert rig.core.snapshot().outputs_request.kind == "output_pin"
         assert client.sent()[0][3] == {"pin_capable": True}
+
+
+def test_static_path_resolves_only_table_names(tmp_path):
+    assert hst.static_path(tmp_path, "hd.css") == tmp_path / "hd.css"
+    assert hst.static_path(tmp_path, "index.html") == tmp_path / "index.html"
+    for name in ("../dial_hd_server.py", "hd-nothing.js", "shared/../x", "/etc/passwd", ""):
+        assert hst.static_path(tmp_path, name) is None

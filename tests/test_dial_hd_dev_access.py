@@ -23,6 +23,7 @@ from autostream_peer_client import PeerReply
 import dial_http_common
 import dial_hd_server as hds
 import dial_hd_session as hss
+import dial_hd_static as hst
 import dial_http_server as dhs
 import dial_pin_guard as pg
 import hd_scenarios as hs
@@ -897,4 +898,4 @@ class TestLoginPageFiles:
 
     def test_every_file_the_login_page_loads_is_open_on_the_dev_listener(self):
         assert {"theme.css", "hd.css", "login.js"} <= set(hds.DEV_PUBLIC_STATIC)
-        assert set(hds.DEV_PUBLIC_STATIC) <= set(hds.STATIC_FILES)
+        assert set(hds.DEV_PUBLIC_STATIC) <= set(hst.STATIC_FILES)

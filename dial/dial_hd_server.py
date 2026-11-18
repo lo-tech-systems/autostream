@@ -38,6 +38,7 @@ from dial_hd_actions import (
 )
 from dial_hd_backdrop import BackdropStore
 from dial_hd_session import SESSION_TTL_S, DevListener, SessionStore
+from dial_hd_static import HD_STATIC_ROOT, LOGO_PATH, StaticFiles, static_path
 from dial_hd_events import SSE_MAX_CLIENTS, PartDiffer, PartStep, encode_parts, serve_events, state_bytes
 from dial_hd_state import build_parts
 from dial_http_common import MAX_BODY, TOO_MANY_ATTEMPTS, content_length, json_bytes
@@ -78,17 +79,6 @@ PANEL_ACTIONS = ("wake", "sleep", "activity")
 LOCAL_ONLY_ACTIONS = frozenset({"presence", "dial_shutdown"})
 SETTINGS_KEYS = ("brightness", "sleep_after_s")
 
-# The artwork route: the key, then optionally the variant served for it.
-ARTWORK_REST_RE = re.compile(r"^([0-9a-f]{16})(?:/(backdrop))?$")
-ARTWORK_CACHE_CONTROL = "private, max-age=86400, immutable"
-
-HD_STATIC_ROOT = Path(__file__).resolve().parent / "hd"
-_REPO_ROOT = Path(__file__).resolve().parent.parent
-THEME_FALLBACK_PATH = _REPO_ROOT / "nginx" / "static" / "theme.css"
-SHARED_FALLBACK_DIR = _REPO_ROOT / "nginx" / "static" / "shared"
-LOGO_PATH = Path("/opt/autostream/images/autostream-logo-centred-dark.png")
-LOGO_FALLBACK_PATH = _REPO_ROOT / "images" / "autostream-logo-centred-dark.png"
-
 # Refusal reason from a core action to an HTTP status. An unlisted reason
 # is a conflict.
 REASON_STATUS = {
@@ -101,60 +91,6 @@ REASON_STATUS = {
     "not_focused": 409,
 }
 REASON_STATUS_DEFAULT = 409
-
-_HTML = "text/html; charset=utf-8"
-_CSS = "text/css; charset=utf-8"
-_JS = "text/javascript; charset=utf-8"
-_PNG = "image/png"
-
-# The static files, by the name served at /static/<name>: the files are
-# resolved from this fixed table, never from the request path.
-STATIC_FILES = {
-    "hd.css": _CSS,
-    "hd.js": _JS,
-    "hd-tables.js": _JS,
-    "hd-dom.js": _JS,
-    "hd-state.js": _JS,
-    "hd-eq.js": _JS,
-    "hd-derive.js": _JS,
-    "hd-requests.js": _JS,
-    "hd-actions.js": _JS,
-    "hd-paint.js": _JS,
-    "hd-bell.js": _JS,
-    "login.js": _JS,
-    "theme.css": _CSS,
-    "logo.png": _PNG,
-    "shared/state_stream.js": _JS,
-    "shared/state_view.js": _JS,
-    "shared/texts.js": _JS,
-    "shared/pending.js": _JS,
-}
-
-# The first bytes of an image, and its type.
-_IMAGE_SIGNATURES = (
-    (b"\xff\xd8", "image/jpeg"),
-    (b"\x89PNG", "image/png"),
-    (b"GIF8", "image/gif"),
-)
-
-
-def sniff_image_type(data: bytes) -> str:
-    """The image type *data* starts as, else application/octet-stream."""
-    for prefix, content_type in _IMAGE_SIGNATURES:
-        if data.startswith(prefix):
-            return content_type
-    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return "image/webp"
-    return "application/octet-stream"
-
-
-# The artwork route's variants: what is served for the held artwork, as
-# (body, content type); a None body means that variant cannot be made.
-ARTWORK_VARIANTS = {
-    "": lambda server, art: (art.data, sniff_image_type(art.data)),
-    "backdrop": lambda server, art: (server._backdrops.artwork(art.key, art.data), "image/jpeg"),
-}
-
 
 def _one_of(value, choices):
     if not is_int(value) or value not in choices:
@@ -174,28 +110,6 @@ def _session_cookie(token: str, max_age: int) -> str:
     return "%s=%s; HttpOnly; SameSite=Strict; Path=/; Max-Age=%d" % (
         SESSION_COOKIE, token, max_age,
     )
-
-
-def _etag_matches(header: str | None, etag: str) -> bool:
-    if not header:
-        return False
-    if header.strip() == "*":
-        return True
-    return any(part.strip().removeprefix("W/") == etag for part in header.split(","))
-
-
-def _file_etag(info) -> str:
-    """The validator for a file: its modification time and size."""
-    return '"%x-%x"' % (info.st_mtime_ns, info.st_size)
-
-
-def _not_modified(handler, headers, *, page: bool = False) -> bool:
-    """Answer 304 with *headers* when the request already holds the ETag in
-    them; True if it did."""
-    if not _etag_matches(handler.headers.get("If-None-Match"), headers["ETag"]):
-        return False
-    handler.send_bytes(304, b"", None, headers, page=page)
-    return True
 
 
 class _HdHTTPServer(http.server.ThreadingHTTPServer):
@@ -255,7 +169,6 @@ class HdServer:
         self._http_server = http_server
         self._panel = panel
         self._hub = hub
-        self._static_root = Path(static_root)
         self._clock = clock
         # The dial's boot id: every event id and state body names it, so a
         # page can tell a restarted dial's sequence from this one's.
@@ -264,7 +177,10 @@ class HdServer:
         self._info_fn = info_fn
         self._info_lock = threading.Lock()
         self._info_cache: tuple[float, list] | None = None
-        self._backdrops = backdrops or BackdropStore(self.static_path("logo.png") or LOGO_PATH)
+        root = Path(static_root)
+        self._files = StaticFiles(
+            root, core, backdrops or BackdropStore(static_path(root, "logo.png") or LOGO_PATH),
+        )
         self._ctx = Context(core, http_server)
         self.sessions = SessionStore(clock)
         self._stopping = threading.Event()
@@ -276,11 +192,11 @@ class HdServer:
         # method, path, handler(handler, rest), prefix. Exact paths first,
         # then the longest prefix.
         self._routes = [
-            ("GET", "/", self._serve_index, False),
-            ("GET", "/static/", self._serve_static, True),
+            ("GET", "/", self._files.index, False),
+            ("GET", "/static/", self._files.static, True),
             ("GET", "/api/v1/state", self._get_state, False),
-            ("GET", "/api/v1/artwork/", self._get_artwork, True),
-            ("GET", "/api/v1/logo/backdrop", self._get_logo_backdrop, False),
+            ("GET", "/api/v1/artwork/", self._files.artwork, True),
+            ("GET", "/api/v1/logo/backdrop", self._files.logo_backdrop, False),
             ("GET", "/api/v1/events", self._stream_events, False),
             ("GET", "/api/v1/info", self._get_info, False),
             ("GET", "/api/v1/settings", self._get_settings, False),
@@ -291,7 +207,7 @@ class HdServer:
         ]
         # Reachable on the development listener only.
         self._dev_routes = [
-            ("GET", "/login", self._get_login, False),
+            ("GET", "/login", self._files.login_page, False),
             ("POST", "/login", self._post_login, False),
             ("POST", "/logout", self._post_logout, False),
         ]
@@ -479,60 +395,6 @@ class HdServer:
         """Whether *token* is a live session."""
         return self.sessions.valid(token)
 
-    # ---- static files ----------------------------------------------------
-
-    def static_path(self, name: str) -> Path | None:
-        """The file behind a static name, or None when the table has none."""
-        if name in ("index.html", "login.html"):
-            return self._static_root / name
-        if name == "theme.css":
-            for candidate in (self._static_root / "theme.css", THEME_FALLBACK_PATH):
-                if candidate.is_file():
-                    return candidate
-            return None
-        if name == "logo.png":
-            for candidate in (LOGO_PATH, LOGO_FALLBACK_PATH):
-                if candidate.is_file():
-                    return candidate
-            return None
-        if name.startswith("shared/") and name in STATIC_FILES:
-            # Installed beside the page; in the repository they are the
-            # browser's own copies.
-            for candidate in (self._static_root / name, SHARED_FALLBACK_DIR / name[len("shared/"):]):
-                if candidate.is_file():
-                    return candidate
-            return None
-        if name in STATIC_FILES:
-            return self._static_root / name
-        return None
-
-    # ---- route handlers --------------------------------------------------
-
-    def _serve_index(self, handler, rest) -> None:
-        self._send_file(handler, "index.html", _HTML)
-
-    def _serve_static(self, handler, rest) -> None:
-        content_type = STATIC_FILES.get(rest)
-        if content_type is None:
-            handler.send_json(404, {"ok": False, "error": "not_found"})
-            return
-        self._send_file(handler, rest, content_type)
-
-    def _send_file(self, handler, name: str, content_type: str) -> None:
-        path = self.static_path(name)
-        try:
-            info = path.stat() if path is not None else None
-            if info is None:
-                raise FileNotFoundError(name)
-            headers = {"ETag": _file_etag(info), "Cache-Control": "no-cache"}
-            if _not_modified(handler, headers, page=True):
-                return
-            data = path.read_bytes()
-        except OSError:
-            handler.send_json(404, {"ok": False, "error": "not_found"})
-            return
-        handler.send_bytes(200, data, content_type, headers, page=True)
-
     def _get_state(self, handler, rest) -> None:
         handler.send_bytes(200, self.state_body(), "application/json", {"Cache-Control": "no-store"})
 
@@ -544,47 +406,6 @@ class HdServer:
             self, handler.server.hd_stopping, handler.session_token(),
         )
         serve_events(handler, self._hub, clients, self._boot, self._clock)
-
-    def _get_artwork(self, handler, rest) -> None:
-        match = ARTWORK_REST_RE.match(rest)
-        if match is None:
-            handler.send_json(400, {"ok": False, "error": "bad_artwork_key"})
-            return
-        key, variant = match.group(1), match.group(2) or ""
-        artwork = self._core.snapshot().artwork
-        if artwork is None or artwork.key != key:
-            handler.send_json(404, {"ok": False, "error": "no_artwork"})
-            return
-        headers = {
-            "Cache-Control": ARTWORK_CACHE_CONTROL,
-            "ETag": '"%s"' % artwork.key,
-        }
-        if _not_modified(handler, headers):
-            return
-        body, content_type = ARTWORK_VARIANTS[variant](self, artwork)
-        if body is None:
-            handler.send_json(404, {"ok": False, "error": "no_backdrop"})
-            return
-        handler.send_bytes(200, body, content_type, headers)
-
-    def _get_logo_backdrop(self, handler, rest) -> None:
-        path = self.static_path("logo.png")
-        try:
-            info = path.stat() if path is not None else None
-        except OSError:
-            info = None
-        if info is None:
-            handler.send_json(404, {"ok": False, "error": "not_found"})
-            return
-        headers = {"ETag": _file_etag(info), "Cache-Control": "no-cache"}
-        if _not_modified(handler, headers):
-            return
-        body = self._backdrops.logo()
-        if body is None:
-            handler.send_json(404, {"ok": False, "error": "no_backdrop"})
-            return
-        handler.send_bytes(200, body, "image/jpeg", headers)
-
 
     # ---- actions, settings, info, panel ----------------------------------
 
@@ -721,9 +542,6 @@ class HdServer:
         handler.send_json(200, {"ok": True})
 
     # ---- development listener login --------------------------------------
-
-    def _get_login(self, handler, rest) -> None:
-        self._send_file(handler, "login.html", _HTML)
 
     def _post_login(self, handler, rest) -> None:
         ip = handler.client_address[0]
