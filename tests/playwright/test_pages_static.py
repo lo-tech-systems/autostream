@@ -632,8 +632,9 @@ STATIC = stub.REPO_ROOT / "nginx" / "static"
 CEILINGS = {
     "shared/state_stream.js": 166,
     "shared/state_view.js": 250,
-    # The reasons a start fails, and the wrong-PIN and PIN-claim wording
-    "shared/texts.js": 64,
+    # The reasons a start fails, and the wrong-PIN, PIN-claim and busy-speaker
+    # wording
+    "shared/texts.js": 65,
     "shared/pending.js": 35,
     "page/home/home_main.js": 54,
     "page/home/home_intents.js": 30,
@@ -658,8 +659,9 @@ HD = stub.REPO_ROOT / "dial" / "hd"
 # The HD page's modules -> the most non-blank lines each may have.
 HD_CEILINGS = {
     "hd.js": 90,
-    # The keypad's line for a wrong PIN after which the speaker shows a new one
-    "hd-tables.js": 192,
+    # The keypad's lines for a wrong PIN after which the speaker shows a new
+    # one, and for a PIN the speaker was too busy to take
+    "hd-tables.js": 193,
     "hd-dom.js": 75,
     "hd-state.js": 150,
     # The graph's paint step and the page's one-off priming, so the first

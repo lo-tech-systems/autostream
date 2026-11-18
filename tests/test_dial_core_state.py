@@ -917,3 +917,12 @@ class TestALateWrongPin:
         assert rq.fold_reply(request, reply, 101.0).error == "pin_invalid_new"
         reply = PeerReply(False, "PIN was rejected", 5, "b1", {"pin_invalid": True}, None)
         assert rq.fold_reply(request, reply, 101.0).error == "PIN was rejected"
+
+    def test_a_pin_the_speaker_was_too_busy_to_take_keeps_the_keypad_open(self):
+        import dial_core_requests as rq
+        from autostream_peer_client import PeerReply
+        request = cs.TransportRequest("a" * 20, "output_pin", 100.0, "pending", 100.0, None, "1001", 0)
+        reply = PeerReply(False, "busy", 5, "b1", {"ok": False, "id": "1001", "busy": True, "error": "busy"}, None)
+        folded = rq.fold_reply(request, reply, 101.0)
+        assert (folded.state, folded.error) == ("rejected", "busy")
+        assert cs.awaiting_pin(folded, 102.0)

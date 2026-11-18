@@ -19,6 +19,7 @@ export const REFUSAL = {
   pin_invalid: 'That PIN was not accepted. Try again.',
   pin_invalid_new: 'That PIN was not accepted. A new PIN is showing on the TV.',
   pin_claimed: 'Someone is entering a PIN for that speaker.',
+  busy: 'The speaker is busy. Try the PIN again in a moment.',
   nothing_selected: 'Turn on at least one speaker first.',
   settings_unavailable: 'The speakers could not be saved just now. Try again in a moment.',
 };

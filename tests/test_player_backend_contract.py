@@ -1523,6 +1523,12 @@ class TestIncludeTv:
         assert not result.ok
         assert result.error_code == code
 
+    def test_a_pin_the_player_is_too_busy_to_take_is_busy(self):
+        r = _resp(status=409, json_data={"error": "busy"})
+        with patch("autostream_players._session.put", return_value=r):
+            result = _mini().submit_output_pin("9", "1234", select=True, volume_percent=30, muted=False)
+        assert (result.ok, result.error_code) == (False, "busy")
+
     def test_other_409_stays_an_http_error(self):
         b = _mini()
         r = _resp(status=409, json_data={"error": "something_else"})

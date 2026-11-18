@@ -80,7 +80,9 @@ Turning an output on sends its current volume to the appliance immediately; togg
 does the same. If the output requires a device PIN (a fresh Apple TV pairing, for example), a
 PIN entry dialog appears: enter the code shown on the device and the speaker is paired and
 switched on in one go. A wrong code lets you try again; with an Apple TV the dialog says
-**That PIN was not accepted. A new PIN is showing on the TV.**, so enter the new code. After
+**That PIN was not accepted. A new PIN is showing on the TV.**, so enter the new code. If the
+speaker is still busy finishing something else, the dialog stays open and says **The speaker
+is busy. Try the PIN again in a moment.**; the same code still works. After
 several quick attempts the
 dialog asks you to wait a few seconds. If an HD dial asked for the speaker, the dial shows
 the keypad and this page waits for it. On an appliance running an older version the code is

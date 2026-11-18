@@ -1023,6 +1023,25 @@ class TestPinWithSelectOnAnAsyncPlayer:
         assert pairing.holder(ID) == ""
         assert snap().start_failure.reason == "timed_out"
 
+    def test_a_pin_the_player_is_too_busy_for_keeps_the_claim_and_says_so(self, a, player):
+        player.answers = [err("busy", "Backend refused the change: busy")]
+        r = change(self.pin())
+        assert r == {"ok": False, "id": ID, "busy": True, "error": "busy"}
+        assert pairing.holder(ID) == "webui"
+        assert snap().unit(ID).selected is False and snap().start_failure is None
+        # Tried again in a moment, the same PIN pairs the speaker
+        t = self.settle_later(a, state_event(ID, "stopped", selected=True, pin_pending=False))
+        assert change(self.pin()) == {"ok": True, "id": ID}
+        t.join(5)
+        assert pairing.holder(ID) == ""
+
+    def test_a_pin_alone_the_player_is_too_busy_for_says_so(self, a, player):
+        player.answers = [err("busy", "Backend refused the change: busy")]
+        r = submit(Intent("output.pin.submit", {"id": ID, "pin": "1234"}, Origin.USER, "webui",
+                          context="webui")).result
+        assert r == {"ok": False, "id": ID, "busy": True, "error": "busy"}
+        assert pairing.holder(ID) == "webui"
+
     def test_without_the_capability_the_two_step_flow_stands(self, player):
         arrange(group_row(ID, name="Kitchen"))
         assert change(self.pin()) == {"ok": True, "id": ID}

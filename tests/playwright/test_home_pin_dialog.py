@@ -109,6 +109,20 @@ class TestHomePinDialog:
         page.locator("#pinModalOk").click()
         expect(page.locator("#output_enabled_tv")).to_be_checked()
 
+    def test_a_pin_the_speaker_was_too_busy_to_take_asks_again_with_the_note(self, page: "Page", home_url: str):
+        busy = {"ok": False, "error": "busy", "result": {"ok": False, "id": "tv", "busy": True, "error": "busy"}}
+        _open(page, home_url, [_NEEDS_PIN, busy, {}])
+        _toggle_on(page)
+        _type_pin(page, "2718")
+        page.locator("#pinModalOk").click()
+        expect(page.locator("#pinModalNote")).to_have_text("The speaker is busy. Try the PIN again in a moment.")
+        expect(page.locator("#pinModal")).to_have_class(_OPEN)
+        expect(page.locator("#output_enabled_tv")).not_to_be_checked()
+        _type_pin(page, "2718")
+        page.locator("#pinModalOk").click()
+        expect(page.locator("#output_enabled_tv")).to_be_checked()
+        assert [a.get("pin") for _, a in intents()[1:]] == ["2718", "2718"]
+
     def test_a_wrong_pin_refused_after_a_pending_reply_reopens_with_the_new_pin_line(
         self, page: "Page", home_url: str
     ):

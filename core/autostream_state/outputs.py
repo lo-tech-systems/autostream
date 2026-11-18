@@ -1526,12 +1526,12 @@ class OutputAuthority:
             u = self._units.get(unit_id)
             if u is None:
                 return self._refused("unknown_output")
+            was_on = u.desired.selected
             self._begin_select_locked(u, Origin.USER, vol, requester, claimant, now)
             batch = _Batch(1)
-            self._enqueue(_Write(
-                "pin", unit_id, u.desired_seq, {"pin": pin, "select": True, "volume": vol, "cause": Origin.USER},
-                [(batch, 0)], requester=requester, claimant=claimant,
-            ))
+            params = {"pin": pin, "select": True, "volume": vol, "cause": Origin.USER, "was_on": was_on}
+            self._enqueue(_Write("pin", unit_id, u.desired_seq, params, [(batch, 0)],
+                                 requester=requester, claimant=claimant))
             pending = self._publish_locked(Origin.USER, requester)
         return self._finish_intent(pending, batch.future)
 
@@ -2778,6 +2778,15 @@ class OutputAuthority:
             u.pin_deadline = now + PIN_OUTCOME_S
             fx.republish = True
             return None
+        if r.error_code == "busy":
+            # The player was still busy with the speaker and took neither the
+            # PIN nor its start: the speaker goes back to how it was, with no
+            # notice, and the PIN may be sent again in a moment
+            if u is not None and u.desired.selected and not w.params.get("was_on"):
+                self._revert_locked(u, now)
+            fx.log(logging.INFO, "PIN for %s not taken: the player is busy with it", self._unit_name_locked(w.unit_id))
+            fx.republish = True
+            return WriteOutcome(ok=False, error_code="busy", error="busy")
         return self._record_select_locked(w, r, u, now, fx)
 
     def _select_outcome_locked(self, u: UnitState, code: str, notice: str, requester: Optional[str],

@@ -653,7 +653,9 @@ def detect_backend(
     return None, tuple(detections)
 
 
-_CONFLICT_CODES = ("reselect_required", "group_not_present", "not_holdable")
+# busy: a PIN sent while the player is still busy with that speaker; it was
+# not taken, and may be sent again in a moment
+_CONFLICT_CODES = ("reselect_required", "group_not_present", "not_holdable", "busy")
 
 
 def _conflict_code(payload: object) -> str:

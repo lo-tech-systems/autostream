@@ -151,6 +151,8 @@ def _output_pin_submit(intent: Intent, wait: float) -> Outcome:
     outcome = _first(wait_outcome(applied, wait))
     if not outcome.ok and outcome.error_code == "pin_invalid":
         result = {"ok": False, "id": out_id, "pin_invalid": True, "error": outcome.error}
+    elif not outcome.ok and outcome.error_code == "busy":
+        result = _busy(out_id)
     elif not outcome.ok:
         result = _failure(out_id, outcome)
     else:
@@ -161,6 +163,13 @@ def _output_pin_submit(intent: Intent, wait: float) -> Outcome:
         else:
             result = {"ok": True, "id": out_id}
     return Outcome(ok=bool(result.get("ok")), error=result.get("error"), result=result)
+
+
+def _busy(out_id: str) -> dict:
+    """The player was still busy with the speaker and did not take the PIN.
+    The same PIN on screen stays valid, so the claim and the dialog stay:
+    the person tries again in a moment."""
+    return {"ok": False, "id": out_id, "busy": True, "error": "busy"}
 
 
 def _pin_with_select(intent: Intent, wait: float, out_id: str) -> dict:
@@ -182,6 +191,8 @@ def _pin_with_select(intent: Intent, wait: float, out_id: str) -> dict:
     outcome = _first(wait_outcome(applied, wait))
     if not outcome.ok and outcome.error_code == "pin_invalid":
         return {"ok": False, "id": out_id, "pin_invalid": True, "new_pin": True, "error": outcome.error}
+    if not outcome.ok and outcome.error_code == "busy":
+        return _busy(out_id)
     if not outcome.ok:
         # The pairing ended another way (it timed out, or the speaker refused):
         # the next switch-on asks for a new PIN

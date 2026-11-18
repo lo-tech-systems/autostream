@@ -65,7 +65,8 @@ function pinDialog(name, note, wait = 0) {
 }
 
 // One PIN attempt is one request that pairs the speaker and switches it on.
-// A wrong PIN sent with its switch-on makes the speaker show a new PIN.
+// A wrong PIN sent with its switch-on makes the speaker show a new PIN. A PIN
+// the player was too busy to take leaves the same PIN on screen to try again.
 async function pinFlow(id, name, volume, first = '') {
   hold('sel:' + id, false, null);
   let note = first;
@@ -78,6 +79,7 @@ async function pinFlow(id, name, volume, first = '') {
     if (r.ok) { hold('sel:' + id, true, r.version); return true; }
     note = '';
     if (res.pin_invalid) { wrongPin.delete(id); note = res.new_pin ? REFUSAL.pin_invalid_new : REFUSAL.pin_invalid; }
+    else if (res.busy) note = REFUSAL.busy;
     else if (r.error === 'rate_limited') {
       const s = Math.max(1, parseInt(r.retry_after_s ?? res.retry_after_s, 10) || 1);
       if (!(await pinDialog(name || 'this speaker', '', s))) return false;

@@ -2446,6 +2446,23 @@ class TestSpeakerPin:
         expect(page.locator("#card-pin-error")).to_have_text(
             "That PIN was not accepted. A new PIN is showing on the TV.")
 
+    def test_a_pin_the_speaker_was_too_busy_to_take_keeps_the_keypad_and_says_so(self, page, hd):
+        hd.show(hs.SCENARIOS["pin_required"])
+        sent = watch_intents(page)
+        open_page(page, hd)
+        tap_keys(page, "2718")
+        pin_key(page, "ok").click()
+        page.wait_for_timeout(200)
+        hd.show(hs.Scenario("pin_speaker_busy", hs._pin_snapshot(hs.pin_request("rejected", "busy", "output_pin"))))
+        expect(page.locator(PIN_CARD)).to_be_visible()
+        expect(page.locator("#card-pin-error")).to_have_text("The speaker is busy. Try the PIN again in a moment.")
+        tap_keys(page, "2718")
+        expect(pin_key(page, "ok")).to_be_enabled()
+        pin_key(page, "ok").click()
+        page.wait_for_timeout(200)
+        pins = [args["pin"] for name, args in sent if name == "output.pin.submit"]
+        assert pins == ["2718", "2718"]
+
     def test_a_rate_limited_outcome_counts_down_with_the_keypad_disabled(self, page, hd):
         hd.show(hs.SCENARIOS["pin_rate_limited"])
         page.clock.install()

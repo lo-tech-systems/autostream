@@ -69,6 +69,7 @@ export const SET_FAILURES = {
     invalid_pin: PIN_TEXT.wrong,
     pin_invalid_new: PIN_TEXT.wrongNew,
     pin_claimed: "Someone is entering a PIN for that speaker.",
+    busy: "The speaker is busy. Try the PIN again in a moment.",
     output_in_use: "That speaker is in use by another appliance.",
     encoder_capacity: "The appliance cannot encode another stream.",
     unreachable: "The appliance did not answer.",

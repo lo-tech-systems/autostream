@@ -117,7 +117,9 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   TV." The right PIN pairs the speaker and switches it on without another tap,
   on the Home page and the HD dial. While someone is entering a speaker's PIN,
   switching it on elsewhere is refused, so the PIN on the screen is not
-  replaced.
+  replaced. A PIN sent while the speaker is still busy finishing something
+  else keeps the dialog or keypad open with "The speaker is busy. Try the PIN
+  again in a moment."
 - changed: a stereo pair pauses and resumes as one from the Home app.
 
 ### Dials

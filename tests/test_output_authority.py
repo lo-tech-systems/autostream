@@ -3650,6 +3650,26 @@ class TestPinWithSelect:
         send(ew, "1", "stopped", selected=True, pin_pending=False, at_s=1)
         assert applied.outcome.result(1) == (WriteOutcome(ok=True),)
 
+    def test_a_pin_the_player_is_too_busy_for_puts_the_speaker_back_quietly(self, ew, caplog):
+        put(ew, [group_row(1, "password", pin_pending=True), group_row(2)])
+        ew.fb.results = [error("busy")]
+        with caplog.at_level(logging.INFO, logger="autostream.outputs"):
+            out = ew.a.submit_pin("1", "1234", select=True, volume=30, claimant="webui").outcome.result(1)[0]
+        assert (out.ok, out.error_code) == (False, "busy")
+        u = snap().unit("1")
+        assert u.selected is False and u.availability == "password" and snap().start_failure is None
+        assert unit_state(ew).pin_sinks == [] and unit_state(ew).start_pending_until == 0.0
+        assert "PIN for Speaker 1 not taken: the player is busy with it" in caplog.text
+        # The same PIN may be sent again, and this time it is taken
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30, claimant="webui")
+        assert unit_state(ew).pin_sinks and not applied.outcome.done()
+
+    def test_a_busy_answer_leaves_a_speaker_that_was_on_wanted(self, ew):
+        ew.a.select("1", Origin.USER, volume=30).outcome.result()
+        ew.fb.results = [error("busy")]
+        out = ew.a.submit_pin("1", "1234", select=True, volume=30).outcome.result(1)[0]
+        assert out.error_code == "busy" and snap().unit("1").selected is True
+
     def test_a_refused_pin_reverts_like_a_refused_select(self, ew):
         ew.fb.results = [error("pin_invalid", "PIN was rejected")]
         out = ew.a.submit_pin("1", "0000", select=True, volume=30).outcome.result(1)[0]
