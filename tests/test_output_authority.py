@@ -86,6 +86,14 @@ class TestAdoption:
         assert p.unit("2").cause is Origin.ADOPTED and p.unit("2").volume == 30
         assert p.unit("1").cause is Origin.USER
 
+    def test_a_new_row_read_muted_is_adopted_muted_with_a_token(self, w):
+        merge(w, [row(1, selected=True, volume_percent=40, muted=True), row(2, muted=True)])
+        p = snap()
+        assert p.unit("1").muted and p.unit("1").volume == 40
+        assert w.a.unit_marks("1").mute_token > 0
+        assert not p.unit("2").muted and w.a.unit_marks("2").mute_token == 0
+        assert w.fb.calls == []
+
     def test_units_keep_the_order_of_the_rows(self, w):
         merge(w, [row(3), row(1), row(2)])
         assert [u.id for u in snap().units] == ["3", "1", "2"]
@@ -2055,6 +2063,61 @@ class TestReconcile:
         u = snap().unit("1")
         assert u.muted is True and u.volume == 55 and u.cause is Origin.BACKEND
         assert w.fb.calls == []
+
+    @pytest.mark.parametrize("wanted", [True, False])
+    def test_a_row_whose_mute_disagrees_is_repaired_once_after_the_debounce(self, w, caplog, wanted):
+        put(w, [row(1, selected=True, volume_percent=40, muted=wanted)])
+        if wanted:
+            w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.t[0] = T0 + 5
+        put(w, [row(1, selected=True, volume_percent=40, muted=not wanted)])
+        with caplog.at_level(logging.INFO, logger="autostream.outputs"):
+            at(w, 5.1)
+            assert mutes(w) == []
+            at(w, 7.2)
+            at(w, 7.3)
+        assert mutes(w) == [("1", wanted)]
+        assert snap().unit("1").muted is wanted
+        assert f"Mute of Speaker 1 repaired: the player reads it {'unmuted' if wanted else 'muted'}" in caplog.text
+
+    def test_no_mute_repair_while_a_write_is_queued_or_just_made(self, w):
+        put(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)                       # just made
+        put(w, [row(1, selected=True, volume_percent=40)])
+        at(w, 0.1)
+        at(w, 1.9)
+        assert mutes(w) == [("1", True)]
+        w.a._inflight = 1                               # a write in flight
+        at(w, 2.5)
+        at(w, 4.6)
+        assert mutes(w) == [("1", True)]
+        w.a._inflight = 0
+
+    def test_a_long_standing_mute_difference_is_repaired_on_the_first_pass_after_the_queue_drains(self, w):
+        put(w, [row(1, selected=True, volume_percent=40)])
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        w.t[0] = T0 + 5
+        put(w, [row(1, selected=True, volume_percent=40)])
+        w.a._inflight = 1                               # a write in flight
+        at(w, 5.1)                                      # first seen, busy
+        at(w, 9.0)                                      # still busy
+        assert mutes(w) == []
+        w.a._inflight = 0
+        at(w, 9.1)
+        assert mutes(w) == [("1", True)]
+
+    def test_after_a_player_restart_the_select_again_carries_the_mute(self, w):
+        put(w, [group_row(1, "streaming", selected=True, volume_percent=31)], boot="b0")
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        put(w, [group_row(1, "stopped", selected=False, volume_percent=50)], boot="b1")
+        at(w, 0.1)
+        at(w, 2.5)
+        at(w, 4.6)
+        (uid, kw), = selects(w)
+        assert uid == "1" and kw["volume_percent"] == 31 and kw["muted"] is True
 
     def test_a_level_changed_on_the_player_is_adopted_without_a_write(self, w):
         put(w, [row(1, selected=True, volume_percent=40)])

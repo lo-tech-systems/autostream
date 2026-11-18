@@ -34,9 +34,9 @@ def w(monkeypatch):
     return SimpleNamespace(a=a, fb=fb, t=clock)
 
 
-def playing(id, *, held=False, holdable=True, volume=40, state="streaming"):
+def playing(id, *, held=False, holdable=True, volume=40, state="streaming", **extra):
     return group_row(id, state, selected=True, volume_percent=volume,
-                     session_held=held, session_holdable=holdable)
+                     session_held=held, session_holdable=holdable, **extra)
 
 
 def merge(w, rows, **kw):
@@ -197,3 +197,42 @@ class TestTheOthers:
     def test_switch_off_others_with_none_is_refused(self, w):
         merge(w, [playing(1)])
         assert w.a.deselect_others("1", Origin.POLICY).refused == "no_active_outputs"
+
+
+class TestResumeMeansSound:
+    def test_resuming_a_muted_held_speaker_ends_the_hold_then_the_mute(self, w):
+        merge(w, [playing(1), playing(2)])
+        w.a.hold("1", Origin.DEVICE)
+        w.a.mute_all(Origin.USER)
+        w.fb.calls.clear()
+        applied = w.a.resume("1", Origin.DEVICE)
+        assert [(c[0], c[1][:2]) for c in w.fb.calls] == [
+            ("set_output_hold", ("1", False)), ("set_output_muted", ("1", False))]
+        assert [o.ok for o in applied.outcome.result()] == [True, True]
+        p = snap()
+        assert not p.unit("1").held and not p.unit("1").muted
+        assert p.unit("2").muted and p.muted_all is False
+
+    def test_resuming_a_speaker_that_is_not_muted_writes_the_hold_only(self, w):
+        merge(w, [playing(1)])
+        w.a.hold("1", Origin.DEVICE)
+        w.fb.calls.clear()
+        applied = w.a.resume("1", Origin.DEVICE)
+        assert [c[0] for c in w.fb.calls] == ["set_output_hold"]
+        assert len(applied.outcome.result()) == 1
+
+    def test_unmute_all_leaves_the_hold(self, w):
+        merge(w, [playing(1), playing(2)])
+        w.a.hold("1", Origin.DEVICE)
+        w.a.mute_all(Origin.USER)
+        w.a.unmute_all(Origin.USER, default_level=0)
+        assert snap().unit("1").held and not snap().unit("1").muted
+
+    def test_a_hold_the_player_no_longer_has_is_adopted_without_touching_the_mute(self, w):
+        merge(w, [playing(1)])
+        w.a.hold("1", Origin.DEVICE)
+        w.a.mute("1", Origin.USER)
+        later(w)
+        merge(w, [playing(1, held=False, muted=True)])
+        u = snap().unit("1")
+        assert not u.held and u.muted

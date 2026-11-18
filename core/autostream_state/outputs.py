@@ -1096,7 +1096,9 @@ class OutputAuthority:
         return self._set_hold(unit_id, True, cause, requester)
 
     def resume(self, unit_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
-        """End a speaker's hold: the player restarts it at the live position."""
+        """End a speaker's hold: the player restarts it at the live position.
+        Resume means sound, so a mute on the speaker ends too: the outcomes
+        are the hold's first, then the mute's when there was one."""
         return self._set_hold(unit_id, False, cause, requester)
 
     def _set_hold(self, unit_id: str, held: bool, cause: Origin, requester: Optional[str]) -> Applied:
@@ -1115,10 +1117,17 @@ class OutputAuthority:
                 return self._refused("not_holdable")
             d.held = held
             u.hold_write_at = now
-            batch = _Batch(1)
-            self._enqueue(_Write("hold", unit_id, u.desired_seq, {}, [(batch, 0)], requester=requester))
+            writes = [("hold", u)]
+            if not held and d.muted:
+                # Resume means sound: ending a speaker's Pause also ends a
+                # mute on it; what the Pause muted elsewhere is the policy's
+                self._clear_mute_locked(d)
+                self._release_mute_hold_locked()
+                self._stamp(u, cause, now)
+                writes.append(("mute", u))
+            future = self._queue_writes_locked(writes, requester)
             pending = self._publish_locked(cause, requester)
-        return self._finish_intent(pending, batch.future)
+        return self._finish_intent(pending, future)
 
     def set_volume(self, unit_id: str, volume: int, cause: Origin, *,
                    requester: Optional[str] = None) -> Applied:
@@ -1835,12 +1844,17 @@ class OutputAuthority:
                 u = UnitState(
                     id=uid, name=row.name,
                     desired=UnitDesired(
-                        selected=row.selected, volume=row.volume_percent, muted=False,
+                        selected=row.selected, volume=row.volume_percent,
+                        muted=row.selected and row.muted,
                         cause=Origin.ADOPTED, changed_at=now,
                     ),
                     reported=row, seen_at=now,
                     select_seq=1 if row.selected else 0,
                 )
+                if u.desired.muted:
+                    # autostream restarted while the speaker was muted: it
+                    # shows muted at its level, as a held row is adopted held
+                    u.desired.mute_token = self._next_token_locked()
                 self._units[uid] = u
             else:
                 if row.has_homepods and u.held_until > 0.0 and not (u.reported is not None and u.reported.has_homepods):
@@ -2117,6 +2131,19 @@ class OutputAuthority:
                     self._enqueue(_Write("deselect", u.id, u.desired_seq, {}, [(batch, 0)]))
                 continue
             u.diff_since.pop("deselect", None)
+            if d.selected and r.selected and r.muted != d.muted:
+                # The row may predate a write of ours that is queued, running
+                # or just made: judge a later read, keeping the time the
+                # difference was first seen
+                due = self._due(u, "mute", now)
+                if due and not (busy or now - u.own_write_at < DEBOUNCE_S):
+                    u.diff_since.pop("mute", None)
+                    self._enqueue(_Write("mute", u.id, u.desired_seq, {}, []))
+                    fx.log(logging.INFO, "Mute of %s repaired: the player reads it %s",
+                           self._unit_name_locked(u.id), "muted" if r.muted else "unmuted")
+                    busy = True
+            else:
+                u.diff_since.pop("mute", None)
             if not busy:
                 # With a write queued the row read may predate it, as above.
                 before = d.volume

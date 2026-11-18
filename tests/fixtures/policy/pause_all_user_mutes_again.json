@@ -96,12 +96,17 @@
     "set_output_hold",
     "1001",
     false
+   ],
+   [
+    "set_output_muted",
+    "1001",
+    false
    ]
   ],
   "units": {
    "1001": {
     "selected": true,
-    "muted": true,
+    "muted": false,
     "volume": 40,
     "held": false
    },
