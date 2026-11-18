@@ -86,6 +86,9 @@ RETRY_MAX_S = 60.0
 # then every 30 s while live input lasts.
 RETRY_GAPS_S = (10.0, 20.0, 30.0)
 RETRY_STEADY_S = 30.0
+# A speaker that fails while it plays is retried this many times (10 s and
+# 30 s after the failure, the first two gaps), then switched off
+MIDSESSION_RETRIES = 2
 _READ_BACKOFF_S = (0.5, 1.0, 2.0, 5.0)
 _FAILED_READS_BEFORE_DOWN = 3
 
@@ -293,6 +296,7 @@ class UnitState:
     held_until: float = 0.0           # a select the player cannot take yet is not tried again before this
     reselect_retry: bool = False      # a restart's select was refused: send it once more when the unit reads off
     hold_write_at: float = 0.0        # when a hold or its end was last asked of the player
+    retry_limit: Optional[int] = None  # retries left to a speaker that failed while playing: none counts
 
 
 class _OwnedLock:
@@ -971,6 +975,7 @@ class OutputAuthority:
             u.start_pending_until = 0.0
             u.retry_at = None
             u.retry_n = 0
+            u.retry_limit = None
             u.group_hold_backoff = RETRY_MIN_S
             u.held_until = 0.0
             u.reselect_retry = False
@@ -993,6 +998,7 @@ class OutputAuthority:
         self._clear_mute_locked(d)
         u.attempt = False
         u.retry_at = None
+        u.retry_limit = None
         u.start_pending_until = 0.0
         u.failure_reported = False
         u.held_until = 0.0
@@ -1423,6 +1429,7 @@ class OutputAuthority:
                     u.group_hold_backoff = RETRY_MIN_S
                     u.retry_n = 0
                     u.retry_at = None
+                    u.retry_limit = None
                     if u.desired.held:
                         # The player is told too, or it would hold the
                         # speaker into the next session
@@ -1761,6 +1768,7 @@ class OutputAuthority:
         self._clear_mute_locked(d)
         u.attempt = False
         u.retry_at = None
+        u.retry_limit = None
         u.start_pending_until = 0.0
         u.held_until = 0.0
         u.reselect_retry = False
@@ -1771,7 +1779,15 @@ class OutputAuthority:
         """A start failed on a speaker the user did not just ask for (or one
         that timed out): keep it wanted and retry it while a session plays, at
         gaps of 10 s, 20 s and 30 s and then every 30 s. Otherwise it is
-        turned back off at once."""
+        turned back off at once. A speaker that failed while it played gets
+        MIDSESSION_RETRIES retries; when they are spent it is switched off
+        and the failure reported."""
+        if u.retry_limit is not None and u.retry_n >= u.retry_limit:
+            self._revert_locked(u, now)
+            if not u.failure_reported:
+                u.failure_reported = True
+                self._start_failure_locked(u, "failed")
+            return
         if u.retry_allowed and self._session_active:
             u.availability = "failed"
             if u.retry_at is None:
@@ -1922,7 +1938,18 @@ class OutputAuthority:
             u.failure_reported = False
             u.retry_at = None
             u.retry_n = 0
+            u.retry_limit = None
             u.group_hold_backoff = RETRY_MIN_S
+        if (sel and self._rows_carry_session and avail == "failed" and was and not u.attempt
+                and self._session_active and u.retry_at is None):
+            # It failed while it played (it went away, or closed its session):
+            # tried again a few times before it is given up, with no notice
+            # until then.
+            u.retry_allowed = True
+            u.retry_n = 0
+            u.retry_limit = MIDSESSION_RETRIES
+            u.failure_reported = False
+            self._failed_treatment_locked(u, now)
         if sel and previous == "starting" and avail == "ok":
             fx.republish = True
         if sel and u.attempt and avail == "failed":
@@ -1996,6 +2023,18 @@ class OutputAuthority:
         u.requester = None
         self._queue_select_again_locked(u, u.desired.volume, u.desired.cause)
 
+    def _queue_restart_locked(self, u: UnitState) -> None:
+        """Switch a selected speaker off and on again, as a retry the
+        authority makes."""
+        u.attempt = True
+        u.retry_allowed = True
+        u.requester = None
+        self._enqueue(_Write("deselect", u.id, u.desired_seq, {}, []))
+        self._enqueue(_Write(
+            "select", u.id, u.desired_seq,
+            {"volume": None, "offset_ms": None, "mode": None, "cause": None, "reselect": True}, [],
+        ))
+
     def _queue_select_again_locked(self, u: UnitState, volume: Optional[int], cause: Optional[Origin]) -> None:
         batch = _Batch(1)
         self._enqueue(_Write(
@@ -2026,6 +2065,14 @@ class OutputAuthority:
             if r is None:
                 continue
             d = u.desired
+            if (d.selected and r.selected and u.availability == "failed" and u.retry_at is not None
+                    and now >= u.retry_at and self._session_active and not busy):
+                # A speaker that failed while it played stays selected on the
+                # player with its session failed: restart it.
+                u.retry_at = None
+                self._queue_restart_locked(u)
+                busy = True
+                continue
             if d.selected != r.selected and (busy or now - u.own_write_at < DEBOUNCE_S):
                 # A write of ours is queued, running or has just finished, so
                 # the row read may predate it; judge the next read.
