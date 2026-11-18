@@ -20,6 +20,7 @@ if _core not in sys.path:
 from autostream_webui_api import send_input_levels_json
 from autostream_webui_state import WebUIState
 import autostream_state as _state
+from fake_store import FakeStore
 
 
 def _make_handler() -> MagicMock:
@@ -49,17 +50,22 @@ def _level(index: int, dbfs: float) -> dict:
     }
 
 
-def _call(levels=None, connected=True, config=None, levels_error=None, config_error=None,
+def _put_inputs(levels, note, rate):
+    fake = FakeStore()
+    fake.inputs([
+        fake.input_entry(
+            lv["index"], rate_note=note(lv["index"]), sample_rate_text=rate(lv["index"]),
+            **{k: v for k, v in lv.items() if k != "index"})
+        for lv in levels
+    ])
+
+
+def _call(levels=None, connected=True, config=None, config_error=None,
           note=lambda index: f"note {index}", rate=lambda index: f"rate {index}"):
     if config is None:
         config = MagicMock(audio1_enabled=True, audio2_enabled=False)
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     handler = _make_handler()
-    levels_patch = (
-        patch("autostream_webui_api.get_monitor_levels_dbfs", side_effect=levels_error)
-        if levels_error is not None
-        else patch("autostream_webui_api.get_monitor_levels_dbfs", return_value=levels or [])
-    )
     config_patch = (
         patch("autostream_webui_api._config_snapshot", side_effect=config_error)
         if config_error is not None
@@ -67,10 +73,8 @@ def _call(levels=None, connected=True, config=None, levels_error=None, config_er
     )
     _state.store().publish_for_tests(
         "monitor", _state.MonitorRuntimeInfo(connected=connected))
-    with levels_patch, config_patch, patch(
-        "autostream_webui_api.input_rate_texts",
-        side_effect=lambda index: (note(index), rate(index)),
-    ):
+    _put_inputs(levels or [], note, rate)
+    with config_patch:
         send_input_levels_json(handler, state)
     return _response(handler)
 
@@ -115,8 +119,8 @@ def test_input_without_a_running_monitor_gets_empty_rate_fields_and_the_note():
     assert second["rate_mismatch_hz"] == 0
     assert second["negotiated_hz"] == 0
     assert second["monitor_supports_rate_matching"] is False
-    assert second["rate_matching_note"] == "note 2"
-    assert second["sample_rate_text"] == "rate 2"
+    assert second["rate_matching_note"] == _state.RATE_MATCHING_NOTE_DEFAULT
+    assert second["sample_rate_text"] == _state.SAMPLE_RATE_TEXT_NOT_RUNNING
 
 
 def test_a_non_breaking_space_in_the_text_survives_the_json_reply():
@@ -124,11 +128,10 @@ def test_a_non_breaking_space_in_the_text_survives_the_json_reply():
     state = WebUIState(config_path="dummy.json", state_path="dummy-state.json")
     _state.store().publish_for_tests(
         "monitor", _state.MonitorRuntimeInfo(connected=True))
-    with patch("autostream_webui_api.get_monitor_levels_dbfs", return_value=[_level(1, -40.0)]), \
-         patch("autostream_webui_api._config_snapshot",
-               return_value=MagicMock(audio1_enabled=True, audio2_enabled=False)), \
-         patch("autostream_webui_api.input_rate_texts",
-               side_effect=lambda index: ("note", "Sample rate: 48 kHz")):
+    _put_inputs([_level(1, -40.0)], lambda index: "note",
+                lambda index: "Sample rate: 48 kHz")
+    with patch("autostream_webui_api._config_snapshot",
+               return_value=MagicMock(audio1_enabled=True, audio2_enabled=False)):
         send_input_levels_json(handler, state)
     raw = handler.wfile.getvalue().decode("ascii")
     assert "&nbsp;" not in raw
@@ -136,19 +139,12 @@ def test_a_non_breaking_space_in_the_text_survives_the_json_reply():
     assert json.loads(raw)["inputs"][0]["sample_rate_text"] == "Sample rate: 48 kHz"
 
 
-def test_the_rate_texts_are_asked_for_once_per_input():
-    asked = []
-    def note(index):
-        asked.append(index)
-        return "x"
-    _call(levels=[_level(1, -40.0)], note=note)
-    assert asked == [1, 2]
-
-
-def test_levels_failure_still_carries_the_notes():
-    code, body = _call(levels_error=RuntimeError("monitors unavailable"))
-    assert [item["sample_rate_text"] for item in body["inputs"]] == ["rate 1", "rate 2"]
-    assert [item["rate_matching_note"] for item in body["inputs"]] == ["note 1", "note 2"]
+def test_no_inputs_still_carries_the_default_texts():
+    code, body = _call(levels=[])
+    assert [item["sample_rate_text"] for item in body["inputs"]] == [
+        _state.SAMPLE_RATE_TEXT_NOT_RUNNING] * 2
+    assert [item["rate_matching_note"] for item in body["inputs"]] == [
+        _state.RATE_MATCHING_NOTE_DEFAULT] * 2
 
 
 def test_disabled_input_reports_no_level():
@@ -181,8 +177,8 @@ def test_config_error_still_answers():
     assert body["inputs"][0]["dbfs"] == -40.0
 
 
-def test_levels_failure_still_answers():
-    code, body = _call(levels_error=RuntimeError("monitors unavailable"))
+def test_no_inputs_still_answers():
+    code, body = _call(levels=[])
     assert code == 200
     assert [item["running"] for item in body["inputs"]] == [False, False]
     assert [item["dbfs"] for item in body["inputs"]] == [None, None]

@@ -40,6 +40,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from fake_store import fake_levels
+
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
@@ -452,7 +454,7 @@ def _render_airplay_page(*, repeat_enabled: bool = True) -> str:
         patch("autostream_webui_page_airplay.get_appliance_id", return_value=_LOCAL_ID),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-        patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]),
+        fake_levels([]),
         patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
         patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),

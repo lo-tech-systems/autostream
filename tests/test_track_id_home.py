@@ -20,6 +20,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
+from fake_store import fake_levels
 import autostream_appliance_models as models
 import autostream_core as core
 from track_id.models import (
@@ -87,7 +88,7 @@ def _run_home(cfg_path: Path, *, ti_snapshot=None) -> dict:
     patches = [
         patch("autostream_appliance_models.get_setting", return_value=buf_result),
         patch("autostream_appliance_models.list_outputs", return_value=out_result),
-        patch("autostream_appliance_models.get_monitor_levels_dbfs", return_value=[]),
+        fake_levels([]),
         patch("autostream_appliance_models.get_playback_snapshot", return_value=playback),
         patch("autostream_appliance_models.get_appliance_id", return_value="aabbcc"),
         patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),

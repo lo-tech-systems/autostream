@@ -18,12 +18,10 @@ from autostream_appliance_models import _dial_update_banner_text, build_output_l
 from autostream_appliances import get_all_appliances
 from autostream_core import (
     format_khz,
-    get_monitor_levels_dbfs,
     get_playback_snapshot,
-    sample_rate_mismatch_input,
-    sample_rate_warning_text,
 )
 from autostream_player_service import get_setting, list_outputs
+from autostream_state import store
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 from autostream_config import input_type_label, normalize_input_type
 from autostream_mute_state import is_muted as _appliance_is_muted
@@ -268,18 +266,16 @@ def send_airplay_page(
     control_other_appliances = parsed.webui.control_other_appliances
     effective_control = show_hostname_on_home and control_other_appliances
 
-    try:
-        input_levels = get_monitor_levels_dbfs()
-    except Exception:
-        input_levels = []
+    snap = store().snapshot()
+    input_levels = snap.inputs.levels()
 
     playback_snapshot = get_playback_snapshot()
     stylus_banner_text = playback_snapshot.stylus_banner_text or ""
     belt_banner_text = playback_snapshot.belt_banner_text or ""
     bearing_banner_text = playback_snapshot.bearing_banner_text or ""
     dial_update_banner_text = _dial_update_banner_text()
-    sample_rate_banner_text = sample_rate_warning_text()
-    sample_rate_input_index = sample_rate_mismatch_input() or 1
+    sample_rate_banner_text = snap.inputs.sample_rate_warning_text
+    sample_rate_input_index = snap.inputs.sample_rate_mismatch_input or 1
     hostname_label = _display_hostname_label()
 
     # Determine the active input for the initial Now Playing card render.

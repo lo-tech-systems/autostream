@@ -22,6 +22,8 @@ from pathlib import Path
 
 import pytest
 
+from fake_store import fake_levels
+
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
@@ -236,7 +238,7 @@ def _render_local_home_html() -> str:
         _patch("autostream_webui_page_airplay.get_appliance_id", return_value="00000000000000000000"),
         _patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         _patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-        _patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]),
+        fake_levels([]),
         _patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
         _patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
         _patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),

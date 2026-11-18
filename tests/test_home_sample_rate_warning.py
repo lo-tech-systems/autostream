@@ -9,12 +9,12 @@ from the per-input levels.  The input card's rate line (shown only with the
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
 from contextlib import ExitStack
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import _source_text
@@ -24,6 +24,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
+from fake_store import FakeStore, fake_levels
 import autostream_appliance_models as models
 from autostream_core import SAMPLE_RATE_MISMATCH_BANNER_TEXT
 from autostream_webui_api import send_status_json
@@ -34,11 +35,15 @@ _BANNER_OPEN = "<a id='sample-rate-warning-banner' href='/setup#input"
 
 
 def _monitors(*mismatching: int):
-    """Two fake monitors; the numbered inputs report a 44.1 kHz mismatch."""
-    return patch("autostream_runtime.all_monitors", [
-        SimpleNamespace(input_index=n, rate_mismatch_hz=44100 if n in mismatching else 0)
-        for n in (2, 1)
-    ])
+    """Two inputs; the numbered ones report a 44.1 kHz mismatch, as the inputs
+    part holds it (the banner names the lowest-numbered such input)."""
+    fake = FakeStore()
+    lowest = min(mismatching, default=0)
+    fake.inputs(
+        [fake.input_entry(n, rate_mismatch_hz=44100 if n in mismatching else 0)
+         for n in (2, 1)],
+        mismatch=lowest, banner=_BANNER if lowest else "")
+    return contextlib.nullcontext()
 
 
 # ---------------------------------------------------------------------------
@@ -121,7 +126,6 @@ def _home_state(tmp_path) -> dict:
                   return_value=MagicMock(ok=True, value="2250")),
             patch("autostream_appliance_models.list_outputs",
                   return_value=MagicMock(ok=True, outputs=[])),
-            patch("autostream_appliance_models.get_monitor_levels_dbfs", return_value=[]),
             patch("autostream_appliance_models.get_playback_snapshot", return_value=playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="host"),
@@ -182,8 +186,7 @@ def _render_home(levels=None, show_input_detail=False) -> str:
             patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-            patch("autostream_webui_page_airplay.get_monitor_levels_dbfs",
-                  return_value=list(levels or [])),
+            fake_levels(levels) if levels is not None else contextlib.nullcontext(),
             patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=snap),
             patch("autostream_webui_page_airplay._dial_update_banner_text", return_value=""),
             patch("autostream_webui_page_airplay.list_outputs",

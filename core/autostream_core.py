@@ -283,7 +283,7 @@ def _set_monitor_runtime_info(
     """Update the published autostream_monitor runtime metadata. Called from
     the coordinator thread only."""
     cur = autostream_state.store().snapshot().monitor
-    _monitor_writer.publish(autostream_state.MonitorRuntimeInfo(
+    pending = _monitor_writer.publish(autostream_state.MonitorRuntimeInfo(
         monitor_build=(
             str(monitor_build).strip()
             if monitor_build is not None
@@ -300,7 +300,11 @@ def _set_monitor_runtime_info(
             if last_seen_at is None
             else float(last_seen_at)
         ),
-    )).notify()
+    ))
+    pending.notify()
+    if autostream_state.store().snapshot().monitor.connected != cur.connected:
+        # The Setup readout shows "not running" while the daemon is away.
+        _publish_inputs()
 
 
 # ── User-initiated output action marker ──────────────────────────────────────
@@ -773,6 +777,7 @@ def update_live_input_type(
             target._default_nowplaying_metadata(), artwork=cur.artwork
         )
     autostream_session.request_nowplaying_republish()
+    _publish_inputs()
 
     return _push_input_config_with_retry(target, socket_path=socket_path)
 
@@ -798,6 +803,9 @@ def update_live_dynamic_rate_matching(
         return True
 
     target.dynamic_rate_matching = bool(enabled)
+    # The Setup note follows the switch at once, whether or not the push
+    # succeeds.
+    _publish_inputs()
     return _push_input_config_with_retry(target, socket_path=socket_path)
 
 
@@ -1724,35 +1732,6 @@ def _install_signal_handlers() -> None:
     signal.signal(signal.SIGTERM, handle_signal)
 
 
-def get_monitor_levels_dbfs() -> list[dict]:
-    """Return current level data for each active monitor for the Web UI.
-
-    Data is sourced from the most recent get_status() poll cached in each
-    AudioMonitor instance, so it is at most one poll interval stale.
-    """
-    levels: list[dict] = []
-    with runtime._monitors_lock:
-        snapshot = list(runtime.all_monitors)
-    for mon in snapshot:
-        levels.append({
-            "index": int(mon.input_index),
-            "label": f"Input {mon.input_index}",
-            "dbfs": round(mon.poll_peak_dbfs, 1),
-            "detected_hz": round(mon.detected_hz, 1),
-            "detected_khz": format_khz(mon.detected_hz),
-            "negotiated_hz": mon.negotiated_hz,
-            "rate_lock": mon.rate_lock,
-            "relock_count": mon.relock_count,
-            "rate_mismatch_hz": mon.rate_mismatch_hz,
-            "rate_mismatch_khz": format_khz(mon.rate_mismatch_hz),
-            "dynamic_rate_matching": mon.dynamic_rate_matching,
-            "monitor_supports_rate_matching": mon.monitor_dynamic_rate_matching is not None,
-            "is_above_threshold": not mon.is_silent,
-            "vu_history": mon.vu_history,
-        })
-    return levels
-
-
 def format_khz(hz: float) -> str:
     """'44.1 kHz' / '48 kHz': one decimal, trimmed when the rounded value is
     whole; '' for a non-positive or non-finite value."""
@@ -1768,45 +1747,15 @@ def format_khz(hz: float) -> str:
 SAMPLE_RATE_MISMATCH_BANNER_TEXT = "Sample Rate Mismatch: Please enable Dynamic Rate Matching"
 
 
-def sample_rate_mismatch_input() -> int:
-    """Index (1 or 2) of the lowest-numbered input whose monitor reports a
-    different standard rate than it was opened at, or 0 when there is none.
-    The daemon reports a mismatch only while its own Dynamic Rate Matching
-    flag is off, so this needs no test of the coordinator's copy of the flag:
-    after a successful push the daemon steps and clears the report within a
-    window, and after a failed push the report (and the banner) correctly
-    stays."""
-    with runtime._monitors_lock:
-        snapshot = sorted(runtime.all_monitors, key=lambda m: m.input_index)
-    for mon in snapshot:
-        if mon.rate_mismatch_hz > 0:
-            return mon.input_index
-    return 0
-
-
-def sample_rate_warning_text() -> str:
-    """Home-page banner text: the fixed SAMPLE_RATE_MISMATCH_BANNER_TEXT
-    while any monitor reports a mismatch, else ''. The text names neither
-    the input nor the rates; the banner's link identifies the input."""
-    return SAMPLE_RATE_MISMATCH_BANNER_TEXT if sample_rate_mismatch_input() else ""
-
-
-RATE_MATCHING_NOTE_DEFAULT = (
-    "Follows the sample rate of the source. Turn on for an optical (S/PDIF) "
-    "adapter fed by a CD or DVD player."
-)
 RATE_MATCHING_NOTE_MONITOR_OLD = (
     "The audio monitor on this appliance needs updating before this setting "
     "takes effect."
 )
 
 
-SAMPLE_RATE_TEXT_NOT_RUNNING = "Sample rate: not running"
-
-
 def _rate_matching_note_for(mon: Optional["AudioMonitor"]) -> str:
     if mon is None:
-        return RATE_MATCHING_NOTE_DEFAULT
+        return autostream_state.RATE_MATCHING_NOTE_DEFAULT
     if mon.dynamic_rate_matching and mon.monitor_dynamic_rate_matching is None:
         return RATE_MATCHING_NOTE_MONITOR_OLD
     if not mon.dynamic_rate_matching and mon.rate_mismatch_hz > 0:
@@ -1815,12 +1764,12 @@ def _rate_matching_note_for(mon: Optional["AudioMonitor"]) -> str:
             f"device was opened at {format_khz(mon.negotiated_hz)}. Turn this on "
             f"to follow the source."
         )
-    return RATE_MATCHING_NOTE_DEFAULT
+    return autostream_state.RATE_MATCHING_NOTE_DEFAULT
 
 
 def _sample_rate_text_for(mon: Optional["AudioMonitor"], connected: bool) -> str:
     if mon is None or not connected or not mon.rate_lock:
-        return SAMPLE_RATE_TEXT_NOT_RUNNING
+        return autostream_state.SAMPLE_RATE_TEXT_NOT_RUNNING
     # A non-breaking space keeps each rate with its unit when the line wraps
     # on a narrow screen; format_khz itself keeps its plain space.
     def keep_unit(text: str) -> str:
@@ -1836,7 +1785,7 @@ def _sample_rate_text_for(mon: Optional["AudioMonitor"], connected: bool) -> str
         return "Sample rate: checking"
     running = format_khz(mon.detected_hz)
     if not running:
-        return SAMPLE_RATE_TEXT_NOT_RUNNING
+        return autostream_state.SAMPLE_RATE_TEXT_NOT_RUNNING
     # Compared as text so a device that opens at 47999 Hz still reads as
     # 48 kHz and is not taken for a rate step.
     if opened and opened != running:
@@ -1847,36 +1796,76 @@ def _sample_rate_text_for(mon: Optional["AudioMonitor"], connected: bool) -> str
     return f"Sample rate: {keep_unit(running)}"
 
 
-def input_rate_texts(input_index: int) -> tuple[str, str]:
-    """The two rate texts on one input's Setup card, as (Dynamic Rate
-    Matching note, sample rate readout). Both come from a single lookup of
-    the input's monitor, so they cannot disagree with each other."""
-    with runtime._monitors_lock:
-        mon = next((m for m in runtime.all_monitors if m.input_index == input_index), None)
-    connected = bool(autostream_state.store().snapshot().monitor.connected)
-    return _rate_matching_note_for(mon), _sample_rate_text_for(mon, connected)
+_inputs_writer = autostream_state.store().claim("inputs", "autostream_core")
+# Held across read-build-publish, so of two concurrent publishers the one that
+# publishes last also read last.
+_inputs_publish_lock = threading.Lock()
 
 
-def rate_matching_note_text(input_index: int) -> str:
-    """Help text under the Setup card's Dynamic Rate Matching switch for one
-    input, from the coordinator's view of that input's monitor. The flag
-    tested is the coordinator's copy, which the live callback sets before
-    the push, so the note follows the switch whether or not the push
-    succeeded; the mismatch itself comes from the daemon's report, so it
-    clears only once the daemon has stepped."""
-    return input_rate_texts(input_index)[0]
+def _build_inputs_part(monitors: list, connected: bool) -> "autostream_state.InputsPart":
+    """The inputs part from the running monitors: each input's Web UI level
+    item (sourced from the most recent status poll cached in its AudioMonitor,
+    so at most one poll interval stale), its two Setup rate texts, and the
+    sample-rate mismatch banner."""
+    entries = []
+    for mon in monitors:
+        level = {
+            "index": int(mon.input_index),
+            "label": f"Input {mon.input_index}",
+            "dbfs": round(mon.poll_peak_dbfs, 1),
+            "detected_hz": round(mon.detected_hz, 1),
+            "detected_khz": format_khz(mon.detected_hz),
+            "negotiated_hz": mon.negotiated_hz,
+            "rate_lock": mon.rate_lock,
+            "relock_count": mon.relock_count,
+            "rate_mismatch_hz": mon.rate_mismatch_hz,
+            "rate_mismatch_khz": format_khz(mon.rate_mismatch_hz),
+            "dynamic_rate_matching": mon.dynamic_rate_matching,
+            "monitor_supports_rate_matching": mon.monitor_dynamic_rate_matching is not None,
+            "is_above_threshold": not mon.is_silent,
+            "vu_history": mon.vu_history,
+        }
+        entries.append(autostream_state.InputEntry(
+            index=int(mon.input_index),
+            device=mon.input_device,
+            input_type=mon.input_type,
+            capturing=bool(mon.is_capturing),
+            replay_origin=bool(mon._replay_origin),
+            rate_note=_rate_matching_note_for(mon),
+            sample_rate_text=_sample_rate_text_for(mon, connected),
+            rate_mismatch_hz=int(mon.rate_mismatch_hz),
+            level=level,
+        ))
+    # The lowest-numbered input whose monitor reports a different standard
+    # rate than it was opened at, or 0. The daemon reports a mismatch only
+    # while its own Dynamic Rate Matching flag is off, so no test of the
+    # coordinator's copy of the flag is needed: after a successful push the
+    # daemon steps and clears the report within a window, and after a failed
+    # push the report (and the banner) correctly stays.
+    mismatch = next(
+        (m.input_index for m in sorted(monitors, key=lambda m: m.input_index)
+         if m.rate_mismatch_hz > 0),
+        0,
+    )
+    return autostream_state.InputsPart(
+        entries=tuple(entries),
+        sample_rate_mismatch_input=mismatch,
+        # The text names neither the input nor the rates; the banner's link
+        # identifies the input.
+        sample_rate_warning_text=SAMPLE_RATE_MISMATCH_BANNER_TEXT if mismatch else "",
+    )
 
 
-def sample_rate_text(input_index: int) -> str:
-    """The Setup card's sample rate readout for one input: the rate it is
-    running at, with the rate the device was opened at when the detector has
-    stepped away from it, or the rate the source is sending while a mismatch
-    is reported. 'Sample rate: checking' while the rate is still being worked
-    out; 'Sample rate: not running' when the input is not running or the
-    audio monitor is not connected. An older monitor that reports no rate
-    lock or opened rate gives the detected rate alone, or 'not running' when
-    there is none."""
-    return input_rate_texts(input_index)[1]
+def _publish_inputs() -> None:
+    """Rebuild the inputs part from the monitors and the monitor part. Both
+    are read inside the lock, so of two concurrent publishers the one that
+    publishes last also read last (no older 'connected' overwriting a newer
+    one). The change is delivered after the lock is released."""
+    with _inputs_publish_lock:
+        monitors = runtime.monitors_snapshot()
+        connected = autostream_state.store().snapshot().monitor.connected
+        pending = _inputs_writer.publish(_build_inputs_part(monitors, connected))
+    pending.notify()
 
 
 def normalize_monitor_devices(
@@ -4507,6 +4496,7 @@ def _await_startup(
 
         monitors = _configure_startup_monitors(client, cfg, fifo_path)
         if monitors is not None:
+            _publish_inputs()
             break
 
         client.close()
@@ -4775,6 +4765,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                     m._on_capture_stopped(client)
                 for m in started:
                     m._on_capture_started()
+                _publish_inputs()
 
                 # ── Unified playback-session tracker ───────────────────────────
                 # Single call site: derives the {input1, input2, replay}
@@ -4936,6 +4927,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 tracker.save()
             with runtime._monitors_lock:
                 runtime.all_monitors.clear()
+            _publish_inputs()
             announce.sync_playing_announcement(False, version)
             client.close()
             if not _reloading:

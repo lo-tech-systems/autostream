@@ -49,7 +49,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_mute_state as mute_state
-from fake_store import fake_repeat, fake_session
+from fake_store import fake_levels, fake_repeat, fake_session
 
 
 @pytest.fixture(autouse=True)
@@ -572,7 +572,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
         mute_state.begin_mute({})
         with patch("autostream_appliance_models.locked_load_config", return_value={}), \
              patch("autostream_appliance_models.parse_config") as mock_parse, \
-             patch("autostream_appliance_models.get_monitor_levels_dbfs", return_value=[]), \
+             fake_levels([]), \
              patch("autostream_appliance_models.get_playback_snapshot") as mock_playback, \
              patch("autostream_appliance_models.list_outputs", return_value=_list_result([])), \
              patch("autostream_appliance_models.get_setting") as mock_setting, \
@@ -736,7 +736,7 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
         patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-        patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=input_levels),
+        fake_levels(input_levels),
         patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
         patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),

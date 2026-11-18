@@ -41,11 +41,11 @@ except ImportError:
         return []
 
 from autostream_core import (
-    input_rate_texts,
     update_live_owntone_runtime,
     update_playback_input_config,
 )
 from autostream_player_service import list_outputs
+from autostream_state import store
 from autostream_players import (
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD_DEFAULT_MINUTES,
     SETTING_DEVICE_REMOVAL_GRACE_PERIOD_MAX_MINUTES,
@@ -1001,7 +1001,7 @@ def _setup_input_card_html(
         input_type = normalize_input_type(getattr(parsed_input, "input_type", "line"))
         threshold = float(parsed_input.silence_threshold_dbfs)
         rate_matching = bool(getattr(parsed_input, "dynamic_rate_matching", True))
-        rate_matching_note_raw, sample_rate_line_raw = input_rate_texts(input_index)
+        rate_matching_note_raw, sample_rate_line_raw = store().snapshot().inputs.rate_texts(input_index)
         rate_matching_note = html.escape(rate_matching_note_raw)
         sample_rate_line = html.escape(sample_rate_line_raw)
         type_options = "".join(

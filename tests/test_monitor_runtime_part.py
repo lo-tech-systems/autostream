@@ -16,6 +16,7 @@ _CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
+from fake_store import fake_levels
 import autostream_core as core
 import autostream_state as state
 import autostream_webui_api as api
@@ -76,7 +77,7 @@ class TestHealthPart:
             watchdog_restart_count=1, watchdog_last_restart_at=float("-inf"))
         handler = MagicMock()
         handler.wfile = io.BytesIO()
-        with patch.object(api, "get_monitor_levels_dbfs", return_value=[]), \
+        with fake_levels([]), \
              patch.object(api, "_session_playing", return_value=False):
             api.send_status_json(handler, None)
         body = json.loads(handler.wfile.getvalue().decode("utf-8"))

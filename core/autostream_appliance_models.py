@@ -27,10 +27,8 @@ from autostream_core import (
     clear_user_silence_latch,
     get_active_track_identification_snapshot,
     get_live_output_eq_status,
-    get_monitor_levels_dbfs,
     get_playback_snapshot,
     note_user_output_action,
-    sample_rate_warning_text,
     set_live_output_auto_trim,
     set_live_output_eq,
     set_live_output_gain,
@@ -279,10 +277,7 @@ def build_home_state(
             **_session_and_repeat_fields(snap),
         }
 
-    try:
-        input_levels = get_monitor_levels_dbfs()
-    except Exception:
-        input_levels = []
+    input_levels = snap.inputs.levels()
 
     playback = get_playback_snapshot()
 
@@ -353,7 +348,7 @@ def build_home_state(
             "belt": playback.belt_banner_text or "",
             "bearing": playback.bearing_banner_text or "",
             "dial_update": _dial_update_banner_text(),
-            "sample_rate": sample_rate_warning_text(),
+            "sample_rate": snap.inputs.sample_rate_warning_text,
         },
         "outputs": outputs,
         "muted": mute_state.is_muted(),

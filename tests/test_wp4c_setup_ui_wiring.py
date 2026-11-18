@@ -340,10 +340,12 @@ class TestSetupPageHtmlControls:
         assert 'class="helptext" style="text-align:left;"' in level_div
         assert 'class="helptext" style="text-align:left;"' in rate_div
 
-    def test_first_render_sample_rate_line_comes_from_the_shared_helper(self, tmp_path):
-        with patch("autostream_webui_page_setup.input_rate_texts",
-                   side_effect=lambda index: (f"note {index}", f"Sample rate: text {index}")):
-            html = _SetupRenderer().render(tmp_path)
+    def test_first_render_sample_rate_line_comes_from_the_inputs_part(self, tmp_path, fake_store):
+        fake_store.inputs([
+            fake_store.input_entry(
+                n, rate_note=f"note {n}", sample_rate_text=f"Sample rate: text {n}")
+            for n in (1, 2)])
+        html = _SetupRenderer().render(tmp_path)
         for n in (1, 2):
             line = html.split(f'id="audio{n}_sample_rate"', 1)[1].split("</div>", 1)[0]
             assert f"Sample rate: text {n}" in line
@@ -352,25 +354,29 @@ class TestSetupPageHtmlControls:
         line = html.split('id="audio1_sample_rate"', 1)[1].split("</div>", 1)[0]
         assert "Sample rate: not running" in line
 
-    def test_first_render_keeps_a_non_breaking_space_as_the_character(self, tmp_path):
-        with patch("autostream_webui_page_setup.input_rate_texts",
-                   side_effect=lambda index: ("note", "Sample rate: 48 kHz")):
-            html = _SetupRenderer().render(tmp_path)
+    def test_first_render_keeps_a_non_breaking_space_as_the_character(self, tmp_path, fake_store):
+        fake_store.inputs([
+            fake_store.input_entry(
+                n, rate_note="note", sample_rate_text="Sample rate: 48 kHz")
+            for n in (1, 2)])
+        html = _SetupRenderer().render(tmp_path)
         line = html.split('id="audio1_sample_rate"', 1)[1].split("</div>", 1)[0]
         assert "48 kHz" in line
         assert "&nbsp;" not in line and "&#160;" not in line
 
     def test_rate_matching_label_and_default_note_present(self, html):
-        from autostream_core import RATE_MATCHING_NOTE_DEFAULT
+        from autostream_state import RATE_MATCHING_NOTE_DEFAULT
         assert "<span>Dynamic Rate Matching</span>" in html
         for n in (1, 2):
             note = html.split(f'id="audio{n}_rate_matching_note"', 1)[1].split("</div>", 1)[0]
             assert RATE_MATCHING_NOTE_DEFAULT in note
 
-    def test_first_render_note_comes_from_the_shared_helper(self, tmp_path):
-        with patch("autostream_webui_page_setup.input_rate_texts",
-                   side_effect=lambda index: (f"note for input {index}", "Sample rate: x")):
-            html = _SetupRenderer().render(tmp_path)
+    def test_first_render_note_comes_from_the_inputs_part(self, tmp_path, fake_store):
+        fake_store.inputs([
+            fake_store.input_entry(
+                n, rate_note=f"note for input {n}", sample_rate_text="Sample rate: x")
+            for n in (1, 2)])
+        html = _SetupRenderer().render(tmp_path)
         note1 = html.split('id="audio1_rate_matching_note"', 1)[1].split("</div>", 1)[0]
         note2 = html.split('id="audio2_rate_matching_note"', 1)[1].split("</div>", 1)[0]
         assert "note for input 1" in note1

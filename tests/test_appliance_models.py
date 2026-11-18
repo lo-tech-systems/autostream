@@ -412,7 +412,7 @@ class TestBuildHomeStateLocal:
         return (
             patch("autostream_appliance_models.get_setting", return_value=buf_result),
             patch("autostream_appliance_models.list_outputs", return_value=out_result),
-            patch("autostream_appliance_models.get_monitor_levels_dbfs", return_value=[]),
+            fake_levels([]),
             patch("autostream_appliance_models.get_playback_snapshot", return_value=playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),
@@ -442,8 +442,7 @@ class TestBuildHomeStateLocal:
         patches = self._patch_home(cfg_path)
         with patches[0], patches[1], patches[2], patches[3], \
              patches[4], patches[5], patches[6], \
-             patch("autostream_appliance_models.sample_rate_warning_text",
-                   return_value="banner text"):
+             fake_levels([], banner="banner text"):
             result = models.build_home_state(str(cfg_path))
         assert result["warnings"]["sample_rate"] == "banner text"
 
@@ -586,7 +585,7 @@ class TestBuildHomeStateFederation:
 
         with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
              patch("autostream_appliance_models.list_outputs", return_value=out_result), \
-             patch("autostream_appliance_models.get_monitor_levels_dbfs", return_value=[]), \
+             fake_levels([]), \
              patch("autostream_appliance_models.get_playback_snapshot", return_value=playback), \
              patch("autostream_appliance_models.get_appliance_id", return_value=""), \
              patch("autostream_appliance_models.get_system_hostname", return_value=""), \
@@ -605,7 +604,7 @@ class TestBuildHomeStateFederation:
         playback.bearing_banner_text = ""
         deadline = time.monotonic() - 1.0  # already expired
 
-        with patch("autostream_appliance_models.get_monitor_levels_dbfs", return_value=[]), \
+        with fake_levels([]), \
              patch("autostream_appliance_models.get_playback_snapshot", return_value=playback), \
              patch("autostream_appliance_models.get_appliance_id", return_value=""), \
              patch("autostream_appliance_models.get_system_hostname", return_value=""), \
@@ -664,7 +663,7 @@ class TestBuildHomeStateAnnotation:
         def _ctx():
             with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
                  patch("autostream_appliance_models.list_outputs", return_value=out_result), \
-                 patch("autostream_appliance_models.get_monitor_levels_dbfs", return_value=[]), \
+                 fake_levels([]), \
                  patch("autostream_appliance_models.get_playback_snapshot", return_value=playback), \
                  patch("autostream_appliance_models.get_appliance_id", return_value=""), \
                  patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
@@ -766,7 +765,7 @@ class TestBuildHomeStateAnnotation:
 import logging as _logging
 
 import autostream_pin_pairing as _pairing
-from fake_store import fake_repeat, fake_session
+from fake_store import fake_levels, fake_repeat, fake_session
 
 
 def _result(ok: bool, error_code: str = "", message: str = ""):

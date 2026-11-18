@@ -110,10 +110,7 @@ from autostream_dial_warnings import current_warnings, poke as poke_dial_warning
 from autostream_core import (
     apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
-    get_monitor_levels_dbfs,
     get_playback_snapshot,
-    input_rate_texts,
-    sample_rate_warning_text,
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
@@ -418,11 +415,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         warnings = home.get("warnings", {})
         ti_dict = home.get("track_identification", {})
     else:
-        input_levels = []
-        try:
-            input_levels = get_monitor_levels_dbfs()
-        except Exception:
-            pass
+        input_levels = snap.inputs.levels()
         playback = get_playback_snapshot()
         playback_dict = playback.to_public_dict()
         warnings = {
@@ -430,7 +423,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
             "belt": playback.belt_banner_text or "",
             "bearing": playback.bearing_banner_text or "",
             "dial_update": _dial_update_banner_text(),
-            "sample_rate": sample_rate_warning_text(),
+            "sample_rate": snap.inputs.sample_rate_warning_text,
         }
         try:
             from autostream_core import get_active_track_identification_snapshot
@@ -493,15 +486,13 @@ def send_input_levels_json(handler, state: Optional[WebUIState] = None) -> None:
             enabled = {1: bool(parsed.audio1_enabled), 2: bool(parsed.audio2_enabled)}
         except Exception:
             logging.debug("input levels: config snapshot unavailable", exc_info=True)
-    connected = bool(store().snapshot().monitor.connected)
-    try:
-        by_index = {lv.get("index"): lv for lv in get_monitor_levels_dbfs()}
-    except Exception:
-        by_index = {}
+    snap = store().snapshot()
+    connected = bool(snap.monitor.connected)
+    by_index = {lv.get("index"): lv for lv in snap.inputs.levels()}
     inputs = []
     for index in (1, 2):
         lv = by_index.get(index)
-        note_text, rate_text = input_rate_texts(index)
+        note_text, rate_text = snap.inputs.rate_texts(index)
         inputs.append({
             "index": index,
             "enabled": enabled[index],

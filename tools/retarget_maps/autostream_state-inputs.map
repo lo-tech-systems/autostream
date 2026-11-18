@@ -1,0 +1,3 @@
+# The two default Setup rate texts moved into the state parts.
+autostream_core.RATE_MATCHING_NOTE_DEFAULT -> autostream_state.RATE_MATCHING_NOTE_DEFAULT  alias=state
+autostream_core.SAMPLE_RATE_TEXT_NOT_RUNNING -> autostream_state.SAMPLE_RATE_TEXT_NOT_RUNNING  alias=state

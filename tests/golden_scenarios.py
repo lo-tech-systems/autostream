@@ -415,6 +415,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     import autostream_mute_state as mute_state
     import autostream_player_service as player_service
     import autostream_repeat
+    import autostream_state as state
     import autostream_start_buffer_cache as start_buffer_cache
     import autostream_system_stats as system_stats
     import autostream_webui_api as api
@@ -451,12 +452,17 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     fake.session(scenario.session.get("active"), scenario.session.get("source"))
     fake.repeat(scenario.repeat)
     sample_rate_text = "Sample rate: 44.1 kHz"
-    rate_note = core.RATE_MATCHING_NOTE_DEFAULT
+    rate_note = state.RATE_MATCHING_NOTE_DEFAULT
 
-    def input_rate_texts(index):
-        if not scenario.monitor_connected or not levels:
-            return rate_note, core.SAMPLE_RATE_TEXT_NOT_RUNNING
-        return rate_note, sample_rate_text
+    running = scenario.monitor_connected and bool(levels)
+    fake.inputs([
+        fake.input_entry(
+            lv["index"], rate_note=rate_note,
+            sample_rate_text=(
+                sample_rate_text if running else state.SAMPLE_RATE_TEXT_NOT_RUNNING),
+            **{k: v for k, v in lv.items() if k != "index"})
+        for lv in levels
+    ])
 
     @contextlib.contextmanager
     def connected_monitor(socket_path=None):
@@ -468,15 +474,12 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
 
     shared = dict(
         get_playback_snapshot=lambda: scenario.playback,
-        get_monitor_levels_dbfs=lambda: [dict(lv) for lv in levels],
-        sample_rate_warning_text=lambda: "",
         list_outputs=list_outputs,
         get_appliance_id=lambda: APPLIANCE_ID,
         get_app_version=lambda: FIXED_APP_VERSION,
         _dial_update_banner_text=lambda: "",
     )
     setattrs(api, **shared,
-             input_rate_texts=input_rate_texts,
              dial_authorization=lambda dial_id: AUTH_AUTHORIZED,
              dial_speaks_v2=lambda dial_id: True,
              _config_snapshot=lambda state: cfg,
@@ -497,15 +500,13 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              },
              parse_config=functools.partial(_parse_without_hardware_probe))
     setattrs(airplay, **{k: v for k, v in shared.items()
-                         if k in ("get_playback_snapshot", "get_monitor_levels_dbfs",
-                                  "sample_rate_warning_text", "list_outputs",
+                         if k in ("get_playback_snapshot", "list_outputs",
                                   "get_appliance_id", "_dial_update_banner_text")},
              get_app_version=lambda: FIXED_APP_VERSION,
              _config_snapshot=lambda state: cfg,
              get_setting=get_setting,
              get_all_appliances=lambda: [],
              get_system_hostname=lambda: "golden.local",
-             sample_rate_mismatch_input=lambda: 0,
              build_top_banner_html=lambda **kwargs: ("", ""))
     setattrs(core,
              get_active_track_identification_snapshot=lambda: scenario.track,

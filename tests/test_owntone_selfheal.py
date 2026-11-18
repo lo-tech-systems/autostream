@@ -36,6 +36,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
+from fake_store import fake_levels
 import autostream_core as core
 from autostream_core import (
     AudioMonitor,
@@ -1106,7 +1107,7 @@ class TestStatusPassthrough:
 
         handler.wfile.write.side_effect = _wfile_write
 
-        with patch("autostream_webui_api.get_monitor_levels_dbfs", return_value=[]):
+        with fake_levels([]):
             send_status_json(handler)
 
         assert sent["body"]["owntone_selfheal"] == {
@@ -1139,7 +1140,7 @@ class TestStatusPassthrough:
 
         handler.wfile.write.side_effect = _wfile_write
 
-        with patch("autostream_webui_api.get_monitor_levels_dbfs", return_value=[]):
+        with fake_levels([]):
             send_status_json(handler)
 
         raw = sent["raw"].decode("utf-8")

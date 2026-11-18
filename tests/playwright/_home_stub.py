@@ -103,6 +103,15 @@ def render_home(
     snap.has_warning = False
     snap.to_public_dict.return_value = {}
 
+    sys.path.insert(0, str(REPO_ROOT / "tests"))
+    from fake_store import FakeStore  # noqa: PLC0415
+
+    fake = FakeStore()
+    fake.inputs(
+        [fake.input_entry(lv["index"], **{k: v for k, v in lv.items() if k != "index"})
+         for lv in (levels or [])],
+        mismatch=mismatch_input, banner=banners.get("sample_rate", ""))
+
     with ExitStack() as stack:
         for p in (
             patch("autostream_webui_page_airplay._config_snapshot",
@@ -110,15 +119,9 @@ def render_home(
             patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-            patch("autostream_webui_page_airplay.get_monitor_levels_dbfs",
-                  return_value=list(levels or [])),
             patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=snap),
             patch("autostream_webui_page_airplay._dial_update_banner_text",
                   return_value=banners.get("dial_update", "")),
-            patch("autostream_webui_page_airplay.sample_rate_warning_text",
-                  return_value=banners.get("sample_rate", "")),
-            patch("autostream_webui_page_airplay.sample_rate_mismatch_input",
-                  return_value=mismatch_input),
             patch("autostream_webui_page_airplay.list_outputs",
                   return_value=MagicMock(ok=False, outputs=[])),
             patch("autostream_webui_page_airplay.get_setting",

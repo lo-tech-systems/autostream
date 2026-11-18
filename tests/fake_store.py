@@ -27,7 +27,7 @@ _LEVEL_DEFAULTS = {
     "detected_hz": 0.0,
     "detected_khz": "",
     "negotiated_hz": 0,
-    "rate_lock": "",
+    "rate_lock": "locked",
     "relock_count": 0,
     "rate_mismatch_hz": 0,
     "rate_mismatch_khz": "",
@@ -107,4 +107,19 @@ def fake_repeat(block):
     manager that does nothing, so it can stand in a ``with`` statement where
     a test used to patch a repeat getter."""
     FakeStore().repeat(block)
+    return contextlib.nullcontext()
+
+
+def fake_levels(levels, banner: str = ""):
+    """Put the given Web UI level items into the inputs part (one entry per
+    item) and return a context manager that does nothing, so it can stand in
+    a ``with`` statement where a test used to patch a levels getter."""
+    fake = FakeStore()
+    entries = []
+    for position, lv in enumerate(levels, start=1):
+        entry = fake.input_entry(
+            lv.get("index", position), rate_mismatch_hz=int(lv.get("rate_mismatch_hz", 0) or 0))
+        # The level is exactly what the test gave, with no defaults filled in.
+        entries.append(dataclasses.replace(entry, level=dict(lv)))
+    fake.inputs(entries, banner=banner)
     return contextlib.nullcontext()

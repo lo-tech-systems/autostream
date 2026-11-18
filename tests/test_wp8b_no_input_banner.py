@@ -22,6 +22,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from fake_store import fake_levels
+
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
@@ -133,7 +135,7 @@ class TestMainPageBanner:
             patch("autostream_webui_page_airplay.get_appliance_id", return_value="local-id"),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-            patch("autostream_webui_page_airplay.get_monitor_levels_dbfs", return_value=[]),
+            fake_levels([]),
             patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=_make_playback_snapshot()),
             patch("autostream_webui_page_airplay.list_outputs",
                   return_value=ListOutputsResult(ok=False, error="unreachable")),

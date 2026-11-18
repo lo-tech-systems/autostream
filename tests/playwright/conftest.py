@@ -24,6 +24,24 @@ _LAUNCH_CHECK = (
 _launchable: dict[str, str | None] = {}
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _state_store_in_test_mode():
+    """Put the state store in test mode before any module fixture runs.
+
+    The page stubs are served from module-scoped fixtures, which set up before
+    the per-test store reset, and they arrange the parts they render through
+    the store's test-only writer.
+    """
+    from pathlib import Path
+
+    core = str(Path(__file__).resolve().parents[2] / "core")
+    if core not in sys.path:
+        sys.path.insert(0, core)
+    import autostream_state
+
+    autostream_state.store().reset_for_tests()
+
+
 def pytest_configure(config):
     config.addinivalue_line(
         "markers", "engines: pointer-driven HD page tests that also run under every --browser engine"
