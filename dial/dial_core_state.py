@@ -15,7 +15,6 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import unicodedata
 from dataclasses import dataclass, replace
@@ -536,17 +535,13 @@ class CoreSnapshot:
 # ---- appliance-supplied warnings ------------------------------------------
 #
 # The protocol is plain HTTP, so any host on the LAN can answer in an
-# appliance's place: everything in a warnings reply is untrusted text. The
-# validator below is the one entry point. It only ever returns data (strings
-# drawn from closed sets, or stripped and length-capped text); nothing it
-# returns is a format template, a path, a command or a link.
+# appliance's place: everything in a warnings reply is untrusted text.
+# appliance_warning_entries is the one entry point. It only ever returns
+# data (strings drawn from closed sets, or stripped and length-capped text);
+# nothing it returns is a format template, a path, a command or a link.
 
-# A reply larger than this is not parsed at all.
-APPLIANCE_WARNINGS_MAX_BODY_BYTES = 8192
 # At most this many warnings are kept per appliance; the rest are dropped.
 APPLIANCE_WARNINGS_MAX = 16
-# Entries examined before giving up on a list padded with unusable ones.
-APPLIANCE_WARNINGS_MAX_SCAN = 4 * APPLIANCE_WARNINGS_MAX
 # Longest title and message kept, in characters; longer ones are truncated.
 APPLIANCE_WARNING_TITLE_MAX = 40
 APPLIANCE_WARNING_MESSAGE_MAX = 120
@@ -656,38 +651,6 @@ def newer_appliance_names(roster, own_protocol: int) -> tuple[str, ...]:
         _entry_name(r) for r in roster
         if (_entry_protocol(r, own_protocol) or 0) > own_protocol
     )
-
-
-def validate_appliance_warnings(body, appliance_id: str) -> tuple[ApplianceWarning, ...]:
-    """The validated warnings of an appliance's reply, or () when there is
-    nothing usable. *body* is the reply as received (bytes or text, parsed
-    here under a size cap) or an already parsed object; *appliance_id* is
-    the appliance the request was made of.
-
-    The expected shape is {"appliance_id": "<id>", "warnings": [{"id":
-    "<id>", "severity": "<name>", "title": "<text>", "message": "<text>"},
-    ...]}. The reply is refused (()) when it is too
-    large, is not JSON, is not an object, names a different appliance than
-    *appliance_id* or has no list of warnings. Within a list: an entry that
-    is not an object, has an invalid or repeated id, or has no title once
-    cleaned is dropped; over-long text and a long list are truncated, not
-    refused; severity falls back to its default. Never
-    raises."""
-    try:
-        if not isinstance(appliance_id, str) or not appliance_id:
-            return ()
-        if isinstance(body, (bytes, bytearray, str)):
-            if len(body) > APPLIANCE_WARNINGS_MAX_BODY_BYTES:
-                return ()
-            body = json.loads(body)
-        if not isinstance(body, dict) or body.get("appliance_id") != appliance_id:
-            return ()
-        entries = body.get("warnings")
-        if not isinstance(entries, list):
-            return ()
-        return appliance_warning_entries(entries, APPLIANCE_WARNINGS_MAX)
-    except Exception:
-        return ()
 
 
 def appliance_warning_entries(entries, limit: int) -> tuple[ApplianceWarning, ...]:

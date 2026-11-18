@@ -171,7 +171,6 @@ class TestParseRepeatObject:
 from dial_repeat_store import (
     DEFAULT_LATENCY_S,
     heard_position,
-    heard_position_clamped,
     interpolated_position,
 )
 
@@ -225,8 +224,3 @@ class TestHeardPosition:
     def test_the_heard_position_runs_negative_just_after_a_start(self):
         rec = _rec(position=0.0, latency=3.5)
         assert heard_position(rec, 51.0) == pytest.approx(-2.5)
-
-    def test_the_clamped_variant_never_goes_below_zero(self):
-        rec = _rec(position=0.0, latency=3.5)
-        assert heard_position_clamped(rec, 51.0) == 0.0
-        assert heard_position_clamped(rec, 54.5) == pytest.approx(1.0)

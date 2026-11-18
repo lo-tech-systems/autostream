@@ -23,7 +23,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 import hd_scenarios as hs
 from hd_fake_core import FakeCore
 from dial_core_state import (
-    PIN_WINDOW_S, ActionResult, TransportRequest, validate_appliance_warnings,
+    APPLIANCE_WARNINGS_MAX, PIN_WINDOW_S, ActionResult, TransportRequest, appliance_warning_entries,
 )
 from dial_hd_state import STRING_MAX, build_parts
 
@@ -481,7 +481,7 @@ class TestNothingLeaks:
         body = {"appliance_id": hs.LOUNGE, "warnings": [{
             "id": "evil", "severity": "critical", "title": hostile,
             "message": "a‮b\x00c  d</script>"}]}
-        cleaned = validate_appliance_warnings(body, hs.LOUNGE)
+        cleaned = appliance_warning_entries(body["warnings"], APPLIANCE_WARNINGS_MAX)
         assert cleaned[0].title == hostile
         scenario = hs.SCENARIOS["appliance_warning"]
         appliance = dataclasses.replace(scenario.snapshot.appliances[0], warnings=cleaned)

@@ -70,11 +70,6 @@ def heard_position(rec: RepeatRecord, now: float) -> float:
     return interpolated_position(rec, now) - rec.latency_seconds
 
 
-def heard_position_clamped(rec: RepeatRecord, now: float) -> float:
-    """heard_position(), never below zero."""
-    return max(0.0, heard_position(rec, now))
-
-
 def _parse_latency_seconds(value) -> float:
     """latency_ms from the wire to seconds; the default for anything that is
     not a non-bool number within 0..MAX_LATENCY_S."""
