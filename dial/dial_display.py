@@ -1267,6 +1267,14 @@ class DialDisplay:
             logging.debug("dial display: screenshot encode failed: %s", e)
             return None
 
+    def fold_for_tests(self) -> None:
+        """Test hook: fold the appliances once on this thread and fold the
+        result into the screen: the core's fold, then the snapshot it ends
+        in. The core's own thread and the repaint thread do the same in
+        production; this is the entry for a caller that has neither running."""
+        self._core.fold_once()
+        self._apply_pending_snapshot()
+
     def update_config(self, config) -> dict:
         with self._lock:
             old_config = self._config
@@ -4456,14 +4464,6 @@ class DialDisplay:
         if state is not None and state.appliance_id != current_id:
             with self._lock:
                 self._close_secondary_locked()
-
-    def _poll_once(self) -> None:
-        """Fold the appliances once on this thread and fold the result into
-        the screen: the core's fold, then the snapshot it ends in. The core's
-        own thread and the repaint thread do the same in production; this is
-        the entry for a caller that has neither running."""
-        self._core.fold_once()
-        self._apply_pending_snapshot()
 
     def _drain_effects(self) -> None:
         """Turn what the core queued for this view (what its warning

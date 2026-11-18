@@ -489,8 +489,8 @@ class DialCore:
         read, no lock. The list is shared and must not be edited."""
         return self._state.roster
 
-    def set_field(self, name: str, value) -> CoreSnapshot:
-        """Store one value and publish: a focus field (`manual_id`,
+    def set_field_for_tests(self, name: str, value) -> CoreSnapshot:
+        """Test hook: store one value and publish: a focus field (`manual_id`,
         `bound_id`, `pending`, `reporting_id`, `source_service_name`,
         `accepted_replay`) or one of the plain fields
         (`now_playing`, `idle_affordance`, `dots_active`,
@@ -544,7 +544,12 @@ class DialCore:
         entry = _roster_entry(self._state.roster, appliance_id)
         if entry is not None and entry.auth == AUTH_UNAUTHORIZED:
             return ActionResult(False, "unauthorized")
-        self.set_field("manual_id", appliance_id)
+        def mutate(state: _CoreState) -> "bool | None":
+            held = state.focus.manual_id
+            if held is appliance_id or held == appliance_id:
+                return False
+            state.focus = dataclasses.replace(state.focus, manual_id=appliance_id)
+        self._publish(mutate)
         self._wake.set()
         return ActionResult(True)
 

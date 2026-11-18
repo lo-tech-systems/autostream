@@ -68,7 +68,7 @@ def _rig(**kwargs):
     display, fb, gt = make_display(
         targets=[], roster=[_roster_entry(auth="authorized", appliance_id=AID)], **kwargs)
     display.enable()
-    display._poll_once()
+    display.fold_for_tests()
     _fold(display)
     display.fb = fb
     return display
@@ -437,7 +437,7 @@ class TestPolicy:
         on_sd_health_view(display, _sd(15))
         open_warnings_page(display)
         started = display._idle_started_at
-        display._poll_once()
+        display.fold_for_tests()
         assert display._idle_started_at == started        # the idle clock is not held off
         with display._lock:
             display._sleep_locked()

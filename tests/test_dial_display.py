@@ -178,7 +178,7 @@ class TestNowPlayingRepaintSignal:
         display.enable()
         display._overlay_signal.clear()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._overlay_signal.is_set()
     def test_album_only_change_sets_overlay_signal(self):
         # Two polls differing only in album must still count as "now-playing
@@ -188,13 +188,13 @@ class TestNowPlayingRepaintSignal:
         display.enable()
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(album="First Album"))):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.core.snapshot().now_playing.album == "First Album"
 
         display._overlay_signal.clear()
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(album="Second Album"))):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.core.snapshot().now_playing.album == "Second Album"
         assert display._overlay_signal.is_set()
 
@@ -203,12 +203,12 @@ class TestNowPlayingRepaintSignal:
         display, fb, gt = make_display(targets=[t])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())):
-            display._poll_once()
+            display.fold_for_tests()
 
         display._overlay_signal.clear()
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(), muted=True)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._overlay_signal.is_set()
 
     def test_volume_changed_elsewhere_sets_overlay_signal(self):
@@ -216,12 +216,12 @@ class TestNowPlayingRepaintSignal:
         display, fb, gt = make_display(targets=[t])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())):
-            display._poll_once()
+            display.fold_for_tests()
 
         display._overlay_signal.clear()
         louder = dict(_status_result(track_id=_track_id()), master_volume=60)
         with patch("dial_test_support.fetch_target_status", return_value=louder):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._overlay_signal.is_set()
 
     def test_unchanged_poll_leaves_overlay_signal_clear(self):
@@ -229,9 +229,9 @@ class TestNowPlayingRepaintSignal:
         display, fb, gt = make_display(targets=[t])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())):
-            display._poll_once()
+            display.fold_for_tests()
             display._overlay_signal.clear()
-            display._poll_once()
+            display.fold_for_tests()
         assert not display._overlay_signal.is_set()
 
 
@@ -255,8 +255,8 @@ class TestArtworkRendering:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")) as mock_fetch_art, \
              patch("dial_display.decode_artwork", return_value=fake_image) as mock_decode, \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
-            display._poll_once()
+            display.fold_for_tests()
+            display.fold_for_tests()
 
         assert display.get_status()["showing"] == "artwork"
         mock_fetch_art.assert_called_once()  # second poll reused the cached image
@@ -272,7 +272,7 @@ class TestArtworkRendering:
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_artwork.default_fetch_artwork", return_value=(b"bad", "")), \
              patch("dial_display.decode_artwork", return_value=None):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["showing"] == "logo"
         assert display.get_status()["last_error"] == "artwork_decode_failed"
 
@@ -283,9 +283,9 @@ class TestArtworkRendering:
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_artwork.default_fetch_artwork", return_value=(b"bad", "")) as mock_fetch_art, \
              patch("dial_display.decode_artwork", return_value=None):
-            display._poll_once()
+            display.fold_for_tests()
             assert display._core.snapshot().artwork is None
-            display._poll_once()
+            display.fold_for_tests()
         assert mock_fetch_art.call_count == 2
 
     def test_the_core_holds_one_artwork_copy_and_releases_it_at_the_logo(self):
@@ -294,12 +294,12 @@ class TestArtworkRendering:
         display.enable()
         fake_image = Image.new("RGB", (128, 160))
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())),              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")),              patch("dial_display.decode_artwork", return_value=fake_image),              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         held = display._core.snapshot().artwork
         assert held is not None and held.data == b"jpegdata"
         assert display._source_artwork_key == held.key
         gt.return_value = []
-        display._poll_once()
+        display.fold_for_tests()
         assert display._core.snapshot().artwork is None
 
     def test_fetch_failure_falls_back_to_logo(self):
@@ -308,7 +308,7 @@ class TestArtworkRendering:
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_artwork.default_fetch_artwork", return_value=(None, "oversized")):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["showing"] == "logo"
         assert display.get_status()["last_error"] == "artwork_fetch_failed"
 
@@ -319,7 +319,7 @@ class TestArtworkRendering:
         result = _status_result(track_id=_track_id(artwork_url="http://provider.example/a.jpg"))
         with patch("dial_test_support.fetch_target_status", return_value=result), \
              patch("dial_artwork.default_fetch_artwork") as mock_fetch_art:
-            display._poll_once()
+            display.fold_for_tests()
         mock_fetch_art.assert_not_called()
         assert display.get_status()["showing"] == "logo"
 
@@ -332,7 +332,7 @@ class TestLogoFallback:
     def test_logo_fallback_when_no_targets_visible(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         assert display.get_status()["showing"] == "logo"
 
     def test_logo_fallback_while_playing_with_no_artwork(self):
@@ -340,7 +340,7 @@ class TestLogoFallback:
         display, fb, gt = make_display(targets=[t])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["showing"] == "logo"
 
     def test_missing_logo_file_is_non_fatal(self):
@@ -364,7 +364,7 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += 5.0
             status = display.get_status()
         assert status["showing"] == "logo"
@@ -375,9 +375,9 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS - 1
-            display._poll_once()
+            display.fold_for_tests()
             status = display.get_status()
         assert status["display_sleeping"] is False
         assert fb.sleep_calls == 0
@@ -387,10 +387,10 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()  # idle timer starts
+            display.fold_for_tests()  # idle timer starts
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()  # crosses threshold -> sleep
-            display._poll_once()  # still asleep -> no repeat sleep call
+            display.fold_for_tests()  # crosses threshold -> sleep
+            display.fold_for_tests()  # still asleep -> no repeat sleep call
             status = display.get_status()
         assert status["display_sleeping"] is True
         assert status["showing"] == "sleeping"
@@ -401,12 +401,12 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()
+            display.fold_for_tests()
             count_after_sleep = len(fb.displayed)
-            display._poll_once()
-            display._poll_once()
+            display.fold_for_tests()
+            display.fold_for_tests()
         assert len(fb.displayed) == count_after_sleep
 
     def test_idle_seconds_clamps_at_threshold_while_asleep(self):
@@ -414,9 +414,9 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += 1000.0  # long past threshold while asleep
             status = display.get_status()
         assert status["display_idle_seconds"] == dd.DISPLAY_IDLE_SLEEP_SECONDS
@@ -427,15 +427,15 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()  # asleep now
+            display.fold_for_tests()  # asleep now
             assert display.get_status()["display_sleeping"] is True
 
             gt.return_value = [t]
             with patch("dial_test_support.fetch_target_status",
                        return_value=_status_result(track_id=None)):
-                display._poll_once()
+                display.fold_for_tests()
             status = display.get_status()
 
         assert fb.wake_calls == 1
@@ -453,15 +453,15 @@ class TestIdleSleep:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()  # showing artwork
+            display.fold_for_tests()  # showing artwork
         assert display.get_status()["showing"] == "artwork"
 
         gt.return_value = []
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()  # asleep
+            display.fold_for_tests()  # asleep
         assert display.get_status()["display_sleeping"] is True
 
         gt.return_value = [t]
@@ -470,7 +470,7 @@ class TestIdleSleep:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()  # wakes and repaints same artwork url
+            display.fold_for_tests()  # wakes and repaints same artwork url
 
         assert fb.wake_calls == 1
         assert display.get_status()["display_sleeping"] is False
@@ -485,7 +485,7 @@ class TestIdleSleep:
         with patch_monotonic(clock), \
              patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
             for _ in range(5):
-                display._poll_once()
+                display.fold_for_tests()
                 clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
             status = display.get_status()
         assert status["showing"] == "logo"
@@ -499,9 +499,9 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()
+            display.fold_for_tests()
             status = display.get_status()
         assert status["display_sleeping"] is True
         assert fb.sleep_calls == 1
@@ -510,9 +510,9 @@ class TestIdleSleep:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["display_sleeping"] is True
         return display, fb, gt
 
@@ -521,7 +521,7 @@ class TestIdleSleep:
         display, fb, gt = self._asleep_display(clock)
         gt.return_value = [_target(auth="unauthorized")]
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["display_sleeping"] is True
         assert fb.wake_calls == 0
 
@@ -530,9 +530,9 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += 5.0
-            display._poll_once()
+            display.fold_for_tests()
             status = display.get_status()
         assert status["display_idle_seconds"] == 5
 
@@ -542,7 +542,7 @@ class TestIdleSleep:
         t = _target(auth="unknown")
         gt.return_value = [t]
         with patch_monotonic(clock),              patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["display_sleeping"] is False
         assert fb.wake_calls == 1
         assert display.core.snapshot().focus.reporting_id == t.appliance_id
@@ -554,7 +554,7 @@ class TestIdleSleep:
         ok = _target(name="Kitchen", auth="authorized", playing_since=2.0)
         gt.return_value = [refused, ok]
         with patch_monotonic(clock),              patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["display_sleeping"] is False
         assert display.core.snapshot().focus.reporting_id == ok.appliance_id
 
@@ -563,7 +563,7 @@ class TestIdleSleep:
         display, fb, gt = self._asleep_display(clock)
         gt.return_value = [_target(appliance_id="")]
         with patch_monotonic(clock),              patch("dial_test_support.fetch_target_status") as fetch:
-            display._poll_once()
+            display.fold_for_tests()
         fetch.assert_not_called()
         assert display.get_status()["display_sleeping"] is True
         assert fb.wake_calls == 0
@@ -574,9 +574,9 @@ class TestIdleSleep:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["display_sleeping"] is True
 
         status = display.update_config(DialDisplayConfig(fitted=False))
@@ -1389,14 +1389,12 @@ class TestScreenSizeSetting:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         fb.displayed.clear()
 
         # A size-only change must take effect synchronously via
         # update_config — not via the 6s poll loop — same as rotate/bgr.
-        with patch.object(display, "_poll_once") as mock_poll:
-            status = display.update_config(DialDisplayConfig(fitted=True, screen_size_inches=3.5))
-        mock_poll.assert_not_called()
+        status = display.update_config(DialDisplayConfig(fitted=True, screen_size_inches=3.5))
         assert status["fitted"] is True
         assert len(fb.displayed) == 1
 
@@ -1559,7 +1557,7 @@ class TestScreenTypeSwap:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["showing"] == "artwork"
         assert display._current_rendered_image is not None
 
@@ -1591,7 +1589,7 @@ class TestScreenTypeSwap:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         fb_new.displayed.clear()
 
         display.update_config(
@@ -1687,15 +1685,13 @@ class TestRotation:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["showing"] == "artwork"
         fb.displayed.clear()
 
         # Toggling rotate must take effect synchronously via update_config —
         # not via the 6s poll loop.
-        with patch.object(display, "_poll_once") as mock_poll:
-            status = display.update_config(DialDisplayConfig(fitted=True, rotate=True))
-        mock_poll.assert_not_called()
+        status = display.update_config(DialDisplayConfig(fitted=True, rotate=True))
 
         assert status["rotate"] is True
         expected = fake_image.transpose(Image.ROTATE_180)
@@ -1712,7 +1708,7 @@ class TestRotation:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
 
         assert list(display._current_rendered_image.getdata()) == list(fake_image.getdata())
 
@@ -1767,12 +1763,10 @@ class TestBgr:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         fb.displayed.clear()
 
-        with patch.object(display, "_poll_once") as mock_poll:
-            status = display.update_config(DialDisplayConfig(fitted=True, bgr=True))
-        mock_poll.assert_not_called()
+        status = display.update_config(DialDisplayConfig(fitted=True, bgr=True))
 
         assert status["bgr"] is True
         expected = Image.merge("RGB", fake_image.split()[::-1])
@@ -1789,7 +1783,7 @@ class TestBgr:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
 
         assert list(display._current_rendered_image.getdata()) == list(fake_image.getdata())
 
@@ -1823,7 +1817,7 @@ class TestSuperseededFrameRaceGuard:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=Image.new("RGB", (300, 300))), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=stale_sized_image):
-            display._poll_once()
+            display.fold_for_tests()
 
         assert fb.displayed == []
         assert display.get_status()["showing"] != "artwork"
@@ -1852,7 +1846,7 @@ class TestArtworkDoesNotStompSecondaryScreen:
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=Image.new("RGB", (300, 300))):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["showing"] == "artwork"
         return display
 
@@ -2033,7 +2027,7 @@ class TestActiveBackendDimsPassthrough:
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=_track_id())), \
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=Image.new("RGB", (300, 300))):
-            display._poll_once()
+            display.fold_for_tests()
 
         assert display.get_status()["showing"] == "artwork"
         assert fb.displayed[-1].size == (240, 240)
@@ -2050,7 +2044,7 @@ class TestActiveBackendDimsPassthrough:
 
 
 # ---------------------------------------------------------------------------
-# Touch activity notification — mirrors the two lines _poll_once() already
+# Touch activity notification — mirrors the two lines fold_for_tests() already
 # runs when it finds playing targets present.
 # ---------------------------------------------------------------------------
 
@@ -2060,7 +2054,7 @@ class TestNotifyTouchActivity:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()  # idle timer starts (no targets)
+            display.fold_for_tests()  # idle timer starts (no targets)
             clock.t += 5.0
             assert display.get_status()["display_idle_seconds"] == 5
             display.notify_touch_activity()
@@ -2076,9 +2070,9 @@ class TestNotifyTouchActivity:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()  # asleep now
+            display.fold_for_tests()  # asleep now
         assert display.get_status()["display_sleeping"] is True
 
         display.notify_touch_activity()
@@ -2096,12 +2090,12 @@ class TestNotifyTouchActivity:
         display.enable()
         clock = _FakeClock()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS - 1
             display.notify_touch_activity()
-            display._poll_once()  # restarts the idle timer from here
+            display.fold_for_tests()  # restarts the idle timer from here
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()  # crosses threshold again -> sleeps
+            display.fold_for_tests()  # crosses threshold again -> sleeps
         assert display.get_status()["display_sleeping"] is True
 
 
@@ -2138,7 +2132,7 @@ class TestEffectiveOverlayMerge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "Artist", "Title", 50))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "Artist", "Title", 50))
         dv.observe_mute_state("svc", True)
         try:
             result = display._effective_overlay_locked(OverlayState(visible=True))
@@ -2156,7 +2150,7 @@ class TestEffectiveOverlayMerge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "Artist", "Title", 50))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "Artist", "Title", 50))
         dv.observe_mute_state("svc", False)
         try:
             result = display._effective_overlay_locked(OverlayState(visible=True, muted=True))
@@ -2169,7 +2163,7 @@ class TestEffectiveOverlayMerge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "The Artist", "Title", 50))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "The Artist", "Title", 50))
         dv.observe_master_volume("svc", 50)
         try:
             result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
@@ -2183,7 +2177,7 @@ class TestEffectiveOverlayMerge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "The Artist", "Title", 50, album="The Album"))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "The Artist", "Title", 50, album="The Album"))
         result = display._effective_overlay_locked(OverlayState(visible=True, muted=False))
         assert result.album == "The Album"
 
@@ -2229,7 +2223,7 @@ class TestArtistRowFallbackRichLarge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "", "", 50, playing=False))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "", "", 50, playing=False))
         with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=content_tier)):
             result = display._effective_overlay_locked(OverlayState(visible=True))
         assert result.artist == dd.IDLE_ARTIST_TEXT
@@ -2240,7 +2234,7 @@ class TestArtistRowFallbackRichLarge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "", "", 50, playing=True))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "", "", 50, playing=True))
         with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=content_tier)):
             result = display._effective_overlay_locked(OverlayState(visible=True))
         assert result.artist == dd.PLAYING_ARTIST_TEXT
@@ -2251,7 +2245,7 @@ class TestArtistRowFallbackRichLarge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field(
+            display.core.set_field_for_tests(
                 "now_playing", NowPlaying("svc", "", "", 50, playing=True, input_label="CD"))
         with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=content_tier)):
             result = display._effective_overlay_locked(OverlayState(visible=True))
@@ -2261,7 +2255,7 @@ class TestArtistRowFallbackRichLarge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "", "Some Title", 50, playing=True))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "", "Some Title", 50, playing=True))
         with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=dd.CONTENT_RICH)):
             result = display._effective_overlay_locked(OverlayState(visible=True))
         assert result.artist == ""
@@ -2270,7 +2264,7 @@ class TestArtistRowFallbackRichLarge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "Real Artist", "Some Title", 50, playing=True))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "Real Artist", "Some Title", 50, playing=True))
         with patch.object(display, "_layout_metrics", return_value=MagicMock(content_tier=dd.CONTENT_LARGE)):
             result = display._effective_overlay_locked(OverlayState(visible=True))
         assert result.artist == "Real Artist"
@@ -2281,7 +2275,7 @@ class TestArtistRowFallbackRichLarge:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("svc", "", "", 50, playing=False))
+            display.core.set_field_for_tests("now_playing", NowPlaying("svc", "", "", 50, playing=False))
         result = display._effective_overlay_locked(OverlayState(visible=True))
         assert result.artist == ""
 
@@ -2466,7 +2460,7 @@ class TestOverlaySetAndRepaintExecutor:
              patch.object(
                  display._compositor, "compose", wraps=display._compositor.compose
              ) as mock_compose:
-            display._poll_once()  # new artwork -> a real poll-driven push
+            display.fold_for_tests()  # new artwork -> a real poll-driven push
 
         assert display.get_status()["showing"] == "artwork"
         assert mock_compose.called
@@ -2551,7 +2545,7 @@ def _poll_with_artwork(display, fb):
          patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
          patch("dial_display.decode_artwork", return_value=fake_image), \
          patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-        display._poll_once()
+        display.fold_for_tests()
 
 
 class TestDeviceSwitchTransitionFrame:
@@ -2570,12 +2564,12 @@ class TestDeviceSwitchTransitionFrame:
         display, fb, gt = make_display(targets=[ta])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         before = len(fb.displayed)
 
         gt.return_value = [tb]
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
 
         pushed = fb.displayed[before:]
         assert len(pushed) == 2
@@ -2589,12 +2583,12 @@ class TestDeviceSwitchTransitionFrame:
         display, fb, gt = make_display(targets=[ta])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
 
         gt.return_value = [tb]
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)), \
              patch.object(display, "show_logo") as mock_show_logo:
-            display._poll_once()
+            display.fold_for_tests()
         mock_show_logo.assert_called_once()
         assert display._showing == "waiting"
 
@@ -2603,10 +2597,10 @@ class TestDeviceSwitchTransitionFrame:
         display, fb, gt = make_display(targets=[ta])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         before = len(fb.displayed)
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         pushed = fb.displayed[before:]
         assert len(pushed) <= 1  # at most the (deduped-away) logo re-render, never a transition
 
@@ -2620,7 +2614,7 @@ class TestDeviceSwitchTransitionFrame:
         display.enable()
         before = len(fb.displayed)
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         pushed = fb.displayed[before:]
         assert len(pushed) == 0
 
@@ -2629,10 +2623,10 @@ class TestDeviceSwitchTransitionFrame:
         display, fb, gt = make_display(targets=[ta])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         before = len(fb.displayed)
         gt.return_value = []
-        display._poll_once()
+        display.fold_for_tests()
         pushed = fb.displayed[before:]
         assert len(pushed) == 0  # still deduped against the same logo -- no transition either
 
@@ -3241,7 +3235,7 @@ class TestArtworkReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             gt.return_value = []
-            display._poll_once()
+            display.fold_for_tests()
             _repaint(display)
             assert display._controls_last is None
             clock.t = 1001.0
@@ -3430,7 +3424,7 @@ class TestArtworkReveal:
             _repaint(display)
             clock.t = 1000.1
             gt.return_value = []
-            display._poll_once()
+            display.fold_for_tests()
             assert display.core.snapshot().now_playing is None
             _repaint(display)  # must not raise
             result = display._effective_overlay_locked(OverlayState())
@@ -3444,7 +3438,7 @@ class TestArtworkReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             gt.return_value = []
-            display._poll_once()
+            display.fold_for_tests()
             assert display.core.snapshot().now_playing is None
             display.set_overlay(OverlayState(visible=False))
             clock.t = 1001.0
@@ -3467,7 +3461,7 @@ class TestArtworkReveal:
                  patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
                  patch("dial_display.decode_artwork", return_value=new_image), \
                  patch("dial_display_compositor.transform_artwork_for_panel", return_value=new_image):
-                display._poll_once()
+                display.fold_for_tests()
             frame = fb.displayed[-1]
 
             with display._lock:
@@ -3928,9 +3922,7 @@ class TestHeldOverlay:
         assert display.get_status()["showing"] == "artwork"
         fb.displayed.clear()
 
-        with patch.object(display, "_poll_once") as mock_poll:
-            status = display.update_config(DialDisplayConfig(fitted=True, always_show_controls=True))
-        mock_poll.assert_not_called()
+        status = display.update_config(DialDisplayConfig(fitted=True, always_show_controls=True))
 
         assert status["always_show_controls"] is True
         assert len(fb.displayed) == 1
@@ -3968,13 +3960,13 @@ class TestPushedAccessOnScreen:
         display.enable()
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(status_error="unauthorized", appliance_id=aid)):
-            display._poll_once()
+            display.fold_for_tests()
         with display._lock:
             display._display_sleeping = True
             display._idle_started_at = 123.0
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(appliance_id=aid, track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._display_sleeping is False
         assert display._idle_started_at is None
         assert fb.wake_calls == 1
@@ -3988,7 +3980,7 @@ class TestPushedAccessOnScreen:
             display._display_sleeping = True
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(status_error="unauthorized", appliance_id=aid)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._display_sleeping is True
         assert fb.wake_calls == 0
 
@@ -4001,15 +3993,15 @@ class TestRunPollGating:
     def _run_one_iteration(self, display):
         """One turn of the core's loop: the fold, and the view folding in the
         snapshot it ends in."""
-        display._poll_once()
+        display.fold_for_tests()
 
     def _asleep_display(self, clock):
         display, fb, gt = make_display(targets=[])
         display.enable()
         with patch_monotonic(clock):
-            display._poll_once()
+            display.fold_for_tests()
             clock.t += dd.DISPLAY_IDLE_SLEEP_SECONDS
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["display_sleeping"] is True
         return display, fb, gt
 
@@ -4051,7 +4043,7 @@ class TestRunPollGating:
         with display._lock:
             display._display_sleeping = True
         painted = len(fb.displayed)
-        display._core.set_field("now_playing", NowPlaying("x", "", "", None))
+        display._core.set_field_for_tests("now_playing", NowPlaying("x", "", "", None))
         display._apply_pending_snapshot()
         assert display._display_sleeping is True
         assert fb.wake_calls == 0
@@ -4128,7 +4120,7 @@ class TestFirstCheckOrdering:
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(status_error="unauthorized",
                                                appliance_id=t.appliance_id)) as fetch:
-            display._poll_once()
+            display.fold_for_tests()
         assert fetch.call_count == 1
         assert fb.wake_calls == wakes
         assert len(fb.displayed) == frames
@@ -4140,7 +4132,7 @@ class TestFirstCheckOrdering:
         wakes = fb.wake_calls
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(track_id=None)) as fetch:
-            display._poll_once()
+            display.fold_for_tests()
         assert fetch.call_count == 1      # the walk reuses the first check's reply
         assert fb.wake_calls == wakes + 1
         assert not display._display_sleeping
@@ -4161,7 +4153,7 @@ def _replay_display(state="hold", **display_kwargs):
     display, fb, gt = make_display(targets=[], roster=[entry], **display_kwargs)
     display.enable()
     set_roster(display, [entry])
-    display.core.set_field("manual_id", _REPLAY_AID)
+    display.core.set_field_for_tests("manual_id", _REPLAY_AID)
     seed_repeat(_REPLAY_AID, _repeat_obj(state=state))
     display.request_poll = MagicMock()
     return display, fb, gt
@@ -4194,7 +4186,7 @@ class TestAcceptedReplayFrame:
             display, fb, gt = _replay_display()
             _accept_replay(display)
             with patch("dial_test_support.fetch_target_status", return_value=_replaying_reply()):
-                display._poll_once()
+                display.fold_for_tests()
         playing = display.core.snapshot().now_playing
         assert playing is not None and playing.playing
         assert playing.title == ""
@@ -4237,7 +4229,7 @@ class TestAcceptedReplayFrame:
 
             _accept_replay(display)
             with patch("dial_test_support.fetch_target_status", return_value=_replaying_reply()):
-                display._poll_once()
+                display.fold_for_tests()
             with display._lock:
                 display._repaint_current_locked()
             playing_overlays = [o for kind, o in frames if kind == "playing" and o is not None]
@@ -4250,7 +4242,7 @@ class TestAcceptedReplayFrame:
             clock.t += 1.0
             with patch("dial_test_support.fetch_target_status",
                        return_value=_status_result(appliance_id=_REPLAY_AID)):
-                display._poll_once()
+                display.fold_for_tests()
 
             # Stopped: the record holds and the target is gone.
             seed_repeat(_REPLAY_AID, _repeat_obj(state="hold"))
@@ -4259,7 +4251,7 @@ class TestAcceptedReplayFrame:
             with patch("dial_test_support.fetch_target_status",
                        return_value=_status_result(appliance_id=_REPLAY_AID)), \
                  patch("dial_display.load_logo", side_effect=dd.load_logo) as load_logo:
-                display._poll_once()
+                display.fold_for_tests()
                 with display._lock:
                     display._repaint_current_locked()
             after_stop = frames[mark:]
@@ -4291,7 +4283,7 @@ class TestFocusClearClosesPolicyScreens:
         policy = SCREEN_POLICIES[name]
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("manual_id", _REPLAY_AID)
+        display.core.set_field_for_tests("manual_id", _REPLAY_AID)
         sentinel = object()
         with display._lock:
             display._screen = name
@@ -4312,10 +4304,10 @@ class TestFocusClearClosesPolicyScreens:
     def test_a_tick_that_clears_the_focus_closes_the_screen(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("manual_id", _REPLAY_AID)      # not on the roster: the tick clears it
+        display.core.set_field_for_tests("manual_id", _REPLAY_AID)      # not on the roster: the tick clears it
         with display._lock:
             display._screen = "outputs"
-        display._poll_once()
+        display.fold_for_tests()
         assert display.core.snapshot().focus.manual_id is None
         assert display._screen == "main"
 
@@ -4342,9 +4334,9 @@ class TestArtworkLogging:
         clock = [1000.0]
         with patch("dial_display.time.monotonic", lambda: clock[0]),                 patch("dial_test_support.fetch_target_status", return_value=result),                 patch("dial_artwork.default_fetch_artwork", return_value=(None, "timeout")) as fetch,                 caplog.at_level(logging.WARNING):
             for _ in range(11):
-                display._poll_once()
+                display.fold_for_tests()
             clock[0] += 61.0
-            display._poll_once()
+            display.fold_for_tests()
         assert fetch.call_count == 12           # every poll retries
         records = [r for r in caplog.records if "artwork fetch failed" in r.getMessage()]
         assert len(records) == 2
@@ -4356,9 +4348,9 @@ class TestArtworkLogging:
         clock = [1000.0]
         with patch("dial_display.time.monotonic", lambda: clock[0]),                 patch("dial_test_support.fetch_target_status", return_value=result),                 patch("dial_artwork.default_fetch_artwork", return_value=(b"bad", "")),                 patch("dial_display.decode_artwork", return_value=None),                 caplog.at_level(logging.WARNING):
             for _ in range(11):
-                display._poll_once()
+                display.fold_for_tests()
             clock[0] += 61.0
-            display._poll_once()
+            display.fold_for_tests()
         records = [r for r in caplog.records if "artwork decode failed" in r.getMessage()]
         assert len(records) == 2
 
@@ -4372,12 +4364,12 @@ class TestArtworkLogging:
                 caplog.at_level(logging.DEBUG):
             with patch("dial_artwork.default_fetch_artwork", return_value=(None, "timeout")):
                 for _ in range(3):
-                    display._poll_once()
+                    display.fold_for_tests()
             with patch("dial_artwork.default_fetch_artwork", return_value=(b"jpeg", "")), \
                     patch("dial_display.decode_artwork", return_value=fake_image), \
                     patch("dial_display_compositor.transform_artwork_for_panel",
                           return_value=fake_image):
-                display._poll_once()
+                display.fold_for_tests()
         assert display.get_status()["showing"] == "artwork"
         assert caplog.records
         for record in caplog.records:
@@ -4410,7 +4402,7 @@ class TestSelectorRows:
         display, fb, gt = make_display(targets=targets)
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -4423,7 +4415,7 @@ class TestSelectorRows:
         # preserved page back down rather than raise or go negative.
         gt.return_value = [targets[0]]
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._selector.page == 0
 
 
@@ -4513,7 +4505,7 @@ class TestSelectorOpenCloseAndRepaint:
         display, fb, gt = make_display(targets=[a], always_show_controls=always_show_controls)
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         return display, fb, gt
 
     def test_open_selector_then_repaint_sets_screen_and_pushes_a_frame(self):
@@ -4554,7 +4546,7 @@ class TestSelectorOpenCloseAndRepaint:
         display.enable()
         with patch("dial_test_support.fetch_target_status",
                    return_value=dict(_status_result(track_id=None), access="unknown")):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -4571,7 +4563,7 @@ class TestSelectorOpenCloseAndRepaint:
         # directly rather than faking a full artwork fetch — this test is
         # only about the selector's own gate on persistent_overlay_shown().
         with display._lock:
-            display.core.set_field("now_playing", NowPlaying("T0", "Artist", "Title", 50))
+            display.core.set_field_for_tests("now_playing", NowPlaying("T0", "Artist", "Title", 50))
         assert display.persistent_overlay_shown() is True
         display.open_selector()
         with display._lock:
@@ -4610,7 +4602,7 @@ class TestSelectorUnauthorizedRows:
                 return dict(_status_result(track_id=None), access="unknown")
             return _status_result(track_id=None)
         with patch("dial_test_support.fetch_target_status", side_effect=reply):
-            display._poll_once()
+            display.fold_for_tests()
         return display
 
     @pytest.mark.parametrize("proto", [0, 2])
@@ -4706,7 +4698,7 @@ class TestSelectorPickAndPage:
         display, fb, gt = make_display(targets=targets)
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -4781,7 +4773,7 @@ class TestListPagingMatchesPaintedRows:
         )
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -4917,7 +4909,7 @@ class TestRendersAtLogicalArrivesPhysical:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._current_rendered_image.size == (640, 480)
         assert fb.displayed[-1].size == (320, 240)
 
@@ -4963,7 +4955,7 @@ class TestArtworkGuardDropsStaleLayoutSizedFrame:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._current_rendered_image is None
         assert len(fb.displayed) == before
 
@@ -4982,7 +4974,7 @@ class TestUpdateConfigLayoutChange:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         return display, fb, gt
 
     def test_none_to_large_drops_caches_and_shows_logo_at_new_size(self):
@@ -5195,7 +5187,7 @@ class TestSelectorTimeout:
         display, fb, gt = make_display(targets=[a])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -5236,14 +5228,14 @@ class TestSelectorAndSleepBackendLifecycle:
         display, fb, gt = make_display(targets=[a])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
         assert display._screen == "selector"
 
         gt.return_value = []  # nothing playing any more
-        display._poll_once()
+        display.fold_for_tests()
         # An open selector is never closed by a poll finding nothing
         # playing — only its own inactivity timeout does that.
         assert display._screen == "selector"
@@ -5254,7 +5246,7 @@ class TestSelectorAndSleepBackendLifecycle:
         display, fb, gt = make_display(targets=[a])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -5271,11 +5263,11 @@ class TestSelectorAndSleepBackendLifecycle:
         # to just under it and the threshold poll would not sleep.
         t0 = float(math.ceil(opened_at + SELECTOR_TIMEOUT_SECONDS + 1))
         with patch("dial_display.time.monotonic", return_value=t0):
-            display._poll_once()  # starts the idle countdown now the list is closed
+            display.fold_for_tests()  # starts the idle countdown now the list is closed
         assert display._display_sleeping is False
 
         with patch("dial_display.time.monotonic", return_value=t0 + dd.DISPLAY_IDLE_SLEEP_SECONDS):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._display_sleeping is True
 
     def test_sleep_pops_to_main(self):
@@ -5283,7 +5275,7 @@ class TestSelectorAndSleepBackendLifecycle:
         display, fb, gt = make_display(targets=[t])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -5299,7 +5291,7 @@ class TestSelectorAndSleepBackendLifecycle:
         display, fb, gt = make_display(targets=[a])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -5313,7 +5305,7 @@ class TestSelectorAndSleepBackendLifecycle:
         display, fb, gt = make_display(targets=[a])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -5330,7 +5322,7 @@ class TestTouchSurface:
         display, fb, gt = make_display(targets=[a])
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -5356,22 +5348,22 @@ class TestTouchSurface:
         # the surface is "idle" here, not "hidden".
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         assert display.touch_surface() == ("idle", False, False, False, False)
 
     def test_idle_when_affordance_drawn(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         with display._lock:
-            display.core.set_field("idle_affordance", True)
+            display.core.set_field_for_tests("idle_affordance", True)
         assert display.touch_surface() == ("idle", False, False, False, False)
 
     def test_idle_regardless_of_affordance_when_nothing_playing(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("idle_affordance", False)
-        display._poll_once()
+        display.core.set_field_for_tests("idle_affordance", False)
+        display.fold_for_tests()
         assert display.touch_surface()[0] == "idle"
 
     def test_repeat_screen_reports_repeat_with_dots_active(self):
@@ -5396,10 +5388,10 @@ class TestTouchSurface:
         display.enable()
         with display._lock:
             display._screen = "repeat"
-            display.core.set_field("outputs_available", True)
+            display.core.set_field_for_tests("outputs_available", True)
         assert display.touch_surface() == ("repeat", True, True, True, False)
         with display._lock:
-            display.core.set_field("outputs_available", False)
+            display.core.set_field_for_tests("outputs_available", False)
         assert display.touch_surface() == ("repeat", True, True, False, False)
 
     def test_picker_while_open(self):
@@ -5421,7 +5413,7 @@ class TestTouchSurface:
             "replay": {"active": False, "position_seconds": 0.0, "duration_seconds": 0.0},
         }
         with patch("dial_test_support.fetch_target_status", return_value=result):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.core.snapshot().dots_active is True
         surface, name_active, dots_active, outputs_active, bell_active = display.touch_surface()
         assert dots_active is True
@@ -5433,7 +5425,7 @@ class TestTouchSurface:
         display.enable()
         result = _status_result(track_id=None, appliance_id=aid)
         with patch("dial_test_support.fetch_target_status", return_value=result):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.core.snapshot().dots_active is False
 
     def test_idle_and_name_inactive_with_an_idle_roster_entry_but_nothing_shown(self):
@@ -5445,16 +5437,16 @@ class TestTouchSurface:
         idle_entry = _roster_entry(name="Kitchen", auth="authorized", playing=False)
         display, fb, gt = make_display(targets=[], roster=[idle_entry])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         assert display.touch_surface() == ("idle", False, False, False, False)
 
     def test_idle_affordance_still_drawn_with_an_idle_roster_entry(self):
         idle_entry = _roster_entry(name="Kitchen", auth="authorized", playing=False)
         display, fb, gt = make_display(targets=[], roster=[idle_entry])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         with display._lock:
-            display.core.set_field("idle_affordance", True)
+            display.core.set_field_for_tests("idle_affordance", True)
         assert display.touch_surface() == ("idle", False, False, False, False)
 
     def test_hidden_with_name_active_once_an_idle_focus_is_set(self):
@@ -5466,7 +5458,7 @@ class TestTouchSurface:
         display.core.set_focus(aid)
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.touch_surface() == ("hidden", True, False, False, False)
 
     def test_held_with_name_active_once_an_idle_focus_is_set_and_always_show(self):
@@ -5478,7 +5470,7 @@ class TestTouchSurface:
         display.core.set_focus(aid)
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.touch_surface() == ("held", True, False, False, False)
 
 
@@ -5496,7 +5488,7 @@ class TestOverlayNameField:
     def test_name_empty_when_nothing_playing(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         display.set_overlay(OverlayState(visible=True))
         with display._lock:
             overlay = display._effective_overlay_locked(display._overlay_snapshot)
@@ -5532,7 +5524,7 @@ def _poll_focused_with_repeat(display, fb, aid, repeat_obj):
          patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
          patch("dial_display.decode_artwork", return_value=fake_image), \
          patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-        display._poll_once()
+        display.fold_for_tests()
 
 
 class TestToggleRepeatScreen:
@@ -5556,7 +5548,7 @@ class TestToggleRepeatScreen:
         display.enable()
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(track_id=_track_id(), appliance_id=aid)):
-            display._poll_once()
+            display.fold_for_tests()
 
         display.cycle_pages()
         with display._lock:
@@ -5578,7 +5570,7 @@ class TestToggleRepeatScreen:
     def test_does_not_open_with_nothing_playing(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         display.cycle_pages()
         with display._lock:
             display._repaint_current_locked()
@@ -5756,7 +5748,7 @@ class TestRepeatScreenComposePath:
         assert display._screen == "repeat"
 
         gt.return_value = []  # the appliance leaves the roster entirely
-        display._poll_once()
+        display.fold_for_tests()
         assert display.core.snapshot().focus.manual_id is None
         assert display._screen == "main"
 
@@ -5779,7 +5771,7 @@ class TestRepeatScreenComposePath:
             return _status_result(track_id=_track_id())
 
         with patch("dial_test_support.fetch_target_status", side_effect=fake_fetch):
-            display._poll_once()
+            display.fold_for_tests()
 
         assert display.core.snapshot().focus.manual_id is None
         assert display._screen == "main"
@@ -5795,7 +5787,7 @@ class TestRepeatScreenComposePath:
     def test_sleep_pops_picker(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -6460,7 +6452,7 @@ class TestPressedChannelFeedsEachScreen:
         display, fb, gt = make_display(targets=targets)
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -6486,7 +6478,7 @@ class TestPressedChannelFeedsEachScreen:
     def test_picker_back_wash_confined_to_the_bar(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -6620,8 +6612,8 @@ class TestFocusPendingOnScreen:
         aid = "c" * 20
         set_focus_pending(display, aid, "Kitchen")
         with display._lock:
-            display.core.set_field("idle_affordance", True)  # would otherwise draw the idle-screen affordance
-        display._poll_once()
+            display.core.set_field_for_tests("idle_affordance", True)  # would otherwise draw the idle-screen affordance
+        display.fold_for_tests()
         assert display._idle_chassis_due_locked() is False
 
 
@@ -6639,7 +6631,7 @@ class TestIdleFocusShownWhenNothingPlays:
         display.core.set_focus(aid)
         with patch("dial_test_support.fetch_target_status",
                    return_value=_status_result(track_id=None, appliance_id=aid)):
-            display._poll_once()
+            display.fold_for_tests()
 
         assert display.get_status()["showing"] == "logo"
         assert display.core.snapshot().now_playing is not None
@@ -6660,11 +6652,11 @@ class TestIdleFocusShownWhenNothingPlays:
             # sleep delay rather than a rounding error short of it.
             t0 = float(math.ceil(time.monotonic()))
             with patch("dial_display.time.monotonic", return_value=t0):
-                display._poll_once()
+                display.fold_for_tests()
             assert display._display_sleeping is False
 
             with patch("dial_display.time.monotonic", return_value=t0 + dd.DISPLAY_IDLE_SLEEP_SECONDS):
-                display._poll_once()
+                display.fold_for_tests()
         assert display._display_sleeping is True
 
 
@@ -6678,7 +6670,7 @@ class TestReplayPickerRows:
     def test_open_picker_sets_screen_request(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -6695,7 +6687,7 @@ class TestReplayPickerRows:
     def test_picker_shows_placeholder_when_empty(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -6718,7 +6710,7 @@ class TestPickerPick:
         seed_repeat(aid, _repeat_obj(state="hold", recording_seconds=12.0))
         _refresh_picker(display, [row], now)
         set_roster(display, [row])
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -6762,7 +6754,7 @@ class TestPickerTimeout:
     def test_closes_after_timeout(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -6774,7 +6766,7 @@ class TestPickerTimeout:
     def test_stays_open_before_timeout(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -6897,7 +6889,7 @@ class TestIdleReplayLogo:
         display, fb, gt = make_display(targets=[])
         display.enable()
         with display._lock:
-            display.core.set_field("idle_affordance", True)
+            display.core.set_field_for_tests("idle_affordance", True)
             display._current_base_image = MagicMock()
             with patch("dial_display.load_logo", return_value=MagicMock()) as ll:
                 display._display_idle_locked()
@@ -6908,7 +6900,7 @@ class TestIdleReplayLogo:
         display.enable()
         base = MagicMock()
         with display._lock:
-            display.core.set_field("idle_affordance", True)
+            display.core.set_field_for_tests("idle_affordance", True)
             display._current_base_image = base
             with patch("dial_display.load_logo", return_value=None):
                 # Must not raise when the replay image cannot be loaded.
@@ -6927,7 +6919,7 @@ class TestIdlePlainLogo:
         display.enable()
         base = MagicMock()
         with display._lock:
-            display.core.set_field("idle_affordance", False)
+            display.core.set_field_for_tests("idle_affordance", False)
             display._current_base_image = base
             with patch("dial_display.load_logo") as ll:
                 display._display_idle_locked()
@@ -6938,10 +6930,10 @@ class TestIdlePlainLogo:
         display.enable()
         with display._lock:
             display._screen = "main"
-            display.core.set_field("now_playing", None)
-            display.core.set_field("idle_affordance", False)
+            display.core.set_field_for_tests("now_playing", None)
+            display.core.set_field_for_tests("idle_affordance", False)
             assert display._idle_chassis_due_locked() is True
-            display.core.set_field("idle_affordance", True)
+            display.core.set_field_for_tests("idle_affordance", True)
             assert display._idle_chassis_due_locked() is True
 
 
@@ -6958,7 +6950,7 @@ class TestPickerSurvivesIdle:
             display._screen = "picker"
         gt.return_value = []
         with patch.object(display, "_close_secondary_locked") as close:
-            display._poll_once()
+            display.fold_for_tests()
         close.assert_not_called()
 
     def test_pending_picker_open_not_clobbered_when_nothing_playing(self):
@@ -6972,7 +6964,7 @@ class TestPickerSurvivesIdle:
             display._screen_request = "picker"
         gt.return_value = []
         with patch.object(display, "_close_secondary_locked") as close:
-            display._poll_once()
+            display.fold_for_tests()
         close.assert_not_called()
 
     def test_selector_stays_open_when_nothing_playing(self):
@@ -6982,7 +6974,7 @@ class TestPickerSurvivesIdle:
             display._screen = "selector"
         gt.return_value = []
         with patch.object(display, "_close_secondary_locked") as close:
-            display._poll_once()
+            display.fold_for_tests()
         close.assert_not_called()
 
     def test_repeat_screen_closes_when_nothing_playing_and_no_focus(self):
@@ -6992,7 +6984,7 @@ class TestPickerSurvivesIdle:
             display._screen = "repeat"
         gt.return_value = []
         with patch.object(display, "_close_secondary_locked") as close:
-            display._poll_once()
+            display.fold_for_tests()
         close.assert_called()
 
     def test_repeat_screen_kept_when_an_idle_focus_is_set(self):
@@ -7004,7 +6996,7 @@ class TestPickerSurvivesIdle:
         with display._lock:
             display._screen = "repeat"
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None, appliance_id=aid)):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._screen == "repeat"
 
 
@@ -7026,11 +7018,11 @@ class TestIdleAffordanceRepaintSignal:
         now = time.monotonic()
         seed_repeat(aid, _repeat_obj(state="hold"))
         display._overlay_signal.clear()
-        display._poll_once()
+        display.fold_for_tests()
         assert display.core.snapshot().idle_affordance is True
         assert display._overlay_signal.is_set()
         display._overlay_signal.clear()
-        display._poll_once()
+        display.fold_for_tests()
         assert not display._overlay_signal.is_set()
 
 
@@ -7042,7 +7034,7 @@ class TestIdleAffordanceRepaintSignal:
 
 def _make_outputs_display(dial_outputs=True, auth="unknown", appliance_id="a" * 20):
     display, fb, gt = make_display(targets=[])
-    display.core.set_field("reporting_id", appliance_id)
+    display.core.set_field_for_tests("reporting_id", appliance_id)
     set_roster(display, [_roster_entry(
         appliance_id=appliance_id, auth=auth, dial_outputs=dial_outputs,
     )])
@@ -7088,7 +7080,7 @@ class TestOutputsOpener:
         rows = (OutputRow(id="1", name="Bedroom", selected=True, volume=40),)
         seed_outputs(display, rows)
         display._screen = "main"
-        display.core.set_field("reporting_id", "b" * 20)
+        display.core.set_field_for_tests("reporting_id", "b" * 20)
         set_roster(display, [_roster_entry(appliance_id="b" * 20, dial_outputs=True)])
         display._open_outputs_locked()
         assert display._outputs.appliance_id == "b" * 20
@@ -7250,7 +7242,7 @@ class TestOutputsTouchEntries:
 
 def _make_eq_display(dial_eq=True, auth="unknown", appliance_id="a" * 20):
     display, fb, gt = make_display(targets=[])
-    display.core.set_field("reporting_id", appliance_id)
+    display.core.set_field_for_tests("reporting_id", appliance_id)
     set_roster(display, [_roster_entry(appliance_id=appliance_id, auth=auth, dial_eq=dial_eq)])
     update_availability(display)
     return display
@@ -7273,7 +7265,7 @@ class TestEqOpener:
 
     def test_refuses_on_the_compact_tier(self):
         display = _make_eq_display(dial_eq=True)
-        display.core.set_field("eq_available", False)  # the compact veto, already computed by the poll
+        display.core.set_field_for_tests("eq_available", False)  # the compact veto, already computed by the poll
         assert display._open_eq_locked() is False
 
     def test_opens_for_an_authorized_capable_appliance(self):
@@ -7299,7 +7291,7 @@ class TestEqOpener:
         display._open_eq_locked()
         seed_eq(display, bass_db=2, treble_db=-1, loaded=True)
         display._screen = "main"
-        display.core.set_field("reporting_id", "b" * 20)
+        display.core.set_field_for_tests("reporting_id", "b" * 20)
         set_roster(display, [_roster_entry(appliance_id="b" * 20, dial_eq=True)])
         update_availability(display)
         display._open_eq_locked()
@@ -7391,7 +7383,7 @@ class TestCyclePages:
              patch("dial_display.decode_artwork", return_value=Image.new("RGB", (160, 128))), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=Image.new("RGB", (160, 128))):
             set_roster(display, roster)
-            display._poll_once()
+            display.fold_for_tests()
             set_roster(display, roster)
             update_availability(display)
             update_availability(display)
@@ -7468,7 +7460,7 @@ class TestCyclePages:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=Image.new("RGB", (240, 240))), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=Image.new("RGB", (240, 240))):
-            display._poll_once()
+            display.fold_for_tests()
         assert display._compact_tier() is True
         assert display.core.snapshot().eq_available is False
 
@@ -7491,7 +7483,7 @@ class TestEqPageClosing:
     def test_closes_when_appliance_changes(self):
         display = _make_eq_display(appliance_id="a" * 20)
         display._open_eq_locked()
-        display.core.set_field("reporting_id", "b" * 20)
+        display.core.set_field_for_tests("reporting_id", "b" * 20)
         display._close_bound_screen_if_unfocused()
         assert display._screen == "main"
         assert display._eq is None
@@ -7502,9 +7494,9 @@ class TestEqPageClosing:
     def test_touch_surface_reports_eq_with_outputs_gate(self):
         display = _make_eq_display()
         display._open_eq_locked()
-        display.core.set_field("outputs_available", False)
+        display.core.set_field_for_tests("outputs_available", False)
         assert display.touch_surface() == ("eq", True, True, False, False)
-        display.core.set_field("outputs_available", True)
+        display.core.set_field_for_tests("outputs_available", True)
         assert display.touch_surface() == ("eq", True, True, True, False)
 
 
@@ -7801,7 +7793,7 @@ class TestCompactPersistentOverlayAndSurface:
         # every other tier (self._now_playing is not None).
         display, fb, gt = _make_compact_display(targets=[])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         assert display.persistent_overlay_shown() is False
 
 
@@ -8050,7 +8042,7 @@ class TestCompactWrapPaging:
         display, fb, gt = _make_compact_display(targets=targets)
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -8094,7 +8086,7 @@ class TestCompactWrapPaging:
         display, fb, gt = make_display(targets=targets)  # base tier, rows_per_page == 3
         display.enable()
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=None)):
-            display._poll_once()
+            display.fold_for_tests()
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -8152,7 +8144,7 @@ class TestCompactPickerPick:
         seed_repeat("b" * 20, _repeat_obj(state="hold", recording_seconds=34.0))
         _refresh_picker(display, rows, now)
         set_roster(display, rows)
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         display.open_picker()
         with display._lock:
             display._repaint_current_locked()
@@ -8399,7 +8391,7 @@ class TestInfoPageLifetime:
         self._opened(display)
         gt.return_value = []
         with patch.object(display, "_close_secondary_locked") as close:
-            display._poll_once()
+            display.fold_for_tests()
         close.assert_not_called()
         assert display._idle_started_at is None
 
@@ -8612,7 +8604,7 @@ class TestInfoValueScreen:
         self._opened_value(display, 0)
         gt.return_value = []
         with patch.object(display, "_close_secondary_locked") as close:
-            display._poll_once()
+            display.fold_for_tests()
         close.assert_not_called()
         assert display._idle_started_at is None
 
@@ -8642,7 +8634,7 @@ class TestNoWifiStateMachine:
     def _idle_display(self, connected=True):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._poll_once()          # nothing playing: idle screen, _now_playing None
+        display.fold_for_tests()          # nothing playing: idle screen, _now_playing None
         _fold(display)
         if connected:
             # The common case for the incident tests below: a link that was
@@ -8831,7 +8823,7 @@ class TestBootSplash:
     def test_first_poll_replaces_the_splash_with_the_logo(self):
         display, fb, gt = make_display(targets=[])
         display.show_starting()
-        display._poll_once()
+        display.fold_for_tests()
         assert display.get_status()["showing"] == "logo"
         assert len(fb.displayed) == 2
 
@@ -8846,7 +8838,7 @@ class TestBootSplash:
              patch("dial_artwork.default_fetch_artwork", return_value=(b"jpegdata", "")), \
              patch("dial_display.decode_artwork", return_value=fake_image), \
              patch("dial_display_compositor.transform_artwork_for_panel", return_value=fake_image):
-            display._poll_once()
+            display.fold_for_tests()
         assert display.get_status()["showing"] == "artwork"
         assert len(fb.displayed) >= 2      # the splash, then artwork (a transition frame may sit between)
 
@@ -8887,7 +8879,7 @@ def _make_outputs_eq_display(appliance_id="a" * 20):
     """A display whose reporting appliance offers both the outputs list and
     the EQ page, so the outputs list can be opened from the EQ page."""
     display, fb, gt = make_display(targets=[])
-    display.core.set_field("reporting_id", appliance_id)
+    display.core.set_field_for_tests("reporting_id", appliance_id)
     set_roster(display, [_roster_entry(appliance_id=appliance_id, dial_outputs=True, dial_eq=True)])
     update_availability(display)
     return display
@@ -8984,7 +8976,7 @@ class TestReplayTimer:
     def _display(self, state="hold", **repeat):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("manual_id", self.AID)
+        display.core.set_field_for_tests("manual_id", self.AID)
         now = time.monotonic()
         seed_repeat(self.AID, _repeat_obj(state=state, **repeat))
         display._arm_replay_timer(self.AID)
@@ -9019,7 +9011,7 @@ class TestReplayTimer:
 
     def test_not_drawn_for_another_shown_appliance(self):
         display, fb = self._display()
-        display.core.set_field("manual_id", "b" * 20)
+        display.core.set_field_for_tests("manual_id", "b" * 20)
         with display._lock:
             assert display._replay_timer_locked(time.monotonic()) is None
         assert display._replay_timer_id == self.AID
@@ -9091,7 +9083,7 @@ class TestIdentifiedWithoutArtwork:
         no_art = _track_id(title="Song", artist="The Artist", album="LP", artwork_url="")
         with patch("dial_test_support.fetch_target_status", return_value=_status_result(track_id=no_art)), \
                 patch.object(display, "_show_artwork") as show_artwork:
-            display._poll_once()
+            display.fold_for_tests()
         show_artwork.assert_not_called()
         assert display.get_status()["showing"] == "logo"
 
@@ -9134,7 +9126,7 @@ class TestGenericWarningCapabilities:
                 p.start()
                 started.append(p)
             display.enable()
-            display._poll_once()
+            display.fold_for_tests()
             _fold(display)
             return display, fb, clock
 
@@ -9176,7 +9168,7 @@ class TestGenericWarningCapabilities:
     def test_a_warning_card_carries_no_percent(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         on_sd_health_view(display, _sd_view(STATUS_VALID, percent=15))
         open_warnings_page(display)
         view = self._painted_view(display)
@@ -9311,7 +9303,7 @@ class TestUpdateWarnings:
         display.core.update_seen_path = str(tmp_path / "seen")
         display.core.update_watcher = UpdateWatcher(str(tmp_path / "update-result.env"))
         display.enable()
-        display._poll_once()
+        display.fold_for_tests()
         _fold(display)
         display.result_path = tmp_path / "update-result.env"
         display.seen_path = tmp_path / "seen"
@@ -9485,7 +9477,7 @@ class TestUpdateWarnings:
         again, fb, gt = make_display(targets=[])
         again.core.update_seen_path = str(display.seen_path)
         again.enable()
-        again._poll_once()
+        again.fold_for_tests()
         _fold(again)
         apply_update_view(again, self._finished())
         _fold(again)
@@ -9550,7 +9542,7 @@ class TestAsleepIdleTouchDoesNotPressAnything:
 
         display, fb, gt = make_display(targets=[])
         display.enable()
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         with display._lock:
             display._sleep_locked()
         assert display.is_sleeping() is True
@@ -10111,7 +10103,7 @@ class TestPairInAutostreamPage:
         display = self._detail()
         self._refuse(display, self.PIN_REQUIRED)
         assert display._screen == "info_value"
-        display.core.set_field("reporting_id", "b" * 20)
+        display.core.set_field_for_tests("reporting_id", "b" * 20)
         set_roster(display, [_roster_entry(appliance_id="b" * 20, dial_outputs=True)])
         with display._lock:
             display._close_secondary_locked()
@@ -10274,7 +10266,7 @@ class TestLatePairingHint:
 
     def test_a_late_request_shows_nothing_on_the_main_screen(self):
         display, fb, gt = make_display(targets=[])
-        display.core.set_field("reporting_id", self.AID)
+        display.core.set_field_for_tests("reporting_id", self.AID)
         self._late(display)
         assert display._screen == "main" and display._info_value is None
 

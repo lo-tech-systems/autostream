@@ -304,7 +304,7 @@ class TestCoreActionsStayInMemory:
                 patch("dial_core.enqueue_mute_all"):
             _tick(core)
             core.set_focus(None)
-            core.set_field("source_service_name", "Kitchen")
+            core.set_field_for_tests("source_service_name", "Kitchen")
             core.volume_step(1)
             core.mute_toggle()
             core.start_replay("a" * 20)

@@ -55,7 +55,7 @@ class _Rig:
             stack.enter_context(patch(
                 "dial_display_compositor.transform_artwork_for_panel", return_value=picture,
             ))
-            self.display._poll_once()
+            self.display.fold_for_tests()
             _fold(self.display)
 
     def frames_for(self, action=None):
@@ -120,9 +120,9 @@ class TestNoRedundantFrames:
         rig.tick()
         with patch.object(rig.display, "show_logo") as show_logo, \
              patch.object(rig.display, "_show_artwork") as show_artwork:
-            rig.display._core.set_field("eq_available", True)
+            rig.display._core.set_field_for_tests("eq_available", True)
             rig.display._apply_pending_snapshot()
-            rig.display._core.set_field("eq_available", False)
+            rig.display._core.set_field_for_tests("eq_available", False)
             rig.display._apply_pending_snapshot()
         show_logo.assert_not_called()
         show_artwork.assert_not_called()
@@ -152,7 +152,7 @@ class TestSleepingPanel:
         frames, wakes = len(rig.fb.displayed), rig.fb.wake_calls
         for _ in range(3):
             rig.tick()
-        rig.display._core.set_field("eq_available", True)
+        rig.display._core.set_field_for_tests("eq_available", True)
         rig.display._apply_pending_snapshot()
         assert rig.display._display_sleeping
         assert (len(rig.fb.displayed), rig.fb.wake_calls) == (frames, wakes)
@@ -222,7 +222,7 @@ class TestSignal:
         display, fb, gt = make_display(targets=[])
         display._subscription = display._core.subscribe(display._core_changed)
         display._overlay_signal.clear()
-        display._core.set_field("eq_available", True)
+        display._core.set_field_for_tests("eq_available", True)
         assert display._overlay_signal.is_set()
         assert display._overlay_signal.consume() is False
 

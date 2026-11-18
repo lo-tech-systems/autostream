@@ -264,12 +264,12 @@ def _record(state="hold", seconds=42.0):
 class TestFieldWrites:
     def test_focus_fields_round_trip_through_the_snapshot(self):
         core = _core()
-        core.set_field("manual_id", AID)
-        core.set_field("bound_id", BID)
-        core.set_field("reporting_id", AID)
-        core.set_field("source_service_name", "Kitchen")
-        core.set_field("pending", (AID, "Kitchen", 9.0))
-        core.set_field("accepted_replay", (AID, 20.0))
+        core.set_field_for_tests("manual_id", AID)
+        core.set_field_for_tests("bound_id", BID)
+        core.set_field_for_tests("reporting_id", AID)
+        core.set_field_for_tests("source_service_name", "Kitchen")
+        core.set_field_for_tests("pending", (AID, "Kitchen", 9.0))
+        core.set_field_for_tests("accepted_replay", (AID, 20.0))
         focus = core.snapshot().focus
         assert (focus.manual_id, focus.bound_id, focus.reporting_id) == (AID, BID, AID)
         assert focus.source_service_name == "Kitchen"
@@ -279,11 +279,11 @@ class TestFieldWrites:
     def test_plain_fields_round_trip(self):
         core = _core()
         np = NowPlaying("Kitchen", "a", "t", 30)
-        core.set_field("now_playing", np)
-        core.set_field("idle_affordance", True)
-        core.set_field("dots_active", True)
-        core.set_field("outputs_available", True)
-        core.set_field("eq_available", True)
+        core.set_field_for_tests("now_playing", np)
+        core.set_field_for_tests("idle_affordance", True)
+        core.set_field_for_tests("dots_active", True)
+        core.set_field_for_tests("outputs_available", True)
+        core.set_field_for_tests("eq_available", True)
         snap = core.snapshot()
         assert snap.now_playing is np
         assert snap.idle_affordance and snap.dots_active
@@ -291,21 +291,21 @@ class TestFieldWrites:
 
     def test_unknown_field_is_refused(self):
         with pytest.raises(KeyError):
-            _core().set_field("seq", 3)
+            _core().set_field_for_tests("seq", 3)
 
     def test_writing_the_same_object_does_not_publish(self):
         core = _core()
-        core.set_field("manual_id", AID)
+        core.set_field_for_tests("manual_id", AID)
         seq = core.snapshot().seq
-        core.set_field("manual_id", AID)
-        core.set_field("now_playing", None)
+        core.set_field_for_tests("manual_id", AID)
+        core.set_field_for_tests("now_playing", None)
         assert core.snapshot().seq == seq
 
     def test_writes_to_different_focus_fields_keep_each_other(self):
         core = _core()
-        core.set_field("manual_id", AID)
-        core.set_field("reporting_id", BID)
-        core.set_field("manual_id", None)
+        core.set_field_for_tests("manual_id", AID)
+        core.set_field_for_tests("reporting_id", BID)
+        core.set_field_for_tests("manual_id", None)
         focus = core.snapshot().focus
         assert focus.manual_id is None and focus.reporting_id == BID
 
@@ -315,7 +315,7 @@ class TestFieldWrites:
 
         def writer(field, prefix):
             for i in range(n):
-                core.set_field(field, f"{prefix}{i}")
+                core.set_field_for_tests(field, f"{prefix}{i}")
 
         threads = [
             threading.Thread(target=writer, args=("manual_id", "m")),
@@ -375,7 +375,7 @@ class TestFocusActions:
     def test_current_source_service_name(self):
         core = _core()
         assert core.current_source_service_name() is None
-        core.set_field("source_service_name", "Kitchen")
+        core.set_field_for_tests("source_service_name", "Kitchen")
         assert core.current_source_service_name() == "Kitchen"
 
 
@@ -389,12 +389,12 @@ class TestDisplayDelegates:
 
     def test_focus_attributes_write_through_to_the_core(self):
         display = self._display()
-        display.core.set_field("manual_id", AID)
-        display.core.set_field("bound_id", BID)
-        display.core.set_field("reporting_id", AID)
-        display.core.set_field("source_service_name", "Kitchen")
-        display.core.set_field("pending", (AID, "Kitchen", 9.0))
-        display.core.set_field("accepted_replay", (AID, 20.0))
+        display.core.set_field_for_tests("manual_id", AID)
+        display.core.set_field_for_tests("bound_id", BID)
+        display.core.set_field_for_tests("reporting_id", AID)
+        display.core.set_field_for_tests("source_service_name", "Kitchen")
+        display.core.set_field_for_tests("pending", (AID, "Kitchen", 9.0))
+        display.core.set_field_for_tests("accepted_replay", (AID, 20.0))
         focus = display._core.snapshot().focus
         assert (focus.manual_id, focus.bound_id, focus.reporting_id) == (AID, BID, AID)
         assert focus.source_service_name == "Kitchen"
@@ -412,11 +412,11 @@ class TestDisplayDelegates:
     def test_availability_and_now_playing_attributes(self):
         display = self._display()
         np = NowPlaying("Kitchen", "a", "t", 30)
-        display.core.set_field("now_playing", np)
-        display.core.set_field("dots_active", True)
-        display.core.set_field("outputs_available", True)
-        display.core.set_field("eq_available", True)
-        display.core.set_field("idle_affordance", True)
+        display.core.set_field_for_tests("now_playing", np)
+        display.core.set_field_for_tests("dots_active", True)
+        display.core.set_field_for_tests("outputs_available", True)
+        display.core.set_field_for_tests("eq_available", True)
+        display.core.set_field_for_tests("idle_affordance", True)
         snap = display._core.snapshot()
         assert snap.now_playing is np
         assert snap.dots_active and snap.outputs_available and snap.eq_available
@@ -426,7 +426,7 @@ class TestDisplayDelegates:
     def test_the_display_still_does_not_subscribe_to_the_core(self):
         display = self._display()
         assert display._core._subscribers == {}
-        display._poll_once()
+        display.fold_for_tests()
         assert display._core._subscribers == {}
 
 

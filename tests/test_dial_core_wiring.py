@@ -91,7 +91,7 @@ class TestDialInfo:
 class TestReadoutChanged:
     def test_the_readout_is_published_for_the_reporting_service(self):
         core = _core()
-        core.set_field("now_playing", NowPlaying("Kitchen", "", "", 40))
+        core.set_field_for_tests("now_playing", NowPlaying("Kitchen", "", "", 40))
         with patch("dial_core.shown_volume", return_value=42) as shown:
             core.readout_changed()
         shown.assert_called_once_with("Kitchen")
@@ -99,13 +99,13 @@ class TestReadoutChanged:
 
     def test_with_nothing_reported_the_readout_is_empty(self):
         core = _core()
-        core.set_field("source_service_name", "Kitchen")
+        core.set_field_for_tests("source_service_name", "Kitchen")
         core.readout_changed()
         assert core.snapshot().volume_readout == (None, None)
 
     def test_a_mute_change_publishes_the_readout_and_queues_no_repaint(self):
         core = _core()
-        core.set_field("now_playing", NowPlaying("Kitchen", "", "", 40))
+        core.set_field_for_tests("now_playing", NowPlaying("Kitchen", "", "", 40))
         seen = []
         core.subscribe(lambda: seen.append(len(core._effects)))
         seq = core.snapshot().seq

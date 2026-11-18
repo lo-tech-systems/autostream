@@ -258,7 +258,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "set_pressed":
         d.set_pressed(step[1], step[2] if len(step) > 2 else None)
     elif kind == "poll":
-        d._poll_once()
+        d.fold_for_tests()
     elif kind == "repaint":
         with d._lock:
             d._repaint_current_locked()
