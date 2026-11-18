@@ -72,7 +72,7 @@ from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTPUT_KINDS,
     EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
     FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
-    START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, PIN_RE,
+    START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap,
     pin_capable_outputs, PowerState, TickContext, TransportRequest, WarningState,
     roster_entry, display_order, dots_active, eq_gain,
     reopen_for_pin, start_failure_action,
@@ -115,28 +115,6 @@ EFFECTS_BACKLOG_MAX = 256
 # While an appliance is replaying, its repeat part is read again this often:
 # the position is not part of the change stream.
 REPEAT_FETCH_S = 5.0
-
-# The intents submit_intent forwards for the HD page; any other name is
-# refused without a request.
-SUBMIT_INTENTS = frozenset((
-    "outputs.set", "output.pin.submit", "output.eq.set", "output.eq.reset",
-    "repeat.arm", "repeat.seek", "repeat.transport", "outputs.save_default",
-))
-# The core's own refusal names as the page is sent them: the appliance's or the
-# library's name where one says the same, else the dial's own.
-_REFUSAL_NAMES = {"unauthorized": "dial_not_authorized", "no_capability": "protocol_mismatch",
-                  "not_polling": "wrong_state"}
-# What each intent needs of the appliance, and the repeat states it acts from.
-_INTENT_CAPABILITY = {
-    "outputs.set": "dial_outputs", "output.pin.submit": "dial_outputs",
-    "outputs.save_default": "dial_outputs", "output.eq.set": "dial_eq", "output.eq.reset": "dial_eq",
-    "repeat.arm": "repeat_capable", "repeat.seek": "repeat_capable", "repeat.transport": "repeat_capable",
-}
-_INTENT_REPEAT_STATES = {
-    "repeat.seek": ("replaying", "hold"), "repeat.transport": ("replaying",),
-    "repeat.arm": ("recording", "pending", "idle"),
-}
-_INTENT_KINDS = {"repeat.seek": "seek", "repeat.transport": "stop", "repeat.arm": "arm"}
 
 # FocusState fields that can be written one at a time.
 _FOCUS_FIELDS = frozenset((
@@ -440,9 +418,6 @@ class DialCore:
 
     # -- requests --
 
-    def _refusal_in(self, state: CoreState, appliance_id: str, capability: str) -> ActionResult | None:
-        return rq.appliance_refusal(state.roster, appliance_id, capability)
-
     def set_output(
         self, appliance_id: str, output_id: str, *,
         selected: bool | None = None, volume: int | None = None,
@@ -580,9 +555,6 @@ class DialCore:
                 appliance_id, kind, now, "pending", now, None, output_id, 0, shown,
             ))
         return mutate, now
-
-    def _repeat_refusal_in(self, state: CoreState, appliance_id: str, kind: str) -> ActionResult | None:
-        return rq.repeat_refusal(state.roster, appliance_id, kind)
 
     def _send_transport(self, appliance_id: str, action: str) -> ActionResult:
         """Record the request as pending and queue it on the request lane."""
@@ -1414,18 +1386,20 @@ class DialCore:
         (dial_not_authorized, protocol_mismatch). *pin_entry* says the caller
         can show a keypad; a PIN submission always says so. Bounded by the
         client's own read."""
-        if name not in SUBMIT_INTENTS:
+        if name not in rq.SUBMIT_INTENTS:
             return _local_refusal("unknown_intent")
         args = dict(args) if isinstance(args, dict) else {}
         now = self._clock()
         begun: dict = {}
 
         def mutate(state: CoreState) -> "bool | None":
-            refusal = self._intent_refusal_locked(state, appliance_id, name, args)
+            refusal = rq.intent_refusal(
+                state.roster, state.outputs, state.focus.manual_id or state.focus.reporting_id,
+                appliance_id, name, args)
             if refusal is not None:
-                begun["refusal"] = refusal
+                begun["refusal"] = rq.REFUSAL_NAMES.get(refusal.reason, refusal.reason)
                 return False
-            record = self._intent_record_locked(state, appliance_id, name, args)
+            record = rq.intent_record(state.outputs, appliance_id, name, args)
             if record is None:
                 return False
             lane, kind, output_id, shown = record
@@ -1445,50 +1419,6 @@ class DialCore:
         if "kind" in begun:
             self._fold_reply(appliance_id, begun["kind"], now, reply)
         return reply
-
-    def _intent_refusal_locked(self, state: CoreState, appliance_id: str, name: str, args: dict) -> str | None:
-        """The name submit_intent refuses *name* with, or None. Core lock held."""
-        refusal = self._refusal_in(state, appliance_id, _INTENT_CAPABILITY[name])
-        if refusal is not None:
-            return _REFUSAL_NAMES.get(refusal.reason, refusal.reason)
-        if appliance_id != (state.focus.manual_id or state.focus.reporting_id):
-            return "wrong_state"
-        if name in _INTENT_REPEAT_STATES:
-            refusal = self._repeat_refusal_in(state, appliance_id, _INTENT_KINDS[name])
-            return None if refusal is None else _REFUSAL_NAMES.get(refusal.reason, refusal.reason)
-        if name in ("outputs.set", "output.pin.submit"):
-            row = self._output_row_in(state, appliance_id, args.get("id"))
-            if row is None or row.remote_in_use:
-                return "wrong_state"
-            pin = args.get("pin")
-            if name == "output.pin.submit" and not (isinstance(pin, str) and PIN_RE.match(pin)):
-                return "wrong_state"
-        return None
-
-    def _intent_record_locked(self, state: CoreState, appliance_id: str, name: str, args: dict):
-        """(lane, kind, output_id, shown) recording intent *name*, or None for
-        an intent with no request record. Core lock held; the checks have
-        passed."""
-        if name in _INTENT_KINDS:
-            return "transport", _INTENT_KINDS[name], None, None
-        if name not in ("outputs.set", "output.pin.submit"):
-            return None
-        row = self._output_row_in(state, appliance_id, args.get("id"))
-        if name == "output.pin.submit":
-            return "outputs_request", "output_pin", row.id, (True, row.volume)
-        selected, volume = args.get("selected"), args.get("volume")
-        shown = (
-            selected if isinstance(selected, bool) else row.selected,
-            volume if is_int(volume) else row.volume,
-        )
-        return "outputs_request", "output_set", row.id, shown
-
-    @staticmethod
-    def _output_row_in(state: CoreState, appliance_id: str, output_id):
-        held = state.outputs
-        if held is None or held.appliance_id != appliance_id:
-            return None
-        return next((r for r in held.rows if r.id == output_id), None)
 
     # -- the fold --
 

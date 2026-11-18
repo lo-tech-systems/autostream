@@ -50,7 +50,9 @@ from typing import Callable, Mapping
 
 from autostream_peer_client import PeerReply
 
-from dial_core_state import AUTH_UNAUTHORIZED, PIN_RE, ActionResult, TransportRequest, roster_entry, six_band
+from dial_core_state import (
+    AUTH_UNAUTHORIZED, OUTPUT_KINDS, PIN_RE, ActionResult, TransportRequest, roster_entry, six_band,
+)
 from dial_eq_model import DERIVED_EQ_IDS, eq_fields
 from dial_values import is_int
 
@@ -169,6 +171,65 @@ def output_shown(row, selected, volume, *, pin: bool) -> tuple[bool, int | None]
     *volume* given (an int, not a bool) or the row's."""
     shown_selected = True if pin else (selected if isinstance(selected, bool) else row.selected)
     return shown_selected, (volume if is_int(volume) else row.volume)
+
+
+# The intents the HD page may send, each with what it needs of the appliance
+# and the kind of request it records (None: it records nothing).
+INTENTS = {
+    "outputs.set": ("dial_outputs", "output_set"),
+    "output.pin.submit": ("dial_outputs", "output_pin"),
+    "outputs.save_default": ("dial_outputs", None),
+    "output.eq.set": ("dial_eq", None),
+    "output.eq.reset": ("dial_eq", None),
+    "repeat.arm": ("repeat_capable", "arm"),
+    "repeat.seek": ("repeat_capable", "seek"),
+    "repeat.transport": ("repeat_capable", "stop"),
+}
+# The intents `submit_intent` forwards; any other name is refused without a request.
+SUBMIT_INTENTS = frozenset(INTENTS)
+# The page is sent the appliance's or the library's name where one says the
+# same as the dial's own reason. Nothing the intent checks yields "not_polling"
+# today; it applies if a check for a missing EQ reading is added.
+REFUSAL_NAMES = {"unauthorized": "dial_not_authorized", "no_capability": "protocol_mismatch",
+                 "not_polling": "wrong_state"}
+
+
+def intent_refusal(roster, outputs, focused_id, appliance_id: str, name: str, args: dict) -> ActionResult | None:
+    """Why the HD page's intent *name* cannot go to *appliance_id*, or None:
+    the appliance and its capability, then that it is the focused appliance,
+    then the repeat record (a repeat intent) or the speaker row and, for a
+    PIN, its shape. The caller holds the lock the values were read under."""
+    capability, kind = INTENTS[name]
+    refusal = appliance_refusal(roster, appliance_id, capability)
+    if refusal is not None:
+        return refusal
+    if appliance_id != focused_id:
+        return ActionResult(False, "wrong_state")
+    if kind in REPEAT_STATES:
+        return repeat_refusal(roster, appliance_id, kind)
+    if kind in OUTPUT_KINDS:
+        refusal = row_refusal(output_row(outputs, appliance_id, args.get("id")))
+        if refusal is not None:
+            return refusal
+        if kind == "output_pin":
+            return pin_refusal(args.get("pin"))
+    return None
+
+
+def intent_record(outputs, appliance_id: str, name: str, args: dict):
+    """(lane, kind, output_id, shown) recording the intent *name*, or None for
+    an intent with no request record. The checks have passed."""
+    kind = INTENTS[name][1]
+    if kind is None:
+        return None
+    if kind in REPEAT_STATES:
+        return "transport", kind, None, None
+    row = output_row(outputs, appliance_id, args.get("id"))
+    if kind == "output_pin":
+        shown = output_shown(row, None, None, pin=True)
+    else:
+        shown = output_shown(row, args.get("selected"), args.get("volume"), pin=False)
+    return "outputs_request", kind, row.id, shown
 
 
 def eq_band_ids(held) -> tuple:

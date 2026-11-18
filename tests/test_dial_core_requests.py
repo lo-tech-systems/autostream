@@ -442,6 +442,82 @@ class TestValidators:
     def test_a_refusal_is_the_actions_own_type(self):
         assert isinstance(rq.row_refusal(None), ActionResult)
 
+    def test_the_intent_table_names_every_intent_once(self):
+        assert rq.SUBMIT_INTENTS == frozenset(rq.INTENTS) and len(rq.INTENTS) == 8
+        assert {cap for cap, _ in rq.INTENTS.values()} == {"dial_outputs", "dial_eq", "repeat_capable"}
+        kinds = {kind for _, kind in rq.INTENTS.values()} - {None}
+        assert kinds == {"output_set", "output_pin", "seek", "stop", "arm"}
+        assert set(rq.REPEAT_STATES) == {"seek", "stop", "arm"}
+
+    def test_the_page_is_sent_the_appliances_names(self):
+        assert rq.REFUSAL_NAMES == {
+            "unauthorized": "dial_not_authorized", "no_capability": "protocol_mismatch",
+            "not_polling": "wrong_state"}
+
+
+def _intent(name, args=None, *, roster=None, held=None, focused=AID, appliance=AID):
+    roster = [entry(record=record("replaying"))] if roster is None else roster
+    held = outputs(row("u1")) if held is None else held
+    return rq.intent_refusal(roster, held, focused, appliance, name, args or {})
+
+
+class TestIntentValidators:
+    def test_a_good_speaker_intent_passes(self):
+        assert _intent("outputs.set", {"id": "u1", "selected": True}) is None
+        assert _intent("output.pin.submit", {"id": "u1", "pin": "1234"}) is None
+
+    @pytest.mark.parametrize("name, args, want", [
+        ("outputs.set", {"id": "nope", "selected": True}, "wrong_state"),
+        ("outputs.set", {"selected": True}, "wrong_state"),
+        ("output.pin.submit", {"id": "u1", "pin": "x"}, "wrong_state"),
+        ("output.pin.submit", {"id": "nope", "pin": "x"}, "wrong_state"),
+        ("repeat.seek", {"position": 0}, None),
+        ("repeat.transport", {"action": "stop"}, None),
+        ("repeat.arm", {"armed": True}, "wrong_state"),
+    ])
+    def test_the_row_pin_and_repeat_checks(self, name, args, want):
+        got = _intent(name, args)
+        assert (None if got is None else got.reason) == want
+
+    def test_a_taken_speaker_is_refused(self):
+        held = outputs(row("u1", remote_in_use=True))
+        assert refusal(_intent("outputs.set", {"id": "u1", "selected": True}, held=held)) == (False, "wrong_state")
+
+    def test_the_appliance_is_checked_before_the_focus(self):
+        got = _intent("outputs.set", {"id": "u1"}, roster=[entry(dial_outputs=False)], focused="other")
+        assert refusal(got) == (False, "no_capability")
+        got = _intent("outputs.set", {"id": "u1"}, roster=[entry(auth=AUTH_UNAUTHORIZED)], focused="other")
+        assert refusal(got) == (False, "unauthorized")
+
+    def test_the_focus_is_checked_before_the_row(self):
+        assert refusal(_intent("outputs.set", {"id": "nope"}, focused="other")) == (False, "wrong_state")
+        assert refusal(_intent("repeat.seek", focused=None)) == (False, "wrong_state")
+
+    def test_the_eq_and_save_intents_need_only_the_appliance_and_focus(self):
+        for name in ("output.eq.set", "output.eq.reset", "outputs.save_default"):
+            assert _intent(name) is None, name
+        assert refusal(_intent("output.eq.set", roster=[entry(auth=AUTH_UNAUTHORIZED)])) == (False, "unauthorized")
+
+    def test_the_outputs_must_be_this_appliances(self):
+        assert refusal(_intent("outputs.set", {"id": "u1"}, held=outputs(row("u1"), aid_="f" * 20))) == (
+            False, "wrong_state")
+
+    def test_the_records(self):
+        held = outputs(row("u1", selected=False, volume=30))
+        record_of = lambda name, args: rq.intent_record(held, AID, name, args)  # noqa: E731
+        assert record_of("repeat.seek", {}) == ("transport", "seek", None, None)
+        assert record_of("repeat.transport", {"action": "start"}) == ("transport", "stop", None, None)
+        assert record_of("repeat.arm", {}) == ("transport", "arm", None, None)
+        assert record_of("outputs.set", {"id": "u1"}) == ("outputs_request", "output_set", "u1", (False, 30))
+        assert record_of("outputs.set", {"id": "u1", "selected": True, "volume": 20}) == (
+            "outputs_request", "output_set", "u1", (True, 20))
+        assert record_of("outputs.set", {"id": "u1", "selected": 1, "volume": True}) == (
+            "outputs_request", "output_set", "u1", (False, 30))
+        assert record_of("output.pin.submit", {"id": "u1", "pin": "1234", "volume": 5}) == (
+            "outputs_request", "output_pin", "u1", (True, 30))
+        for name in ("output.eq.set", "output.eq.reset", "outputs.save_default"):
+            assert record_of(name, {}) is None, name
+
 
 # ---- the core on the lane ------------------------------------------------------------
 
@@ -663,6 +739,20 @@ class TestSubmitIntent:
         assert (reply.ok, reply.error, reply.version, reply.boot, dict(reply.result), reply.retry_after_s) == (
             False, expected, None, None, {}, None)
         assert client.sent() == []
+
+    def test_a_page_set_is_forwarded_as_given(self, rig):
+        client = kitchen(rig)
+        rig.core.submit_intent(K, "outputs.set", {"id": "u1", "volume": 20})
+        assert client.sent()[0][1:3] == ("outputs.set", {"id": "u1", "volume": 20})
+        assert rig.core.snapshot().outputs_request.shown[1] == 20
+
+    def test_a_page_set_naming_neither_field_is_still_sent(self, rig):
+        client = kitchen(rig)
+        reply = rig.core.submit_intent(K, "outputs.set", {"id": "u1"})
+        assert reply.ok
+        assert client.sent()[0][1:3] == ("outputs.set", {"id": "u1"})
+        request = rig.core.snapshot().outputs_request
+        assert (request.kind, request.output_id) == ("output_set", "u1")
 
     def test_an_appliance_that_is_not_focused_is_refused(self, rig):
         kitchen(rig)

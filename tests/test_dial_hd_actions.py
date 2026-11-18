@@ -159,6 +159,10 @@ class TestActionTable:
         assert len(set(hda.HD_INTENTS)) == len(hda.HD_INTENTS) == 8
         assert not {"volume.set", "volume.step", "mute.set"} & set(hda.HD_INTENTS)
 
+    def test_the_page_intents_are_the_ones_the_core_forwards(self):
+        import dial_core_requests as rq
+        assert set(hda.HD_INTENTS) == rq.SUBMIT_INTENTS
+
     def test_the_table_names_exactly_the_documented_actions(self):
         assert set(hda.ACTIONS) == {
             "focus", "volume_set", "volume_step", "mute_toggle",
