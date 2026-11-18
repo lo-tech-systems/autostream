@@ -2830,18 +2830,18 @@ class TestOutsideFields:
     def test_a_speaker_in_use_elsewhere_names_that_appliance_unless_selected_here(self, w):
         merge(w, [row(1, "Kitchen"), row(2, "Lounge", selected=True)])
         w.a.select("2", Origin.USER)
-        w.a.set_remote_usage({"kitchen": "hall", "lounge": "hall"})
-        assert [u.in_use_by for u in snap().units] == ["hall", ""]
+        w.a.set_remote_usage({"kitchen": ("id1", "hall"), "lounge": ("id1", "hall")})
+        assert [(u.in_use_id, u.in_use_by) for u in snap().units] == [("id1", "hall"), ("", "")]
         w.a.set_remote_usage({})
         assert snap().unit("1").in_use_by == ""
 
     def test_an_unchanged_setter_does_not_move_the_version(self, w):
         merge(w, [row(1, "Kitchen")])
         w.a.set_hidden_outputs(["Kitchen"])
-        w.a.set_remote_usage({"kitchen": "hall"})
+        w.a.set_remote_usage({"kitchen": ("id1", "hall")})
         v = state.store().snapshot().version
         w.a.set_hidden_outputs(["kitchen"])
-        w.a.set_remote_usage({"kitchen": "hall"})
+        w.a.set_remote_usage({"kitchen": ("id1", "hall")})
         assert state.store().snapshot().version == v
 
     def test_a_claim_shows_after_a_republish(self, w):

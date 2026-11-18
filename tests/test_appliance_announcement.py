@@ -157,21 +157,3 @@ class TestReconcileApplianceAnnouncement:
         write_calls = [a for a in calls if a and a[0] == "write-appliance-service"]
         assert write_calls
         assert "unknown" in write_calls[0]
-
-
-# ---------------------------------------------------------------------------
-# start_appliance_scanner
-# ---------------------------------------------------------------------------
-
-class TestStartApplianceScanner:
-    def test_start_with_local_id_starts_browser(self):
-        m = _make_module()
-        with patch("autostream_appliances.rpi.get_appliance_id", return_value="a1b2c3d4e5f6a1b2c3d4"):
-            m.start_appliance_scanner()
-        assert m._browser._started
-
-    def test_start_without_local_id_noop(self):
-        m = _make_module()
-        with patch("autostream_appliances.rpi.get_appliance_id", return_value=None):
-            m.start_appliance_scanner()
-        assert not m._browser._started

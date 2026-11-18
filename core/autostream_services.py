@@ -12,15 +12,13 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Callable, Optional, Sequence
+from typing import Callable, Optional
 
 import autostream_appliance_state as appliance_state
 import autostream_appliances as appliances
 import autostream_dial_warnings as dial_warnings
 import autostream_dials as dials
-import autostream_federation as federation
 import autostream_monitor_client as monitor_client
-import autostream_output_usage as output_usage
 import autostream_runtime as runtime
 import autostream_state
 from autostream_bluetooth_client import (
@@ -287,10 +285,9 @@ def _announcement_loop(
     life: runtime.Lifecycle,
     settings,
     app_version: Callable[[], str],
-    sweeps: Sequence[Callable[[], None]],
 ) -> None:
     """Reconcile the _autostream._tcp service file once at start, then every
-    60 s, with the session sweep and each of *sweeps* before each reconcile."""
+    60 s."""
 
     def _reconcile() -> None:
         appliances.reconcile_appliance_announcement(
@@ -308,15 +305,6 @@ def _announcement_loop(
         if life.stopping():
             break
         try:
-            federation.sweep_sessions()
-        except Exception:
-            logging.debug("sweep_sessions: error", exc_info=True)
-        for fn in sweeps:
-            try:
-                fn()
-            except Exception:
-                logging.debug("%s: error", getattr(fn, "__name__", "sweep"), exc_info=True)
-        try:
             _reconcile()
         except Exception:
             logging.debug("reconcile_announcement_loop: error", exc_info=True)
@@ -329,31 +317,23 @@ def start(
     config_path: str,
     state_path: str,
     app_version: Callable[[], str],
-    sweeps: Sequence[Callable[[], None]] = (),
-    on_peer_removed: Sequence[Callable[[str], None]] = (),
 ) -> None:
-    """Start the dial and appliance scanners, the dial warnings watcher, the
-    appliance state worker and the device-scan, announcement and
-    identification-provider threads. Called
-    once, before the web server starts. Each *on_peer_removed* callable is
-    registered with the appliance registry before its scanner starts, and is
-    called with the id of a peer that has gone."""
+    """Start the dial scanner, the dial warnings watcher, the appliance state
+    worker and the device-scan, announcement and identification-provider
+    threads. Called once, before the web server starts."""
     try:
         dials.start_dial_scanner(shutdown_event=life.stop)
         dial_warnings.start_watcher(shutdown_event=life.stop)
         appliance_state.start(
             life.stop, config_path=config_path, state_path=state_path,
             settings=settings, app_version=app_version)
-        for fn in on_peer_removed:
-            appliances.register_peer_removal_callback(fn)
-        appliances.start_appliance_scanner(shutdown_event=life.stop)
 
         threading.Thread(
             target=_device_scan_loop, args=(life, settings),
             name="device-scan", daemon=True,
         ).start()
         threading.Thread(
-            target=_announcement_loop, args=(life, settings, app_version, tuple(sweeps)),
+            target=_announcement_loop, args=(life, settings, app_version),
             name="announce-reconcile", daemon=True,
         ).start()
 
@@ -370,15 +350,6 @@ def start(
         raise
 
 
-def start_output_usage_poller(cfg, life: runtime.Lifecycle) -> None:
-    """Best-effort start/update of the cross-appliance output usage poller."""
-    try:
-        output_usage.configure(cfg.webui.output_usage_poll_interval_seconds)
-        output_usage.start(shutdown_event=life.stop)
-    except Exception:
-        logging.warning("output-usage: failed to start poller", exc_info=True)
-
-
 def stop_discovery() -> None:
     """Best-effort shutdown of all process-lifetime mDNS discovery services.
 
@@ -387,14 +358,10 @@ def stop_discovery() -> None:
     reload.  All operations are idempotent.
     """
     try:
-        output_usage.stop()
-    except Exception:
-        logging.debug("stop_discovery: output_usage.stop() raised", exc_info=True)
-    try:
         dials.stop_dial_scanner()
     except Exception:
         logging.debug("stop_discovery: stop_dial_scanner() raised", exc_info=True)
     try:
-        appliances.stop_appliance_scanner()
+        appliances.stop()
     except Exception:
-        logging.debug("stop_discovery: stop_appliance_scanner() raised", exc_info=True)
+        logging.debug("stop_discovery: appliances.stop() raised", exc_info=True)

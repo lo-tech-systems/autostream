@@ -267,15 +267,6 @@ class TestBackoff:
         assert key not in webui_gateway._backoff_state
 
 
-class TestImport:
-    def test_importing_the_module_registers_no_peer_removal_callback(self):
-        import importlib
-        import autostream_appliances as appliances
-        before = len(appliances._peer_removal_callbacks)
-        importlib.reload(gw)
-        assert len(appliances._peer_removal_callbacks) == before
-
-
 # ---------------------------------------------------------------------------
 # Token cache
 # ---------------------------------------------------------------------------

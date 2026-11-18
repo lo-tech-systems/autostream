@@ -40,6 +40,7 @@ import autostream_playback_tracking as playback_tracking
 import autostream_repeat
 import autostream_runtime as runtime
 import autostream_selfheal as selfheal
+import autostream_appliances as appliances
 import autostream_services as services
 import autostream_session
 import autostream_startup as startup
@@ -320,14 +321,11 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     if start_webui is not None:
         import autostream_live_config
         import webui.browser.owntone as webui_owntone
-        import webui.peer.gateway as webui_gateway
         import webui.server as webui_server
         import webui.system.updates as webui_updates
         services.start(runtime.lifecycle(), settings,
                        config_path=config_path, state_path=STATE_PATH,
-                       app_version=webui_updates.get_app_version,
-                       sweeps=(webui_gateway.sweep_token_cache,),
-                       on_peer_removed=(webui_gateway.evict_gateway_token,))
+                       app_version=webui_updates.get_app_version)
         webui_thread = start_webui(webui_server.WebUIDeps(
             config_path=config_path,
             state_path=STATE_PATH,
@@ -344,7 +342,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     # sync the announced flag to filesystem truth so sync_playing_announcement
     # does not attempt a redundant remove on the first poll.
     announce.reset_at_startup()
-    services.start_output_usage_poller(cfg, runtime.lifecycle())
+    appliances.start(runtime.lifecycle(), settings)
 
     return _BootstrapResult(
         settings=settings,
@@ -419,8 +417,6 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
         )
 
         announce.start_reconciliation_once(version)
-
-        services.start_output_usage_poller(cfg, runtime.lifecycle())
 
         current: Optional[audio_monitor.AudioMonitor] = None
         reconnect_at: float = 0.0

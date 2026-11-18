@@ -420,7 +420,7 @@ class OutputAuthority:
         self._start_volume = 20
         self._pending: set[str] = set()   # member keys still to add this session
         self._hidden: frozenset[str] = frozenset()      # casefolded names the user hides
-        self._remote_usage: dict[str, str] = {}         # casefolded name -> the other appliance playing it
+        self._remote_usage: dict[str, tuple[str, str]] = {}   # casefolded name -> (id, hostname) of the other appliance playing it
         self._claims_published: dict[str, str] = {}     # unit id -> the PIN claim the part last carried
         self._start_failure: Optional[StartFailure] = None
         self._failure_seq = 0
@@ -672,10 +672,10 @@ class OutputAuthority:
 
     def set_remote_usage(self, usage: dict) -> None:
         """The speakers other appliances are playing: casefolded name -> that
-        appliance's hostname. A speaker selected here is never shown as in use
-        elsewhere."""
+        appliance's (id, hostname). A speaker selected here is never shown as
+        in use elsewhere."""
         self._touched = True
-        usage = {str(k): str(v) for k, v in (usage or {}).items()}
+        usage = {str(k): (str(v[0]), str(v[1])) for k, v in (usage or {}).items()}
         with self._lock:
             if usage == self._remote_usage:
                 return
@@ -805,9 +805,10 @@ class OutputAuthority:
         claim = live.pin_claim(view.id)
         if claim:
             claims[view.id] = claim
+        in_use_id, in_use_by = ("", "") if view.shown_selected else self._remote_usage.get(key, ("", ""))
         return dataclasses.replace(
             view, hidden=key in self._hidden, pin_claim=claim,
-            in_use_by="" if view.shown_selected else self._remote_usage.get(key, ""),
+            in_use_by=in_use_by, in_use_id=in_use_id,
         )
 
     def _build_part_locked(self) -> OutputsPart:

@@ -2,7 +2,7 @@
 
 The background services: what start() brings up and in which order, the
 device scan that publishes the devices part, the announcement loop, and the
-two process-lifetime helpers (the output usage poller and discovery shutdown).
+process-lifetime helper (discovery shutdown).
 """
 from __future__ import annotations
 
@@ -55,9 +55,6 @@ class TestStart:
                 order.append(name)
             return fn
 
-        def sweep():
-            pass
-
         def record_state(shutdown_event, **kwargs):
             assert shutdown_event is life.stop
             assert kwargs["config_path"] == "c.ini" and kwargs["state_path"] == "s.json"
@@ -67,38 +64,29 @@ class TestStart:
         with patch.object(services.dials, "start_dial_scanner", side_effect=record("dials")), \
              patch.object(services.dial_warnings, "start_watcher", side_effect=record("warnings")), \
              patch.object(services.appliance_state, "start", side_effect=record_state), \
-             patch.object(services.appliances, "start_appliance_scanner", side_effect=record("appliances")), \
              patch.object(services.threading, "Thread", FakeThread):
             services.start(life, "settings", config_path="c.ini", state_path="s.json",
-                           app_version=lambda: "v", sweeps=(sweep,))
+                           app_version=lambda: "v")
 
-        assert order == ["dials", "warnings", "appliance_state", "appliances", "thread:device-scan",
+        assert order == ["dials", "warnings", "appliance_state", "thread:device-scan",
                          "thread:announce-reconcile", "thread:vibra-runtime-refresh"]
         scan, announce, _vibra = threads
         assert scan[0] is services._device_scan_loop and scan[1] == (life, "settings")
         assert announce[0] is services._announcement_loop
-        assert announce[1][0] is life and announce[1][3] == (sweep,)
+        assert announce[1] == (life, "settings", announce[1][2])
         assert all(t[3] is True for t in threads)
 
-    def test_peer_removal_callbacks_are_registered_before_the_appliance_scanner(self):
+    def test_start_does_not_start_the_appliance_scanner_or_a_usage_poller(self):
         life = _life()
-        order = []
-
-        def hook(appliance_id):
-            pass
-
         with patch.object(services.dials, "start_dial_scanner"), \
              patch.object(services.dial_warnings, "start_watcher"), \
              patch.object(services.appliance_state, "start"), \
-             patch.object(services.appliances, "register_peer_removal_callback",
-                          side_effect=lambda fn: order.append(("register", fn))), \
-             patch.object(services.appliances, "start_appliance_scanner",
-                          side_effect=lambda **kw: order.append(("scanner", None))), \
+             patch.object(services.appliances, "start") as appliances_start, \
              patch.object(services.threading, "Thread"):
             services.start(life, "settings", config_path="c.ini", state_path="s.json",
-                           app_version=lambda: "v", on_peer_removed=(hook,))
-
-        assert order == [("register", hook), ("scanner", None)]
+                           app_version=lambda: "v")
+        appliances_start.assert_not_called()
+        assert not hasattr(services, "start_output_usage_poller")
 
     def test_a_failing_start_is_logged_and_raised_and_starts_no_thread(self, caplog):
         life = _life()
@@ -175,25 +163,19 @@ def _settings():
 
 
 class TestAnnouncementLoop:
-    def test_reconciles_once_then_sweeps_and_reconciles_after_each_wait(self):
+    def test_reconciles_once_then_again_after_each_wait(self):
         events = []
         life = MagicMock()
-        # stopping(): the loop check, the check after the wait (so it sweeps),
-        # then the next loop check ends it.
+        # stopping(): the loop check, the check after the wait, then the next
+        # loop check ends it.
         stops = iter([False, False, True])
         life.stopping.side_effect = lambda: next(stops)
         life.wait.return_value = False
 
-        def tokens():
-            events.append("tokens")
-
         with patch.object(services.appliances, "reconcile_appliance_announcement",
-                   side_effect=lambda v, adv: events.append(("reconcile", v, adv))), \
-             patch.object(services.federation, "sweep_sessions",
-                   side_effect=lambda: events.append("sessions")):
-            services._announcement_loop(life, _settings(), lambda: "1.0", (tokens,))
-        assert events == [("reconcile", "1.0", True), "sessions", "tokens",
-                          ("reconcile", "1.0", True)]
+                   side_effect=lambda v, adv: events.append(("reconcile", v, adv))):
+            services._announcement_loop(life, _settings(), lambda: "1.0")
+        assert events == [("reconcile", "1.0", True), ("reconcile", "1.0", True)]
 
     def test_the_loop_stops_when_the_wait_ends_because_of_stopping(self):
         events = []
@@ -202,54 +184,19 @@ class TestAnnouncementLoop:
         life.stopping.side_effect = lambda: next(stops)
         life.wait.return_value = True
         with patch.object(services.appliances, "reconcile_appliance_announcement",
-                   side_effect=lambda v, adv: events.append("reconcile")), \
-             patch.object(services.federation, "sweep_sessions",
-                   side_effect=lambda: events.append("sessions")):
-            services._announcement_loop(life, _settings(), lambda: "1.0", ())
+                   side_effect=lambda v, adv: events.append("reconcile")):
+            services._announcement_loop(life, _settings(), lambda: "1.0")
         assert events == ["reconcile"]
 
-    def test_a_raising_sweep_does_not_stop_the_reconcile(self):
-        events = []
-        life = MagicMock()
-        stops = iter([False, False, True])
-        life.stopping.side_effect = lambda: next(stops)
-        life.wait.return_value = False
-
-        def bad_sweep():
-            raise RuntimeError("x")
-
-        with patch.object(services.appliances, "reconcile_appliance_announcement",
-                   side_effect=lambda v, adv: events.append("reconcile")), \
-             patch.object(services.federation, "sweep_sessions", side_effect=bad_sweep):
-            services._announcement_loop(life, _settings(), lambda: "1.0", (bad_sweep,))
-        assert events == ["reconcile", "reconcile"]
-
 
 # ---------------------------------------------------------------------------
-# poller and discovery shutdown
+# discovery shutdown
 # ---------------------------------------------------------------------------
 
-class TestPollerAndShutdown:
-    def test_the_poller_gets_the_stop_event(self):
-        life = _life()
-        cfg = MagicMock()
-        cfg.webui.output_usage_poll_interval_seconds = 7
-        with patch.object(services.output_usage, "configure") as configure, \
-             patch.object(services.output_usage, "start") as start:
-            services.start_output_usage_poller(cfg, life)
-        configure.assert_called_once_with(7)
-        start.assert_called_once_with(shutdown_event=life.stop)
-
-    def test_a_poller_that_fails_to_start_is_only_logged(self, caplog):
-        with patch.object(services.output_usage, "configure", side_effect=RuntimeError("x")), \
-             caplog.at_level("WARNING"):
-            services.start_output_usage_poller(MagicMock(), _life())
-        assert any("failed to start poller" in r.message for r in caplog.records)
-
-    def test_shutdown_stops_all_three_and_continues_after_a_failure(self):
-        with patch.object(services.output_usage, "stop", side_effect=RuntimeError("x")), \
-             patch.object(services.dials, "stop_dial_scanner") as dials_stop, \
-             patch.object(services.appliances, "stop_appliance_scanner") as ap_stop:
+class TestShutdown:
+    def test_shutdown_stops_both_and_continues_after_a_failure(self):
+        with patch.object(services.dials, "stop_dial_scanner", side_effect=RuntimeError("x")) as dials_stop, \
+             patch.object(services.appliances, "stop") as ap_stop:
             services.stop_discovery()
         dials_stop.assert_called_once()
         ap_stop.assert_called_once()

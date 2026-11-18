@@ -198,9 +198,7 @@ class TestMuteModel:
         import autostream_output_intents  # noqa: F401 -- binds the rows
         from autostream_intents import Intent, submit
         _muted(writes, _output("Kitchen", 40))
-        with patch.object(player_service, "stop_and_disable_all", return_value=ActionResult(ok=True)), \
-             patch("autostream_output_usage.refresh_now"), \
-             patch("autostream_output_usage.usage_for_output", return_value=None):
+        with patch.object(player_service, "stop_and_disable_all", return_value=ActionResult(ok=True)):
             get_authority().set_default_members([("", "Kitchen", 30)], 30)
             get_authority().deselect_all(Origin.SESSION)
             reply = submit(Intent(

@@ -640,7 +640,7 @@ class TestBuildHomeStateAnnotation:
         """Returns context manager that patches all required dependencies."""
         from types import SimpleNamespace
         from unittest.mock import MagicMock, patch
-        import autostream_output_usage as ou
+        import autostream_appliances
 
         playback = MagicMock()
         playback.to_public_dict.return_value = {}
@@ -648,26 +648,8 @@ class TestBuildHomeStateAnnotation:
         playback.belt_banner_text = ""
         playback.bearing_banner_text = ""
 
-        # Build an annotate_outputs based on a fake snapshot.
+        # The occupancy the peers worker holds: casefolded name -> (id, hostname).
         snapshot = usage_snapshot or {}
-
-        def _fake_annotate(outputs):
-            result = []
-            for out in outputs:
-                out = dict(out)
-                key = out.get("name", "").lower()
-                usage = snapshot.get(key)
-                locally_selected = bool(out.get("selected"))
-                if usage and not locally_selected:
-                    out["remote_in_use"] = True
-                    out["remote_owner"] = usage.owner_name
-                    out["remote_owner_service"] = usage.service_name
-                else:
-                    out["remote_in_use"] = False
-                    out["remote_owner"] = ""
-                    out["remote_owner_service"] = ""
-                result.append(out)
-            return result
 
         from contextlib import contextmanager
 
@@ -680,8 +662,7 @@ class TestBuildHomeStateAnnotation:
                  patch("autostream_rpi.get_appliance_id", return_value=""), \
                  patch("webui.browser.home_model.get_system_hostname", return_value="host"), \
                  patch("webui.system.updates.get_app_version", return_value="1.0"), \
-                 patch("autostream_output_usage.get_usage_snapshot", return_value=snapshot), \
-                 patch("autostream_output_usage.annotate_outputs", side_effect=_fake_annotate):
+                 patch.dict(autostream_appliances._usage, snapshot, clear=True):
                 yield
 
         return _ctx()
@@ -690,14 +671,8 @@ class TestBuildHomeStateAnnotation:
         return _out(id_, name, selected=selected)
 
     def test_unselected_occupied_output_marked_remote_in_use(self, tmp_path):
-        from unittest.mock import MagicMock
-        import autostream_output_usage as ou
-
         cfg_path = _make_config_file(tmp_path)
-        kitchen_usage = MagicMock()
-        kitchen_usage.owner_name = "living-room"
-        kitchen_usage.service_name = "living-room"
-        snapshot = {"kitchen": kitchen_usage}
+        snapshot = {"kitchen": ("c" * 20, "living-room")}
 
         outputs = [self._make_out("1", "Kitchen", selected=False)]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
@@ -709,14 +684,8 @@ class TestBuildHomeStateAnnotation:
         assert out_dict["remote_owner"] == "living-room"
 
     def test_locally_selected_output_not_marked_remote_in_use(self, tmp_path):
-        from unittest.mock import MagicMock
-        import autostream_output_usage as ou
-
         cfg_path = _make_config_file(tmp_path)
-        kitchen_usage = MagicMock()
-        kitchen_usage.owner_name = "living-room"
-        kitchen_usage.service_name = "living-room"
-        snapshot = {"kitchen": kitchen_usage}
+        snapshot = {"kitchen": ("c" * 20, "living-room")}
 
         outputs = [self._make_out("1", "Kitchen", selected=True)]
         with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot=snapshot):
@@ -734,7 +703,6 @@ class TestBuildHomeStateAnnotation:
         out_dict = result["outputs"][0]
         assert out_dict["remote_in_use"] is False
         assert out_dict["remote_owner"] == ""
-        assert out_dict["remote_owner_service"] == ""
 
     def test_sorting_preserved_default_first(self, tmp_path):
         cfg_path = _make_config_file(tmp_path,
@@ -751,21 +719,6 @@ class TestBuildHomeStateAnnotation:
         names = [o["name"] for o in result["outputs"]]
         assert names[0] == "Zulu"
         assert names[1:] == sorted(names[1:])
-
-    def test_annotate_outputs_not_called_with_refresh(self, tmp_path):
-        """annotate_outputs must be cache-only — no refresh_now call."""
-        cfg_path = _make_config_file(tmp_path)
-        import autostream_output_usage as ou
-        refresh_calls = []
-        orig_refresh = ou.refresh_now
-        ou.refresh_now = lambda *a, **kw: refresh_calls.append(True)
-        try:
-            outputs = [self._make_out("1", "Kitchen")]
-            with self._patch_home_with_outputs(cfg_path, outputs, usage_snapshot={}):
-                webui_home_model.build_home_state(store().snapshot(), _parsed_from(cfg_path))
-        finally:
-            ou.refresh_now = orig_refresh
-        assert not refresh_calls, "build_home_state must not trigger refresh_now"
 
 
 # ---------------------------------------------------------------------------

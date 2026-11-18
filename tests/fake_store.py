@@ -120,6 +120,9 @@ class FakeStore:
     def warnings(self, entries=()):
         return self._put("warnings", state.WarningsPart(tuple(entries)))
 
+    def peers(self, entries=()):
+        return self._put("peers", state.PeersPart(tuple(entries)))
+
     def outputs(self, rows, *, connected: bool = True, boot: str = "b0", start_failure=None):
         """Adopt *rows* (OutputInfo, or dicts of its fields) as a successful
         read, through the output authority's own merge, so the authority and

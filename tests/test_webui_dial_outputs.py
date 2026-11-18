@@ -42,6 +42,7 @@ from fake_store import FakeStore
 from webui.dial.api import send_dial_outputs_set_post_json
 from webui.dial.api import send_dial_outputs_post_json
 from webui.session_state import WebUIState
+import autostream_appliances
 from settings_fixtures import fixed_view
 
 DIAL_ID = "test-dial-uuid-1234"
@@ -131,7 +132,7 @@ def _invoke_list(
         patch("webui.dial.api.dial_speaks_v2", return_value=True),
         patch("autostream_rpi.get_appliance_id", return_value=appliance_id),
         patch("webui.common._config_snapshot", side_effect=_cfg_snapshot),
-        patch("autostream_output_usage.get_usage_snapshot", return_value=usage_snapshot or {}),
+        patch.dict(autostream_appliances._usage, usage_snapshot or {}, clear=True),
     ):
         send_dial_outputs_post_json(handler, state, json_obj)
     return _response(handler)
@@ -338,12 +339,7 @@ class TestOutputsList:
         assert body["outputs"][2]["pin_claim"] == "x"
 
     def test_remote_in_use_true_when_used_elsewhere_and_not_locally_selected(self):
-        from autostream_output_usage import OutputUsage
-        usage = OutputUsage(
-            output_name="bedroom", owner_name="other-box", owner_ip="192.168.1.50",
-            owner_port=80, service_name="autostream on other-box", observed_at=0.0,
-            expires_at=1e18,
-        )
+        usage = ("b" * 20, "other-box")
         code, body = _invoke_list(
             {"dial_id": DIAL_ID},
             list_result=_ok_list(_output("1", "Bedroom", 0, selected=False)),
@@ -352,12 +348,7 @@ class TestOutputsList:
         assert body["outputs"][0]["remote_in_use"] is True
 
     def test_remote_in_use_false_when_locally_selected(self):
-        from autostream_output_usage import OutputUsage
-        usage = OutputUsage(
-            output_name="bedroom", owner_name="other-box", owner_ip="192.168.1.50",
-            owner_port=80, service_name="autostream on other-box", observed_at=0.0,
-            expires_at=1e18,
-        )
+        usage = ("b" * 20, "other-box")
         code, body = _invoke_list(
             {"dial_id": DIAL_ID},
             list_result=_ok_list(_output("1", "Bedroom", 40, selected=True)),
@@ -366,12 +357,7 @@ class TestOutputsList:
         assert body["outputs"][0]["remote_in_use"] is False
 
     def test_reply_carries_remote_owner_for_in_use_rows_and_empty_otherwise(self):
-        from autostream_output_usage import OutputUsage
-        usage = OutputUsage(
-            output_name="bedroom", owner_name="other-box", owner_ip="192.168.1.50",
-            owner_port=80, service_name="autostream on other-box", observed_at=0.0,
-            expires_at=1e18,
-        )
+        usage = ("b" * 20, "other-box")
         code, body = _invoke_list(
             {"dial_id": DIAL_ID},
             list_result=_ok_list(
@@ -385,7 +371,6 @@ class TestOutputsList:
         assert rows["Bedroom"]["remote_owner"] == "other-box"
         assert rows["Kitchen"]["remote_in_use"] is False
         assert rows["Kitchen"]["remote_owner"] == ""
-        assert "remote_owner_service" not in rows["Bedroom"]
 
     def test_backend_unavailable_when_the_player_is_not_answering(self):
         code, body = _invoke_list({"dial_id": DIAL_ID}, list_result=_fail_list())

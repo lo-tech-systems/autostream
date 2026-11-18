@@ -222,41 +222,25 @@ class TestScannerWrappers:
             _dials.stop_dial_scanner()
         mock_stop.assert_called_once()
 
-    def test_stop_appliance_scanner_delegates_to_browser(self):
-        """stop_appliance_scanner() calls stop() on the underlying MdnsBrowser exactly once."""
-        import autostream_appliances as _ap
-        with patch.object(_ap._browser, "stop") as mock_stop:
-            _ap.stop_appliance_scanner()
-        mock_stop.assert_called_once()
-
-    def test_services_pass_the_stop_event_to_both_scanners(self):
-        """services.start() passes autostream_runtime.stop_flag to both scanner starts."""
+    def test_services_pass_the_stop_event_to_the_dial_scanner(self):
+        """services.start() passes autostream_runtime.stop_flag to the dial scanner start."""
         captured = {}
 
         def capture_dial_scanner(**kwargs):
             captured["dial_event"] = kwargs.get("shutdown_event")
 
-        def capture_appliance_scanner(**kwargs):
-            captured["appliance_event"] = kwargs.get("shutdown_event")
-
         with patch.object(services.threading, "Thread"), \
              patch.object(services.dials, "start_dial_scanner",
                    side_effect=capture_dial_scanner), \
              patch.object(services.dial_warnings, "start_watcher"), \
-             patch.object(services.appliance_state, "start"), \
-             patch.object(services.appliances, "start_appliance_scanner",
-                   side_effect=capture_appliance_scanner):
+             patch.object(services.appliance_state, "start"):
             services.start(runtime.lifecycle(), MagicMock(),
                            config_path="c.ini", state_path="s.json",
-                           app_version=lambda: "v", sweeps=())
+                           app_version=lambda: "v")
 
         assert "dial_event" in captured, "start_dial_scanner was not called"
         assert captured["dial_event"] is runtime.stop_flag, (
             "start_dial_scanner must receive stop_flag as shutdown_event"
-        )
-        assert "appliance_event" in captured, "start_appliance_scanner was not called"
-        assert captured["appliance_event"] is runtime.stop_flag, (
-            "start_appliance_scanner must receive stop_flag as shutdown_event"
         )
 
 
@@ -265,30 +249,26 @@ class TestScannerWrappers:
 # ---------------------------------------------------------------------------
 
 class TestCleanupDiscovery:
-    def test_cleanup_calls_all_three_stops(self):
-        """stop_discovery() calls stop on output_usage, dials, and appliances."""
-        with patch.object(services.output_usage, "stop") as ou_stop, \
-             patch.object(services.dials, "stop_dial_scanner") as dials_stop, \
-             patch.object(services.appliances, "stop_appliance_scanner") as ap_stop:
+    def test_cleanup_calls_both_stops(self):
+        """stop_discovery() calls stop on dials and appliances."""
+        with patch.object(services.dials, "stop_dial_scanner") as dials_stop, \
+             patch.object(services.appliances, "stop") as ap_stop:
             services.stop_discovery()
-        ou_stop.assert_called_once()
         dials_stop.assert_called_once()
         ap_stop.assert_called_once()
 
     def test_cleanup_continues_when_one_stop_raises(self):
         """stop_discovery() is best-effort: an exception in one stop does not abort others."""
-        with patch.object(services.output_usage, "stop", side_effect=RuntimeError("boom")), \
-             patch.object(services.dials, "stop_dial_scanner") as dials_stop, \
-             patch.object(services.appliances, "stop_appliance_scanner") as ap_stop:
+        with patch.object(services.dials, "stop_dial_scanner", side_effect=RuntimeError("boom")) as dials_stop, \
+             patch.object(services.appliances, "stop") as ap_stop:
             services.stop_discovery()  # must not raise
         dials_stop.assert_called_once()
         ap_stop.assert_called_once()
 
     def test_cleanup_is_idempotent(self):
         """Calling stop_discovery() twice must not raise."""
-        with patch.object(services.output_usage, "stop"), \
-             patch.object(services.dials, "stop_dial_scanner"), \
-             patch.object(services.appliances, "stop_appliance_scanner"):
+        with patch.object(services.dials, "stop_dial_scanner"), \
+             patch.object(services.appliances, "stop"):
             services.stop_discovery()
             services.stop_discovery()
 
@@ -304,9 +284,9 @@ class TestCleanupDiscovery:
         assert not called, "stop_discovery must be skipped when _reloading is True"
 
 
-class TestOutputUsageStartup:
-    def test_output_usage_starts_before_monitor_startup_loop(self):
-        """Output usage discovery must start even if monitor startup never succeeds."""
+class TestAppliancesStartup:
+    def test_appliances_start_before_monitor_startup_loop(self):
+        """Following the other appliances must start even if monitor startup never succeeds."""
         cfg = MagicMock()
         settings = MagicMock()
         settings.snapshot.return_value = cfg
@@ -323,19 +303,19 @@ class TestOutputUsageStartup:
              patch.object(announce, "remove_avahi_playing_service",
                           side_effect=lambda: calls.append("remove-playing")), \
              patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
-             patch.object(services, "start_output_usage_poller",
-                          side_effect=lambda _cfg, _life: calls.append("output-usage")), \
+             patch.object(_core_mod.appliances, "start",
+                          side_effect=lambda _life, _settings: calls.append("appliances")), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(services, "stop_discovery"):
             # Simulate shutdown being requested before monitor startup.  The
-            # poller should still be started because it now runs before the
+            # appliance following should still be started because it now runs before the
             # monitor retry loop.
             mock_flag.is_set.return_value = True
             avahi_path.exists.return_value = False
 
             _core_mod.run_autostream("unused.json", settings=settings)
 
-        assert calls == ["remove-playing", "output-usage"]
+        assert calls == ["remove-playing", "appliances"]
         client_cls.assert_not_called()
 
 
@@ -364,7 +344,7 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "get_install_state", return_value={}), \
              patch.object(announce, "remove_avahi_playing_service"), \
              patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
-             patch.object(services, "start_output_usage_poller"), \
+             patch.object(_core_mod.appliances, "start"), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(services, "stop_discovery"):
             mock_flag.is_set.return_value = True
@@ -397,7 +377,7 @@ class TestStartupWifiWatcherForwarding:
              patch.object(_core_mod, "get_install_state", return_value={}), \
              patch.object(announce, "remove_avahi_playing_service"), \
              patch.object(announce, "_AVAHI_PLAYING_PATH") as avahi_path, \
-             patch.object(services, "start_output_usage_poller"), \
+             patch.object(_core_mod.appliances, "start"), \
              patch.object(monitor_client, "MonitorClient") as client_cls, \
              patch.object(services, "stop_discovery"):
             mock_flag.is_set.return_value = True

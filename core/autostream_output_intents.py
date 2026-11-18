@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 
-import autostream_output_usage as output_usage
 import autostream_pin_pairing as pairing
 from autostream_intents.table import Intent, Outcome, bind
 from autostream_state import Origin, store
@@ -45,12 +44,8 @@ def _enable(intent: Intent, wait: float, out_id: str, user: bool) -> dict:
     if unit.name and not already_on:
         # Only a speaker that is not already ours can be taken from someone
         # else; a volume change on a speaker that is on is always allowed.
-        try:
-            usage = output_usage.usage_for_output(unit.name)
-            if usage is not None:
-                return {"ok": False, "id": out_id, "error": "output_in_use", "owner": usage.owner_name}
-        except Exception:
-            logging.debug("outputs.set: usage check failed for %s", unit.name)
+        if unit.in_use_by:
+            return {"ok": False, "id": out_id, "error": "output_in_use", "owner": unit.in_use_by}
 
     volume = args.get("volume")
     authority = get_authority()
@@ -189,13 +184,8 @@ def _select_default(intent: Intent, wait: float) -> Outcome:
         # The player deselected it pending pairing; asking again would make
         # the speaker prompt for a PIN on every retry.
         return Outcome(ok=False, error="pin_pending")
-    try:
-        output_usage.refresh_now("default-output-auto-select", timeout=1.5)
-        usage = output_usage.usage_for_output(name)
-        if usage is not None:
-            return Outcome(ok=False, error="in_use", result={"owner": usage.owner_name})
-    except Exception:
-        logging.debug("outputs.select_default: usage check failed", exc_info=True)
+    if unit.in_use_by:
+        return Outcome(ok=False, error="in_use", result={"owner": unit.in_use_by})
     applied = get_authority().select(
         unit.id, Origin.SESSION, volume=args["volume"], offset_ms=args.get("offset_ms"),
         mode=args.get("mode"), requester=intent.requester,

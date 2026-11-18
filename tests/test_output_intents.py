@@ -199,37 +199,36 @@ class TestEnable:
 
 class TestOccupancy:
     def occupied(self):
-        return patch("autostream_output_usage.usage_for_output",
-                     return_value=SimpleNamespace(owner_name="Other Player"))
+        get_authority().set_remote_usage({"kitchen": ("a" * 20, "Other Player")})
 
     def test_a_speaker_in_use_elsewhere_is_not_switched_on(self, player):
         arrange()
-        with self.occupied():
-            r = change(on())
+        self.occupied()
+        r = change(on())
         assert r == {"ok": False, "id": ID, "error": "output_in_use", "owner": "Other Player"}
         assert player.calls == []
 
     def test_a_volume_change_on_a_speaker_that_is_on_is_allowed(self, player):
         arrange(row(ID, "Kitchen", selected=True, volume_percent=20))
-        with self.occupied():
-            assert change(on(volume=60)) == {"ok": True, "id": ID}
+        self.occupied()
+        assert change(on(volume=60)) == {"ok": True, "id": ID}
         assert player.calls[0][2]["volume_percent"] == 60
 
     def test_switching_off_is_allowed(self, player):
         arrange(row(ID, "Kitchen", selected=True))
-        with self.occupied():
-            assert change({"id": ID, "selected": False}) == {"ok": True, "id": ID}
+        self.occupied()
+        assert change({"id": ID, "selected": False}) == {"ok": True, "id": ID}
 
     def test_the_check_is_by_the_name_the_appliance_listed(self, player):
         arrange()
-        with patch("autostream_output_usage.usage_for_output", return_value=None) as lookup:
-            change(on(name="Not the real name"))
-        lookup.assert_called_once_with("Kitchen")
+        self.occupied()
+        r = change(on(name="Not the real name"))
+        assert r["error"] == "output_in_use"
 
-    def test_a_check_that_fails_lets_the_request_through(self, player):
+    def test_a_speaker_in_use_elsewhere_under_another_name_is_free(self, player):
         arrange()
-        with patch("autostream_output_usage.usage_for_output", side_effect=RuntimeError("down")):
-            assert change(on()) == {"ok": True, "id": ID}
+        get_authority().set_remote_usage({"lounge": ("a" * 20, "Other Player")})
+        assert change(on()) == {"ok": True, "id": ID}
 
 
 # ---------------------------------------------------------------------------
@@ -672,22 +671,21 @@ def _default(name="Kitchen", volume=42, **extra):
 
 
 @pytest.fixture
-def usage(monkeypatch):
-    """The usage check: records its calls in order; no speaker is occupied."""
-    rec = SimpleNamespace(order=[], owner=None, refresh_error=None)
+def usage():
+    """Which appliance plays Kitchen: set ``owner`` to a hostname; none by default."""
+    class Usage:
+        _owner = None
 
-    def refresh_now(*a, **k):
-        rec.order.append("refresh")
-        if rec.refresh_error is not None:
-            raise rec.refresh_error
+        @property
+        def owner(self):
+            return self._owner
 
-    def usage_for_output(name):
-        rec.order.append("check")
-        return None if rec.owner is None else SimpleNamespace(owner_name=rec.owner)
+        @owner.setter
+        def owner(self, value):
+            self._owner = value
+            get_authority().set_remote_usage({} if value is None else {"kitchen": ("a" * 20, value)})
 
-    monkeypatch.setattr(intents_mod.output_usage, "refresh_now", refresh_now)
-    monkeypatch.setattr(intents_mod.output_usage, "usage_for_output", usage_for_output)
-    return rec
+    return Usage()
 
 
 class TestSelectDefault:
@@ -726,16 +724,13 @@ class TestSelectDefault:
         assert reply.result == {"owner": "Hall"}
         assert player.calls == []
 
-    def test_the_usage_is_refreshed_before_it_is_checked(self, player, usage):
-        arrange()
-        _default()
-        assert usage.order == ["refresh", "check"]
-
-    def test_a_failing_usage_check_does_not_stop_the_selection(self, player, usage):
-        arrange()
-        usage.refresh_error = RuntimeError("unavailable")
-        assert _default().ok is True
-        assert len(player.calls) == 1
+    def test_an_occupied_member_leaves_the_rest_of_the_set_to_start(self, player, usage):
+        arrange(row("1", "Hall"), row("2", "Kitchen"))
+        get_authority().set_default_members([("", "Kitchen", 42), ("", "Hall", 42)], 42)
+        usage.owner = "Lounge"
+        assert _default("Kitchen").error == "in_use"
+        assert _default("Hall").ok is True
+        assert [c[1] for c in player.calls] == ["1"]
 
     def test_the_write_carries_the_volume_offset_and_mode(self, player, usage):
         arrange()

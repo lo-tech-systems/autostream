@@ -414,6 +414,7 @@ PATCH_RATCHET: frozenset[tuple[str, int, str, str]] = frozenset({
     ('test_dial_registry.py', 1, 'autostream_sysutils', 'atomic_write_file'),
     ('test_dial_registry.py', 2, 'autostream_sysutils', 'atomic_write_file'),
     ('test_dial_warnings_provider.py', 2, 'autostream_system_stats', '_read_get_throttled_value'),
+    ('test_output_usage.py', 1, 'autostream_output_usage', 'refresh_now'),
     ('test_player_service.py', 1, 'autostream_sysutils', 'atomic_write_file'),
     ('test_player_service.py', 2, 'autostream_sysutils', 'atomic_write_file'),
     ('test_start_buffer_cache.py', 2, 'autostream_player_service', 'get_setting'),

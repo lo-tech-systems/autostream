@@ -12,10 +12,12 @@ The pure helpers at the end read one snapshot and nothing else.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from autostream_peer_client import RosterEntry
 from autostream_playback_stats import PlaybackSnapshot
 from autostream_players import OutputInfo
 from track_id.models import (
@@ -218,7 +220,8 @@ class OutputUnitView:
     auto_start: bool = False                # the unit matches a member of the Auto-Start set, or is a placeholder for one
     hidden: bool = False                    # the name is in the hidden-speakers setting (compared casefolded)
     pin_claim: str = ""                     # who is entering a PIN for it ("webui", "dial:<id>"), or ""
-    in_use_by: str = ""                     # the other appliance playing it, or "" (never while it is selected here)
+    in_use_by: str = ""                     # the hostname of the other appliance playing it, or "" (never while it is selected here)
+    in_use_id: str = ""                     # that appliance's id, or ""
 
     @property
     def offline(self) -> bool:
@@ -327,6 +330,11 @@ class WarningsPart:
     entries: tuple[WarningEntry, ...] = ()  # most severe first
 
 
+@dataclass(frozen=True)
+class PeersPart:
+    entries: tuple[RosterEntry, ...] = ()   # the other appliances sighted, by hostname
+
+
 def empty_playback_snapshot() -> PlaybackSnapshot:
     return PlaybackSnapshot(
         inputs=FrozenDict(),
@@ -363,11 +371,12 @@ class Snapshot:
     appliance: AppliancePart = field(default_factory=AppliancePart)
     dials: DialsPart = field(default_factory=DialsPart)
     warnings: WarningsPart = field(default_factory=WarningsPart)
+    peers: PeersPart = field(default_factory=PeersPart)
 
 
 PART_NAMES = (
     "session", "repeat", "track", "inputs", "monitor", "playback", "health", "settings",
-    "outputs", "eq", "devices", "appliance", "dials", "warnings",
+    "outputs", "eq", "devices", "appliance", "dials", "warnings", "peers",
 )
 
 
@@ -480,7 +489,7 @@ def _outputs_digest(p: OutputsPart) -> tuple:
         tuple(
             (u.id, u.name, u.shown_selected, u.volume, u.muted, u.availability,
              _unit_pin_fields(u), u.reported.type if u.reported is not None else "", u.connecting,
-             u.auto_start, u.hidden, u.pin_claim, u.in_use_by)
+             u.auto_start, u.hidden, u.pin_claim, u.in_use_by, u.in_use_id)
             for u in p.units
         ),
         p.connected, p.muted_all, p.silence_chosen,
@@ -517,6 +526,10 @@ def _warnings_digest(p: WarningsPart) -> tuple:
         (e.id, e.incident, e.severity, e.kind, e.subject, e.title, e.message, e.link, e.snooze)
         for e in p.entries
     )
+
+
+def _peers_digest(p: PeersPart) -> tuple:
+    return tuple(dataclasses.astuple(e) for e in p.entries)
 
 
 def eq_band_digest(p: EqPart) -> tuple:
@@ -557,6 +570,7 @@ DIGESTS: dict[str, Callable] = {
     "appliance": _appliance_digest,
     "dials": _dials_digest,
     "warnings": _warnings_digest,
+    "peers": _peers_digest,
 }
 
 

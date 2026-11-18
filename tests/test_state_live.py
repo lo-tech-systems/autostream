@@ -199,7 +199,7 @@ class TestBoundReads:
 
     def test_the_bound_reads_reach_the_replaced_function_of_their_owner(self):
         import autostream_core  # noqa: F401
-        with patch("autostream_output_usage.annotate_outputs", return_value=["patched"]):
+        with patch("autostream_appliances.annotate_outputs", return_value=["patched"]):
             assert live.annotate_outputs([]) == ["patched"]
         with patch("autostream_log_policy.get_log_level_state", return_value={"ok": True}):
             assert live.get_log_level_state("c.ini") == {"ok": True}

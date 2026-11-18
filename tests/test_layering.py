@@ -76,9 +76,7 @@ L2_EDGES: frozenset[tuple[str, str]] = frozenset({
     ("autostream_appliance_state", "autostream_dial_push"),
     ("autostream_appliance_state", "autostream_warnings"),
     ("autostream_services", "autostream_dial_warnings"),
-    ("autostream_services", "autostream_output_usage"),
     ("autostream_dial_warnings", "autostream_dial_push"),
-    ("autostream_output_intents", "autostream_output_usage"),
     ("autostream_playback_tracking", "autostream_dial_warnings"),
 })
 

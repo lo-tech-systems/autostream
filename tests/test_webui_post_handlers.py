@@ -226,19 +226,10 @@ def _speaker(id_: str, name: str, *, selected: bool = False):
         id_, name, selected=selected, volume_percent=40 if selected else 0)
 
 
-def _make_usage(owner_name: str = "living-room"):
-    from autostream_output_usage import OutputUsage
-    import time
-    now = time.monotonic()
-    return OutputUsage(
-        output_name="Kitchen",
-        owner_name=owner_name,
-        owner_ip="192.168.1.10",
-        owner_port=5353,
-        service_name="living-room._autostream-playing._tcp.local.",
-        observed_at=now,
-        expires_at=now + 10,
-    )
+def _occupy(owner_name: str = "living-room") -> None:
+    """Another appliance, by hostname, is playing Kitchen."""
+    from autostream_state.outputs import get_authority
+    get_authority().set_remote_usage({"kitchen": ("a" * 20, owner_name)})
 
 
 @pytest.fixture
@@ -271,15 +262,16 @@ def _coordinator_change(body):
 
 
 class TestOutputMutationOccupancyProtection:
-    def _call(self, body, *, usage=None, speakers=None):
+    def _call(self, body, *, occupied_by=None, speakers=None):
         from fake_store import FakeStore
         FakeStore().outputs(speakers if speakers is not None else [_speaker("42", "Kitchen")])
-        with patch("autostream_output_usage.usage_for_output", return_value=usage):
-            return _coordinator_change(body)
+        if occupied_by is not None:
+            _occupy(occupied_by)
+        return _coordinator_change(body)
 
     def test_enabling_occupied_output_returns_output_in_use(self, player_writes):
         result = self._call({"id": "42", "selected": True, "volume": 50},
-                            usage=_make_usage("living-room"))
+                            occupied_by="living-room")
         assert result["ok"] is False
         assert result["error"] == "output_in_use"
         assert result["owner"] == "living-room"
@@ -287,65 +279,34 @@ class TestOutputMutationOccupancyProtection:
 
     def test_disabling_occupied_output_is_allowed(self, player_writes):
         result = self._call({"id": "42", "selected": False},
-                            usage=_make_usage("living-room"),
+                            occupied_by="living-room",
                             speakers=[_speaker("42", "Kitchen", selected=True)])
         assert result["ok"] is True
 
     def test_pin_op_bypasses_occupancy_check(self, player_writes):
         from fake_store import FakeStore
         FakeStore().outputs([_speaker("42", "Kitchen")])
-        with patch("autostream_output_usage.usage_for_output",
-                   return_value=_make_usage("living-room")):
-            result = webui_home_model.submit_output_change(
-                {"id": "42", "op": "pin", "pin": "1234"},
-                requester="webui", pin_requester="webui")
+        _occupy("living-room")
+        result = webui_home_model.submit_output_change(
+            {"id": "42", "op": "pin", "pin": "1234"},
+            requester="webui", pin_requester="webui")
         assert result["ok"] is True, result
 
     def test_enabling_unoccupied_output_succeeds(self, player_writes):
-        result = self._call({"id": "42", "selected": True, "volume": 50}, usage=None)
+        result = self._call({"id": "42", "selected": True, "volume": 50})
         assert result["ok"] is True
-
-    def test_failing_occupancy_check_fails_open(self, player_writes):
-        """When the usage check raises, the enable proceeds."""
-        from fake_store import FakeStore
-        FakeStore().outputs([_speaker("42", "Kitchen")])
-        with patch("autostream_output_usage.usage_for_output",
-                   side_effect=RuntimeError("timeout")):
-            result = _coordinator_change({"id": "42", "selected": True, "volume": 50})
-        assert result["ok"] is True
-
-    def test_occupancy_check_is_cache_only_no_refresh(self, player_writes):
-        """usage_for_output is called but refresh_now is never called."""
-        from fake_store import FakeStore
-        FakeStore().outputs([_speaker("42", "Kitchen")])
-        refresh_calls = []
-        with patch("autostream_output_usage.usage_for_output", return_value=None), \
-             patch("autostream_output_usage.refresh_now",
-                   side_effect=lambda *a, **k: refresh_calls.append(1)):
-            _coordinator_change({"id": "42", "selected": True, "volume": 50})
-        assert refresh_calls == [], "refresh_now must not be called from mutation path"
 
     def test_browser_supplied_name_cannot_bypass_occupancy(self, player_writes):
         """The browser's body.name is ignored; the check uses the name the
         appliance has for the speaker."""
-        from fake_store import FakeStore
-        FakeStore().outputs([_speaker("42", "Kitchen")])
-        asked = []
-
-        def usage_for(name):
-            asked.append(name)
-            return _make_usage("living-room")
-
-        with patch("autostream_output_usage.usage_for_output", side_effect=usage_for):
-            result = _coordinator_change(
-                {"id": "42", "selected": True, "volume": 50, "name": "not-occupied"})
+        result = self._call({"id": "42", "selected": True, "volume": 50, "name": "not-occupied"},
+                            occupied_by="living-room")
         assert result["error"] == "output_in_use"
-        assert asked == ["Kitchen"]
 
     def test_volume_change_on_already_selected_output_is_allowed(self, player_writes):
         """selected:true for an already-on output must not be blocked by occupancy."""
         result = self._call({"id": "42", "selected": True, "volume": 80},
-                            usage=_make_usage("living-room"),
+                            occupied_by="living-room",
                             speakers=[_speaker("42", "Kitchen", selected=True)])
         assert result["ok"] is True
         assert player_writes.calls == [
@@ -399,9 +360,8 @@ class TestOutputMutationOccupancyProtection:
         disable left the speaker not selected."""
         self._call({"id": "42", "selected": False},
                    speakers=[_speaker("42", "Kitchen", selected=True)])
-        with patch("autostream_output_usage.usage_for_output",
-                   return_value=_make_usage("living-room")):
-            result = _coordinator_change({"id": "42", "selected": True, "volume": 50})
+        _occupy("living-room")
+        result = _coordinator_change({"id": "42", "selected": True, "volume": 50})
         assert result["error"] == "output_in_use"
 
 
