@@ -5,12 +5,11 @@ passes in: no I/O, no clock reads, no storage. They map the parts an
 appliance publishes onto the dial's own snapshot types, so the screens read
 the same types whatever the source of the state.
 
-The first group (playing, active_input, speaker_rows, master_volume,
-start_failure_decision, repeat_controls) mirrors the browser's shared
-derivations in nginx/static/shared/state_view.js, and a test runs both
-against one table of cases. The second group maps parts onto the dial's
-types: ApplianceState, OutputsState, EqState, NowPlaying, RepeatRecord, the
-start failure report and the appliance's warnings.
+The first group (playing, active_input, speaker_rows, master_volume) mirrors
+the browser's shared derivations in nginx/static/shared/state_view.js, and a
+test runs both against one table of cases. The second group maps parts onto
+the dial's types: ApplianceState, OutputsState, EqState, NowPlaying,
+RepeatRecord, the start failure report and the appliance's warnings.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
@@ -39,8 +38,6 @@ from dial_core_state import (
 )
 from dial_mdns import appliance_display_name
 from dial_repeat_store import RepeatRecord, parse_repeat_object
-
-START_FAILURE_MAX_AGE_S = 30
 
 # The EQ range the dial's bass and treble controls move within.
 EQ_BASS_TREBLE_LIMIT_DB = 6
@@ -151,10 +148,10 @@ class SpeakerRow:
     needs_auth_key: bool = False
 
 
-def speaker_rows(parts, *, include_offline: bool = False) -> list[SpeakerRow]:
+def speaker_rows(parts) -> list[SpeakerRow]:
     """The speaker cards in order: Auto-Start first, then by name. A hidden
-    speaker stays while it is on or in the Auto-Start set; an offline
-    Auto-Start card shows only with *include_offline*."""
+    speaker stays while it is on or in the Auto-Start set; an offline one
+    is left out."""
     in_session = playing(parts)
     rows: list[SpeakerRow] = []
     for u in _part(parts, "outputs").get("units") or ():
@@ -164,7 +161,7 @@ def speaker_rows(parts, *, include_offline: bool = False) -> list[SpeakerRow]:
         auto_start = bool(u.get("auto_start"))
         offline = bool(u.get("offline"))
         if (not u.get("id") or not u.get("name")
-                or (offline and not (include_offline and auto_start))
+                or offline
                 or (u.get("hidden") and not on and not auto_start)):
             continue
         by = u.get("in_use_by") or ""
@@ -185,61 +182,6 @@ def speaker_rows(parts, *, include_offline: bool = False) -> list[SpeakerRow]:
         ))
     rows.sort(key=lambda r: (not r.auto_start, r.name.lower()))
     return rows
-
-
-def start_failure_decision(boot: str, now: float, parts, seen) -> tuple:
-    """Whether to tell the person about the latest failed start, and what has
-    now been seen. *seen* is (boot, seq, first) or None; *first* is True for
-    the first reading since the dial started, when a failure already over 30
-    s old is not news. *now* is the appliance's clock. Returns (failure to
-    show or None, new seen). A PIN reason is answered by the PIN dialog, so
-    it is marked seen and not shown."""
-    failure = _part(parts, "outputs").get("start_failure")
-    cur = seen if seen is not None else ("", 0, True)
-    kept = (cur[0], cur[1], False)
-    if not isinstance(failure, Mapping) or (cur[0] == boot and failure.get("seq", 0) <= cur[1]):
-        return None, kept
-    stale = cur[2] and now - failure.get("at", 0) > START_FAILURE_MAX_AGE_S
-    quiet = stale or failure.get("reason") in ("pin_invalid", "pin_required")
-    return (None if quiet else failure), (boot, failure.get("seq", 0), False)
-
-
-def _clock(seconds) -> str:
-    t = max(0, _whole(seconds if isinstance(seconds, (int, float)) else 0) or 0)
-    return f"{t // 60}:{t % 60:02d}"
-
-
-@dataclass(frozen=True)
-class RepeatControls:
-    shown: bool
-    state: str                # "off" | "armed" | "repeating" | "stopping"
-    label: str
-    title: str
-    disabled: bool
-
-
-def repeat_controls(parts) -> RepeatControls:
-    """The state of the repeat button."""
-    b = _block(parts)
-    rec = _map(b.get("recording"))
-    rp = _map(b.get("replay"))
-    has_buffer = (rec.get("bytes") or 0) > 0
-    on = bool(rp.get("active")) or bool(b.get("armed"))
-    stopping = bool(rp.get("fading_out"))
-    title = ""
-    if rp.get("active"):
-        title = (_clock(rp.get("position_seconds")) + " / " + _clock(rp.get("duration_seconds"))
-                 + (" · most recent kept" if rec.get("truncated_head") else ""))
-    elif b.get("armed"):
-        title = "Buffering…" if rec.get("active") else "Waiting for playback"
-    again = not playing(parts) and not on and has_buffer
-    return RepeatControls(
-        shown=bool(b.get("enabled")),
-        state="stopping" if stopping else "repeating" if rp.get("active") else "armed" if b.get("armed") else "off",
-        label="Stopping…" if stopping else "↻ Replay Last" if again else "↻ Repeat Play",
-        title=title,
-        disabled=stopping or (not has_buffer and not on),
-    )
 
 
 # ---- the dial's own types -----------------------------------------------------

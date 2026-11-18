@@ -5,11 +5,12 @@ browser's nginx/static/shared/state_view.js. Both run one table of cases
 (tests/fixtures/state_view_cases.json). IMPLEMENTED names the derivations the
 dial implements and how each Python result is put into the case's shape. A
 case for any other derivation is skipped by name; a case for one of these
-that the Python side does not pass fails.
+that the Python side does not pass fails. The derivations and the option
+that only the browser has (startFailure, repeatControls, includeOffline) are
+checked against the same cases by the Playwright case runner.
 """
 from __future__ import annotations
 
-import dataclasses
 import json
 import sys
 from pathlib import Path
@@ -27,7 +28,9 @@ CASES = json.loads((Path(__file__).parent / "fixtures" / "state_view_cases.json"
 
 
 def _speaker_rows(case):
-    rows = pv.speaker_rows(case["parts"], include_offline=bool((case.get("opts") or {}).get("includeOffline")))
+    if (case.get("opts") or {}).get("includeOffline"):
+        pytest.skip("includeOffline is not a dial option")
+    rows = pv.speaker_rows(case["parts"])
     return [{
         "id": r.id, "name": r.name, "on": r.on, "volume": r.volume, "chip": r.chip,
         "autoStart": r.auto_start, "inUseBy": r.in_use_by, "inUseId": r.in_use_id,
@@ -36,21 +39,11 @@ def _speaker_rows(case):
     } for r in rows]
 
 
-def _start_failure(case):
-    view, seen = case["view"], case.get("seen")
-    show, new = pv.start_failure_decision(
-        view["boot"], view["time"], view["parts"],
-        None if seen is None else (seen["boot"], seen["seq"], seen["first"]))
-    return {"show": show, "seen": {"boot": new[0], "seq": new[1], "first": new[2]}}
-
-
 IMPLEMENTED = {
     "playing": lambda c: pv.playing(c["parts"]),
     "activeInput": lambda c: pv.active_input(c["parts"]),
     "speakerRows": _speaker_rows,
     "masterVolume": lambda c: pv.master_volume(c["parts"]),
-    "startFailure": _start_failure,
-    "repeatControls": lambda c: dataclasses.asdict(pv.repeat_controls(c["parts"])),
 }
 
 
