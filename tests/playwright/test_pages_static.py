@@ -632,7 +632,8 @@ STATIC = stub.REPO_ROOT / "nginx" / "static"
 CEILINGS = {
     "shared/state_stream.js": 166,
     "shared/state_view.js": 250,
-    "shared/texts.js": 60,
+    # The reasons a start fails, and the wrong-PIN and PIN-claim wording
+    "shared/texts.js": 64,
     "shared/pending.js": 35,
     "page/home/home_main.js": 54,
     "page/home/home_intents.js": 30,
@@ -657,7 +658,8 @@ HD = stub.REPO_ROOT / "dial" / "hd"
 # The HD page's modules -> the most non-blank lines each may have.
 HD_CEILINGS = {
     "hd.js": 90,
-    "hd-tables.js": 190,
+    # The keypad's line for a wrong PIN after which the speaker shows a new one
+    "hd-tables.js": 192,
     "hd-dom.js": 75,
     "hd-state.js": 150,
     # The graph's paint step and the page's one-off priming, so the first
@@ -665,8 +667,9 @@ HD_CEILINGS = {
     "hd-eq.js": 160,
     "hd-derive.js": 300,
     "hd-requests.js": 130,
-    # Volume minus and plus: their handler and bindings.
-    "hd-actions.js": 318,
+    # Volume minus and plus: their handler and bindings; the keypad sends its
+    # PIN with the switch-on it was opened for.
+    "hd-actions.js": 320,
     # The dial bell button's paint call and its import.
     "hd-paint.js": 430,
     # The warning bells: the dial bell's button, each row bell's count and the
