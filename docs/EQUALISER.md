@@ -88,7 +88,7 @@ Example: if auto-trim settles at about -6 dB, set Output gain to about -6 dB, th
 
 ## Multiple appliances
 
-If **Display Hostname** and **Allow control of other appliances** are both enabled
+If **Display hostname** and **Allow control of other appliances** are both enabled
 ([Setup > Personalisation](SETUP-PERSONALISATION.md)), a selector in the top-right of the page lets you jump to another autostream
 appliance's Equaliser page and adjust it directly, the same way as on the Home page. See
 [Multi-Appliance](MULTI-APPLIANCE.md) for the full behaviour and what happens if the other

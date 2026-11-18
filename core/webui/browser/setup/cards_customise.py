@@ -3,155 +3,155 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-The Personalisation card of the Setup page, with its device pause row and
-the switch that applies a volume change made at a speaker to all.
+The Personalisation panel of the Setup page: its Display, Appliance control
+and Speaker controls cards. Each row has its label on the left and its
+control on the right.
 """
 
 from __future__ import annotations
 
 import html
 
+from autostream_config import DEVICE_PAUSE_ALL
 from autostream_state import store
 from webui.common import settings_card_html
 from webui.components import toggle_html
 from webui.browser.setup import context
 
 
-_DEVICE_PAUSE_OPTIONS = (
-    ("output", "Only that speaker pauses"),
-    ("all", "Mute the other speakers too"),
+# The stop times offered for paused speakers, in seconds.
+PAUSE_OFF_CHOICES = (60, 180, 300, 600)
+
+_SPEAKER_CONTROLS_NEEDS_VERSION = (
+    "Needs owntone-mini 1.6 or above. Until then the connected player handles "
+    "Pause on its own, and a volume change at a speaker applies to that speaker only."
 )
-_DEVICE_PAUSE_HELP = (
-    "Applies to Pause on a HomePod or on an Apple TV remote. That speaker always "
-    "pauses, and Play on it starts it again and unmutes the others. Switching it "
-    "off and on again also starts it. A stereo pair, or an Apple TV with its "
-    "HomePods, counts as one speaker. Speakers turned off stay off until you turn "
-    "them on again."
-)
-_DEVICE_PAUSE_NEEDS_VERSION = (
-    "Needs owntone-mini 1.6 or above. The connected player handles Pause on its own."
-)
-_DEVICE_PAUSE_NEEDS_EVENTS = (
-    "Needs owntone-mini's event channel, which is off or not connected. "
-    "Pause on a speaker does nothing until it is."
-)
-_SPEAKER_VOLUME_LABEL = "Volume changes made at any speaker apply to all playing speakers"
-_SPEAKER_VOLUME_HELP = (
-    "Applies to a speaker's own volume buttons, knob or app, and to an Apple TV "
-    "remote. The other playing speakers move in proportion to their own levels, "
-    "so they all reach silent together. Muted speakers stay muted. A stereo pair, "
-    "or an Apple TV with its HomePods, counts as one speaker."
-)
-_SPEAKER_VOLUME_NEEDS_VERSION = (
-    "Needs owntone-mini 1.6 or above. Until then a volume change at a speaker "
-    "applies to that speaker only."
-)
-_SPEAKER_VOLUME_NEEDS_EVENTS = (
-    "Needs owntone-mini's event channel, which is off or not connected. A volume "
-    "change at a speaker applies to that speaker only until it is."
+_SPEAKER_CONTROLS_NEEDS_EVENTS = (
+    "Needs owntone-mini's event channel, which is off or not connected. Until it "
+    "is, Pause on a speaker does nothing and a volume change at a speaker applies "
+    "to that speaker only."
 )
 
 
-def _pause_off_duration_text(seconds: int) -> str:
-    """The pause timeout as people say it: whole minutes where it is one."""
-    if seconds >= 60 and seconds % 60 == 0:
-        minutes = seconds // 60
-        return "1 minute" if minutes == 1 else f"{minutes} minutes"
-    return f"{seconds} seconds"
+def _minutes_text(seconds: int) -> str:
+    minutes = seconds // 60
+    return "1 minute" if minutes == 1 else f"{minutes} minutes"
 
 
-def _device_pause_row_html(parsed, outputs_part) -> str:
-    """The Pause choice: what a Pause pressed on a speaker does."""
-    scope = parsed.outputs.device_pause_scope
-    if not outputs_part.include_tv_supported:
-        unavailable = _DEVICE_PAUSE_NEEDS_VERSION
-    elif not outputs_part.device_events:
-        unavailable = _DEVICE_PAUSE_NEEDS_EVENTS
-    else:
-        unavailable = ""
-    options = "".join(
-        f'<option value="{value}"{" selected" if value == scope else ""}>{label}</option>'
-        for value, label in _DEVICE_PAUSE_OPTIONS
-    )
-    off_text = html.escape(
-        "A paused speaker, and any speakers its Pause muted, are turned off if Pause lasts longer than "
-        + _pause_off_duration_text(parsed.outputs.pause_off_seconds) + "."
-    )
-    if unavailable:
-        help_html = html.escape(unavailable)
-    else:
-        help_html = html.escape(_DEVICE_PAUSE_HELP) + f'<span id="device_pause_off_note"> {off_text}</span>'
+def _nearest_pause_off_choice(seconds: int) -> int:
+    """The offered stop time nearest a stored one; a tie goes to the longer."""
+    return min(PAUSE_OFF_CHOICES, key=lambda c: (abs(c - seconds), -c))
+
+
+def _card_title_html(title: str) -> str:
+    return f'<div class="setup-card-title">{html.escape(title)}</div>'
+
+
+def _toggle_row_html(*, row_id: str = "", label: str, name: str, checked: bool,
+                     onchange: str, disabled: bool = False) -> str:
+    """One label-left, switch-right row. The text is a label for the switch,
+    so tapping it flips the switch."""
+    classes = "setup-pref-row is-disabled" if disabled else "setup-pref-row"
+    id_attr = f' id="{row_id}"' if row_id else ""
+    toggle = toggle_html(name=name, id=name, checked=checked, disabled=disabled,
+                         onchange=onchange)
     return f"""
-          <div class="setup-customise-row" style="margin-top:0.75rem;">
-            <label style="margin:0;flex:1;">When Pause is pressed on a speaker
-              <select id="device_pause_scope"{' disabled' if unavailable else ''} onchange="settingsSaveField('outputs.device_pause_scope', this.value);">
-                {options}
-              </select>
-            </label>
-          </div>
-          <div class="helptext">{help_html}</div>"""
-
-
-def _speaker_volume_row_html(parsed, outputs_part) -> str:
-    """The switch that applies a volume change made at a speaker to all."""
-    if not outputs_part.include_tv_supported:
-        unavailable = _SPEAKER_VOLUME_NEEDS_VERSION
-    elif not outputs_part.device_events:
-        unavailable = _SPEAKER_VOLUME_NEEDS_EVENTS
-    else:
-        unavailable = ""
-    style = "margin-top:0.75rem;opacity:0.4;" if unavailable else "margin-top:0.75rem;"
-    toggle = toggle_html(
-        name="outputs_speaker_volume_applies_to_all",
-        id="outputs_speaker_volume_applies_to_all",
-        checked=parsed.outputs.speaker_volume_applies_to_all,
-        disabled=bool(unavailable),
-        onchange="settingsSaveField('outputs.speaker_volume_applies_to_all', this.checked)",
-    )
-    return f"""
-          <div class="setup-customise-row" style="{style}">
+          <div class="{classes}"{id_attr}>
+            <label class="setup-pref-label" for="{name}">{html.escape(label)}</label>
 {toggle}
-            <span>{html.escape(_SPEAKER_VOLUME_LABEL)}</span>
-          </div>
-          <div class="helptext">{html.escape(unavailable or _SPEAKER_VOLUME_HELP)}</div>"""
+          </div>"""
+
+
+def _display_card_html(parsed) -> str:
+    w = parsed.webui
+    return settings_card_html(
+        _card_title_html("Display")
+        + _toggle_row_html(
+            label="Display hostname", name="webui_show_hostname_on_home",
+            checked=w.show_hostname_on_home,
+            onchange="onHostnameToggle(this.checked); settingsSaveField('webui.show_hostname_on_home', this.checked)")
+        + _toggle_row_html(
+            label="Show master volume control", name="webui_show_master_volume",
+            checked=w.show_master_volume,
+            onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_master_volume', this.checked)")
+        + _toggle_row_html(
+            label="Display input detail", name="webui_show_input_detail",
+            checked=w.show_input_detail,
+            onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_input_detail', this.checked)")
+        + _toggle_row_html(
+            label="Dark mode", name="webui_dark_mode", checked=w.dark_mode,
+            onchange="applyDarkMode(this.checked); refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)"),
+        margin_top="0",
+    )
+
+
+def _appliance_control_card_html(parsed) -> str:
+    w = parsed.webui
+    # Controlling other appliances goes through the hostname pill, so it is
+    # off and greyed out while the hostname is not shown.
+    return settings_card_html(
+        _card_title_html("Appliance control")
+        + _toggle_row_html(
+            row_id="ctrl-other-row",
+            label="Allow control of other appliances", name="webui_control_other_appliances",
+            checked=w.show_hostname_on_home and w.control_other_appliances,
+            disabled=not w.show_hostname_on_home,
+            onchange="refreshCustomiseCardSub(); settingsSaveField('webui.control_other_appliances', this.checked)")
+        + _toggle_row_html(
+            label="Allow control of this from other appliances", name="webui_advertise_appliance",
+            checked=w.advertise_appliance,
+            onchange="refreshCustomiseCardSub(); if(liveEnabled) settingsTransact('/api/settings/advertisement', {value: this.checked});"),
+    )
+
+
+def _speaker_controls_card_html(parsed, outputs_part) -> str:
+    o = parsed.outputs
+    if not outputs_part.include_tv_supported:
+        unavailable = _SPEAKER_CONTROLS_NEEDS_VERSION
+    elif not outputs_part.device_events:
+        unavailable = _SPEAKER_CONTROLS_NEEDS_EVENTS
+    else:
+        unavailable = ""
+    off = bool(unavailable)
+    note = (f'<div class="helptext setup-card-note" id="speaker_controls_note">'
+            f'{html.escape(unavailable)}</div>') if off else ""
+
+    chosen = _nearest_pause_off_choice(o.pause_off_seconds)
+    options = "".join(
+        f'<option value="{s}"{" selected" if s == chosen else ""}>{_minutes_text(s)}</option>'
+        for s in PAUSE_OFF_CHOICES
+    )
+    stop_row = f"""
+          <div class="setup-pref-row{' is-disabled' if off else ''}">
+            <label class="setup-pref-label" for="pause_off_seconds">Stop paused speakers after</label>
+            <select id="pause_off_seconds"{' disabled' if off else ''} onchange="settingsSaveField('outputs.pause_off_seconds', Number(this.value));">{options}</select>
+          </div>"""
+
+    return settings_card_html(
+        _card_title_html("Speaker controls")
+        + note
+        + _toggle_row_html(
+            label="Pause all speakers when pause is pressed on a speaker", name="device_pause_all",
+            checked=o.device_pause_scope == DEVICE_PAUSE_ALL, disabled=off,
+            onchange="settingsSaveField('outputs.device_pause_scope', this.checked ? 'all' : 'output')")
+        + stop_row
+        + _toggle_row_html(
+            label="Apply volume changes made at any speaker to all playing speakers",
+            name="outputs_speaker_volume_applies_to_all",
+            checked=o.speaker_volume_applies_to_all, disabled=off,
+            onchange="settingsSaveField('outputs.speaker_volume_applies_to_all', this.checked)"),
+    )
 
 
 def _setup_customise_card_html(parsed) -> str:
-    """Personalisation detail-panel card."""
+    """Personalisation detail panel: the Display, Appliance control and
+    Speaker controls cards."""
     outputs_part = store().snapshot().outputs
-    _ctrl_other_effective = parsed.webui.show_hostname_on_home and parsed.webui.control_other_appliances
-    _ctrl_other_disabled = ' disabled' if not parsed.webui.show_hostname_on_home else ''
-    _ctrl_other_row_style = "margin-top:0.75rem;opacity:0.4;" if not parsed.webui.show_hostname_on_home else "margin-top:0.75rem;"
-    customise_card_html = settings_card_html(f"""
-          <input type="hidden" name="webui_show_master_volume_present" value="1">
-          <input type="hidden" name="webui_advertise_appliance_present" value="1">
-          <input type="hidden" name="webui_control_other_appliances_present" value="1">
-          <div class="setup-customise-row" style="margin-top:0.5rem;">
-{toggle_html(name="webui_show_hostname_on_home", id="webui_show_hostname_on_home", checked=parsed.webui.show_hostname_on_home, onchange="onHostnameToggle(this.checked); settingsSaveField('webui.show_hostname_on_home', this.checked)")}
-            <span>Display Hostname</span>
-          </div>
-          <div id="ctrl-other-row" class="setup-customise-row" style="{_ctrl_other_row_style}">
-{toggle_html(name="webui_control_other_appliances", id="webui_control_other_appliances", checked=_ctrl_other_effective, disabled=not parsed.webui.show_hostname_on_home, onchange="refreshCustomiseCardSub(); settingsSaveField('webui.control_other_appliances', this.checked)")}
-            <span>Allow control of other appliances</span>
-          </div>
-          <div class="setup-customise-row" style="margin-top:0.75rem;">
-{toggle_html(name="webui_advertise_appliance", id="webui_advertise_appliance", checked=parsed.webui.advertise_appliance, onchange="refreshCustomiseCardSub(); if(liveEnabled) settingsTransact('/api/settings/advertisement', {value: this.checked});")}
-            <span>Allow control of this from other appliances</span>
-          </div>
-          <div class="setup-customise-row" style="margin-top:0.75rem;">
-{toggle_html(name="webui_show_master_volume", id="webui_show_master_volume", checked=parsed.webui.show_master_volume, onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_master_volume', this.checked)")}
-            <span>Show Master Volume Control</span>
-          </div>
-          <div class="setup-customise-row" style="margin-top:0.75rem;">
-{toggle_html(name="webui_show_input_detail", id="webui_show_input_detail", checked=parsed.webui.show_input_detail, onchange="refreshCustomiseCardSub(); settingsSaveField('webui.show_input_detail', this.checked)")}
-            <span>Display Input Detail</span>
-          </div>
-          <div class="setup-customise-row" style="margin-top:0.75rem;">
-{toggle_html(name="webui_dark_mode", id="webui_dark_mode", checked=parsed.webui.dark_mode, onchange="applyDarkMode(this.checked); refreshCustomiseCardSub(); settingsSaveField('webui.dark_mode', this.checked)")}
-            <span>Dark Mode</span>
-          </div>{_device_pause_row_html(parsed, outputs_part)}{_speaker_volume_row_html(parsed, outputs_part)}
-        """, margin_top="0")
-    return customise_card_html
+    return (
+        _display_card_html(parsed)
+        + _appliance_control_card_html(parsed)
+        + _speaker_controls_card_html(parsed, outputs_part)
+    )
 
 
 def summary_customise(ctx: context.SetupCtx) -> str:

@@ -48,6 +48,9 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   sign-in page shows "Incorrect PIN" inside its card.
 - changed: a speaker's offset on the Owntone Setup page is set with -25, -5, +5
   and +25 ms buttons either side of its value, in place of a slider.
+- changed: Setup's Personalisation panel is three cards, Display, Appliance
+  control and Speaker controls, with each setting's name on the left and its
+  switch or choice on the right.
 
 ### Inputs
 
@@ -81,15 +84,15 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   now has a length: a replay runs over its recording, live playback being
   recorded runs over the most the recording can hold, and anything else counts
   up against 99 minutes. The clock runs for the whole session, not per track.
-- new: a Pause setting on the Personalisation card, "When Pause is pressed on a
-  speaker", that says what happens to the other speakers: only that speaker
-  pauses (the default), the others are muted too, or the others are turned off
-  too. Play on the paused speaker unmutes the speakers its Pause muted. A paused
-  speaker, and any its Pause muted, are turned off if the Pause lasts longer than
-  five minutes. A stereo pair, or an Apple TV with its HomePods, counts as one
-  speaker. A speaker that cannot be held is muted instead. Some speakers do not
+- new: Pause settings in Personalisation's Speaker controls card. "Pause all
+  speakers when pause is pressed on a speaker" mutes the other playing speakers
+  too, and Play on the paused speaker brings them all back; with it off (the
+  default) only that speaker pauses. "Stop paused speakers after" (1, 3, 5 or 10
+  minutes, 5 by default) turns off a paused speaker, and any its Pause muted,
+  once the Pause has lasted that long. A stereo pair, or an Apple TV with its
+  HomePods, counts as one speaker. A speaker that cannot be held is muted instead. Some speakers do not
   report their own Pause at all (the Edifier MS50A, for example), so the setting
-  does nothing for them. The setting needs owntone-mini 1.6 and is greyed out
+  does nothing for them. The settings need owntone-mini 1.6 and are greyed out
   with the reason when the player cannot report these events.
 - fixed: a speaker that dropped out while it was playing showed Connecting for
   the rest of the session and was never tried again. It is now tried 10 and 30
@@ -98,8 +101,8 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   "Play on the Apple TV as well as its HomePods" for each Apple TV that has
   HomePods. With it off they play as a stereo pair and the Apple TV shows
   nothing. Changing it while they play restarts them. It is on by default.
-- new: a switch on the Personalisation card, "Volume changes made at any speaker
-  apply to all playing speakers". It covers a speaker's own buttons, knob or app
+- new: a switch in Personalisation's Speaker controls card, "Apply volume
+  changes made at any speaker to all playing speakers". It covers a speaker's own buttons, knob or app
   and an Apple TV remote. The others move in proportion so they all reach silent
   together, and muted speakers stay muted. It needs owntone-mini 1.6 and the
   player's event channel. It is off by default.
@@ -112,7 +115,7 @@ every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
   level on its own Play or a turn of its volume knob.
 - changed: turning the volume knob of a paused or muted speaker starts or
   unmutes that speaker alone, and no longer moves the other speakers. With
-  "Volume changes made at any speaker apply to all playing speakers" on, a
+  "Apply volume changes made at any speaker to all playing speakers" on, a
   paused or muted speaker's level still moves with the others, so it comes
   back in proportion.
 - changed: speakers start and stop together. The player answers at once and

@@ -32,7 +32,7 @@ just live input.
 
 ### Input detail and VU meter
 
-When **Display Input Detail** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)), the card also shows:
+When **Display input detail** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)), the card also shows:
 
 - A `Locked · 44.1 kHz` line once the input has locked to a sample rate, `Acquiring` while it is working one out, or `Mismatch · 44.1 kHz` when the input delivers a different rate than it was opened at and Dynamic Rate Matching is off. A device that delivers a rate other than 32, 44.1 or 48 kHz shows `Acquiring` for as long as it does so, and Dynamic Rate Matching does not correct it.
 - Nothing for an input that is not running; the rate line appears once the input starts.
@@ -43,7 +43,7 @@ Both are hidden when this setting is off.
 ## Master Volume
 
 A **Master Volume** slider appears inside the Now Playing card, but only when
-**Show Master Volume Control** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)). It is disabled (greyed
+**Show master volume control** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)). It is disabled (greyed
 out) whenever no output is currently selected. While active, dragging it scales the volume of
 every selected output proportionally, using each output's current volume as its starting
 point; it does not set every output to the same level.
@@ -120,7 +120,7 @@ is available), and tap it again to stop repeat playback.
 
 ## Appliance selector
 
-If **Display Hostname** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)), a pill in the top-right shows
+If **Display hostname** is enabled ([Setup > Personalisation](SETUP-PERSONALISATION.md)), a pill in the top-right shows
 this appliance's hostname. If **Allow control of other appliances** is also enabled and other
 autostream appliances are visible on the network, tapping the pill opens a dropdown to jump to
 another appliance's Home or Equaliser page. See [Multi-Appliance](MULTI-APPLIANCE.md) for the

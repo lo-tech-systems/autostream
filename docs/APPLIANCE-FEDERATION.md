@@ -254,7 +254,7 @@ its speakers are released.
 
 ### Navigation shortcut
 
-When *Allow Control of Other Appliances* is enabled (Setup → Personalisation), an
+When *Allow control of other appliances* is enabled (Setup → Personalisation), an
 output card that shows "In Use by &lt;hostname&gt;" becomes tappable. Tapping anywhere
 on the card (except the toggle switch or volume slider) navigates directly to that
 appliance's Home page - equivalent to selecting it from the appliance

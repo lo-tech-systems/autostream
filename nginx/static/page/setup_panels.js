@@ -254,7 +254,7 @@ var pageData = (function () {
               cb.disabled = false;
             }
           }
-          if (row) { row.style.opacity = checked ? '' : '0.4'; }
+          if (row) { row.classList.toggle('is-disabled', !checked); }
           refreshCustomiseCardSub();
         }
         function refreshCustomiseCardSub() {

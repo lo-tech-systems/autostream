@@ -89,7 +89,7 @@ A few things worth knowing:
 * Changing the switch takes effect straight away and never interrupts playback. If autostream cannot reach its audio service at that moment, the page shows **Saved (could not apply live)** and the change takes effect once the audio service reconnects.
 * For roughly the first half second after a source changes rate, the music still plays at the old rate before autostream corrects it. You may hear a brief off-pitch start. That short stretch is also kept in recordings made for repeat playback.
 * autostream remembers the rate it found while the same input device stays selected, including when the input stops and starts again, so after the first time the music should start at the right pitch. It forgets the rate if you change the device or the audio service restarts.
-* It recognises sources at 32, 44.1 and 48 kHz. A source at any other rate is not corrected, and if you have **Display Input Detail** on, the input's card on the Home page shows **Acquiring** for as long as it does.
+* It recognises sources at 32, 44.1 and 48 kHz. A source at any other rate is not corrected, and if you have **Display input detail** on, the input's card on the Home page shows **Acquiring** for as long as it does.
 * If you connect a CD player through an optical adapter, also set the input's **Input type** to CD. See [Input type](#input-type).
 
 ### Gain and Equaliser

@@ -749,187 +749,197 @@ class TestPlaybackPanelCardSplit:
 
 
 # ---------------------------------------------------------------------------
-# Personalisation card -- what a Pause pressed on a speaker does
+# Personalisation -- the Display, Appliance control and Speaker controls cards
 # ---------------------------------------------------------------------------
 
-class TestDevicePauseChoice:
-    LABELS = ("Only that speaker pauses", "Mute the other speakers too")
-    HELP = (
-        "Applies to Pause on a HomePod or on an Apple TV remote. That speaker always pauses, "
-        "and Play on it starts it again and unmutes the others. Switching it off and on again "
-        "also starts it. A stereo pair, or an Apple TV with its HomePods, counts as one speaker."
-    )
+def _personalisation(outputs=None, webui=None, *, rows=None, events=True):
+    import autostream_config
+    from autostream_backend_events import ConnectInfo
+    from autostream_state.outputs import get_authority
+    from webui.browser.setup.cards_customise import _setup_customise_card_html
+    from fake_store import FakeStore
+    from output_fakes import homepods_row
 
-    @staticmethod
-    def _card(scope="output", seconds=300, *, rows=None, events=True):
-        import autostream_config
-        from autostream_backend_events import ConnectInfo
-        from autostream_state.outputs import get_authority
-        from webui.browser.setup.cards_customise import _setup_customise_card_html
-        from fake_store import FakeStore
-        from output_fakes import homepods_row, row
+    raw = {}
+    if outputs is not None:
+        raw["outputs"] = outputs
+    if webui is not None:
+        raw["webui"] = webui
+    parsed = autostream_config.parse_config(raw, high_perf=False)
+    FakeStore().outputs([homepods_row(1)] if rows is None else rows)
+    if events:
+        caps = frozenset({"device_volume", "receiver_command"})
+        get_authority().on_connected(ConnectInfo("b0", 1, caps, "unix_socket"))
+        get_authority().step(now=1000.0)
+    return _setup_customise_card_html(parsed)
 
-        parsed = autostream_config.parse_config(
-            {"outputs": {"device_pause_scope": scope, "pause_off_seconds": seconds}}, high_perf=False)
-        FakeStore().outputs([homepods_row(1)] if rows is None else rows)
-        if events:
-            caps = frozenset({"device_volume", "receiver_command"})
-            get_authority().on_connected(ConnectInfo("b0", 1, caps, "unix_socket"))
-            get_authority().step(now=1000.0)
-        return _setup_customise_card_html(parsed)
 
-    @staticmethod
-    def _select(html):
-        start = html.index('<select id="device_pause_scope"')
-        return html[start:html.index("</select>", start)]
+def _tag(html, element_id):
+    start = html.index(f'id="{element_id}"')
+    start = html.rindex("<", 0, start)
+    return html[start:html.index(">", start)]
 
-    @staticmethod
-    def _note(html):
-        start = html.index('<span id="device_pause_off_note"')
-        return html[start:html.index("</span>", start)]
 
-    def test_the_two_options_have_the_exact_labels_and_values(self):
-        sel = self._select(self._card())
-        for value, label in zip(("output", "all"), self.LABELS):
-            assert f'<option value="{value}"' in sel and f">{label}</option>" in sel
-        assert sel.count("<option") == 2 and "Keep playing" not in sel
+def _row_of(html, element_id):
+    pos = html.index(f'id="{element_id}"')
+    start = html.rindex('<div class="setup-pref-row', 0, pos)
+    return html[start:html.index("</div>", pos)]
 
-    def test_the_title_and_help_are_the_agreed_text(self):
-        html = self._card()
-        assert "When Pause is pressed on a speaker" in html
-        assert self.HELP in html
-        assert "\u2014" not in html and "&mdash;" not in html.split("When Pause is pressed")[1]
 
-    @pytest.mark.parametrize("scope", ["output", "all"])
-    def test_the_parsed_scope_is_the_selected_option(self, scope):
-        sel = self._select(self._card(scope))
+class TestPersonalisationCards:
+    TITLES = ("Display", "Appliance control", "Speaker controls")
+
+    def test_three_cards_with_their_titles_in_order(self):
+        html = _personalisation()
+        positions = [html.index(f'<div class="setup-card-title">{t}</div>') for t in self.TITLES]
+        assert positions == sorted(positions)
+        assert html.count('class="setup-card-title"') == 3
+
+    @pytest.mark.parametrize("title,ids", [
+        ("Display", ("webui_show_hostname_on_home", "webui_show_master_volume",
+                     "webui_show_input_detail", "webui_dark_mode")),
+        ("Appliance control", ("webui_control_other_appliances", "webui_advertise_appliance")),
+        ("Speaker controls", ("device_pause_all", "pause_off_seconds",
+                              "outputs_speaker_volume_applies_to_all")),
+    ])
+    def test_each_card_holds_its_rows_in_order(self, title, ids):
+        html = _personalisation()
+        heading = f'<div class="setup-card-title">{title}</div>'
+        start = html.index(heading)
+        nxt = html.find('class="setup-card-title"', start + len(heading))
+        card = html[start:nxt if nxt != -1 else len(html)]
+        positions = [card.index(f'id="{i}"') for i in ids]
+        assert positions == sorted(positions)
+
+    @pytest.mark.parametrize("element_id,label", [
+        ("webui_show_hostname_on_home", "Display hostname"),
+        ("webui_show_master_volume", "Show master volume control"),
+        ("webui_show_input_detail", "Display input detail"),
+        ("webui_dark_mode", "Dark mode"),
+        ("webui_control_other_appliances", "Allow control of other appliances"),
+        ("webui_advertise_appliance", "Allow control of this from other appliances"),
+        ("device_pause_all", "Pause all speakers when pause is pressed on a speaker"),
+        ("pause_off_seconds", "Stop paused speakers after"),
+        ("outputs_speaker_volume_applies_to_all",
+         "Apply volume changes made at any speaker to all playing speakers"),
+    ])
+    def test_each_label_is_for_its_control_and_comes_first(self, element_id, label):
+        row = _row_of(_personalisation(), element_id)
+        label_tag = f'<label class="setup-pref-label" for="{element_id}">{label}</label>'
+        assert label_tag in row
+        assert row.index(label_tag) < row.index(f'id="{element_id}"')
+
+    def test_no_help_text_when_the_player_handles_speaker_events(self):
+        html = _personalisation()
+        assert "helptext" not in html
+        assert "speaker_controls_note" not in html
+
+    def test_the_old_controls_and_hidden_fields_are_gone(self):
+        html = _personalisation()
+        for gone in ('id="device_pause_scope"', "device_pause_off_note", "_present",
+                     "setup-customise-row", "opacity:0.4"):
+            assert gone not in html
+
+    def test_the_text_is_latin_1(self):
+        _personalisation().encode("latin-1")
+
+
+class TestPersonalisationApplianceControl:
+    def test_control_of_others_is_greyed_out_while_the_hostname_is_hidden(self):
+        html = _personalisation(webui={"show_hostname_on_home": False, "control_other_appliances": True})
+        row = _row_of(html, "webui_control_other_appliances")
+        assert row.startswith('<div class="setup-pref-row is-disabled" id="ctrl-other-row"')
+        tag = _tag(html, "webui_control_other_appliances")
+        assert " disabled" in tag and " checked" not in tag
+
+    def test_control_of_others_is_live_when_the_hostname_is_shown(self):
+        html = _personalisation(webui={"show_hostname_on_home": True, "control_other_appliances": True})
+        assert _row_of(html, "webui_control_other_appliances").startswith(
+            '<div class="setup-pref-row" id="ctrl-other-row"')
+        tag = _tag(html, "webui_control_other_appliances")
+        assert " disabled" not in tag and " checked" in tag
+
+    def test_the_hostname_switch_greys_the_row_by_class(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path)
+        assert "row.classList.toggle('is-disabled', !checked)" in html
+        assert "row.style.opacity" not in html
+        assert "onHostnameToggle(this.checked); settingsSaveField('webui.show_hostname_on_home', this.checked)" in \
+            _personalisation()
+
+
+class TestPersonalisationSpeakerControls:
+    VERSION = ("Needs owntone-mini 1.6 or above. Until then the connected player handles "
+               "Pause on its own, and a volume change at a speaker applies to that speaker only.")
+    EVENTS = ("Needs owntone-mini's event channel, which is off or not connected. Until it "
+              "is, Pause on a speaker does nothing and a volume change at a speaker applies "
+              "to that speaker only.")
+
+    @pytest.mark.parametrize("scope,checked", [("output", False), ("all", True), ("off_all", True)])
+    def test_the_pause_switch_follows_the_scope(self, scope, checked):
+        tag = _tag(_personalisation({"device_pause_scope": scope}), "device_pause_all")
+        assert (" checked" in tag) is checked
+
+    def test_the_pause_switch_saves_all_or_output(self):
+        tag = _tag(_personalisation(), "device_pause_all")
+        assert ("settingsSaveField('outputs.device_pause_scope', this.checked ? 'all' : 'output')"
+                in tag.replace("&#x27;", "'"))
+
+    def test_the_stop_time_offers_four_choices(self):
+        html = _personalisation()
+        start = html.index('<select id="pause_off_seconds"')
+        sel = html[start:html.index("</select>", start)]
+        for value, words in ((60, "1 minute"), (180, "3 minutes"), (300, "5 minutes"), (600, "10 minutes")):
+            assert f'<option value="{value}"' in sel and f">{words}</option>" in sel
+        assert sel.count("<option") == 4
+
+    @pytest.mark.parametrize("stored,shown", [
+        (300, 300), (60, 60), (600, 600), (30, 60), (120, 180), (240, 300), (450, 600), (3600, 600),
+    ])
+    def test_the_stop_time_shows_the_nearest_choice(self, stored, shown):
+        html = _personalisation({"pause_off_seconds": stored})
+        start = html.index('<select id="pause_off_seconds"')
+        sel = html[start:html.index("</select>", start)]
         assert sel.count(" selected") == 1
-        assert f'<option value="{scope}" selected>' in sel
+        assert f'<option value="{shown}" selected>' in sel
 
-    def test_the_choice_saves_on_change_without_a_form_name(self):
-        sel = self._select(self._card())
-        assert "settingsSaveField('outputs.device_pause_scope', this.value)" in sel
-        assert " name=" not in sel.split(">")[0]
-        assert "liveEnabled" not in sel
+    def test_the_stop_time_saves_a_number(self):
+        tag = _tag(_personalisation(), "pause_off_seconds")
+        assert "settingsSaveField('outputs.pause_off_seconds', Number(this.value));" in tag.replace("&#x27;", "'")
 
-    def test_the_select_is_enabled_when_the_player_reports_device_events(self):
-        assert " disabled" not in self._select(self._card()).split(">")[0]
+    def test_the_volume_switch_follows_and_saves_the_setting(self):
+        assert " checked" in _tag(_personalisation({"speaker_volume_applies_to_all": True}),
+                                  "outputs_speaker_volume_applies_to_all")
+        tag = _tag(_personalisation(), "outputs_speaker_volume_applies_to_all")
+        assert " checked" not in tag
+        assert "settingsSaveField('outputs.speaker_volume_applies_to_all', this.checked)" in tag
 
-    def test_an_older_player_disables_it_with_the_version_text(self):
+    def test_the_rows_are_live_when_the_player_reports_speaker_events(self):
+        html = _personalisation()
+        for element_id in ("device_pause_all", "pause_off_seconds", "outputs_speaker_volume_applies_to_all"):
+            assert " disabled" not in _tag(html, element_id)
+            assert "is-disabled" not in _row_of(html, element_id)
+
+    def test_an_older_player_greys_the_rows_with_one_note(self):
         from output_fakes import row
-        html = self._card(rows=[row(1)], events=False)
-        assert " disabled" in self._select(html).split(">")[0]
-        assert "Needs owntone-mini 1.6 or above. The connected player handles Pause on its own." in html
-        assert self.HELP not in html
+        html = _personalisation(rows=[row(1)], events=False)
+        for element_id in ("device_pause_all", "pause_off_seconds", "outputs_speaker_volume_applies_to_all"):
+            assert " disabled" in _tag(html, element_id)
+            assert "is-disabled" in _row_of(html, element_id)
+        assert html.count('id="speaker_controls_note"') == 1
+        assert self.VERSION in html
+        assert html.index('id="speaker_controls_note"') < html.index('id="device_pause_all"')
 
-    def test_a_closed_event_channel_disables_it_with_the_channel_text(self):
-        html = self._card(events=False)
-        assert " disabled" in self._select(html).split(">")[0]
-        assert ("Needs owntone-mini's event channel, which is off or not connected. "
-                "Pause on a speaker does nothing until it is.") in html.replace("&#x27;", "'")
+    def test_a_closed_event_channel_greys_the_rows_with_its_note(self):
+        html = _personalisation(events=False)
+        assert " disabled" in _tag(html, "device_pause_all")
+        assert self.EVENTS in html.replace("&#x27;", "'")
         assert "Needs owntone-mini 1.6" not in html
 
-    @pytest.mark.parametrize("scope", ["output", "all"])
-    def test_the_timeout_sentence_is_shown_for_every_choice(self, scope):
-        shown = self._note(self._card(scope)).split(">", 1)[1]
-        assert shown == (" A paused speaker, and any speakers its Pause muted, are turned off "
-                         "if Pause lasts longer than 5 minutes.")
-
-    @pytest.mark.parametrize("seconds,words", [
-        (30, "30 seconds"), (45, "45 seconds"), (60, "1 minute"), (120, "2 minutes"),
-        (300, "5 minutes"), (90, "90 seconds"), (3600, "60 minutes"),
-    ])
-    def test_the_timeout_is_said_as_people_say_it(self, seconds, words):
-        assert f"longer than {words}." in self._note(self._card("all", seconds))
-
-    def test_changing_the_choice_only_saves_it(self):
-        sel = self._select(self._card())
-        assert "device_pause_off_note" not in sel
-
-    def test_the_card_text_is_latin_1(self):
-        self._card("all").encode("latin-1")
+    def test_a_stored_setting_still_shows_while_greyed_out(self):
+        html = _personalisation({"device_pause_scope": "all", "speaker_volume_applies_to_all": True},
+                                events=False)
+        for element_id in ("device_pause_all", "outputs_speaker_volume_applies_to_all"):
+            tag = _tag(html, element_id)
+            assert " checked" in tag and " disabled" in tag
 
 
-class TestSpeakerVolumeSwitch:
-    LABEL = "Volume changes made at any speaker apply to all playing speakers"
-    HELP = (
-        "Applies to a speaker's own volume buttons, knob or app, and to an Apple TV "
-        "remote. The other playing speakers move in proportion to their own levels, "
-        "so they all reach silent together. Muted speakers stay muted. A stereo pair, "
-        "or an Apple TV with its HomePods, counts as one speaker."
-    )
-    VERSION = ("Needs owntone-mini 1.6 or above. Until then a volume change at a speaker "
-               "applies to that speaker only.")
-    EVENTS = ("Needs owntone-mini's event channel, which is off or not connected. A volume "
-              "change at a speaker applies to that speaker only until it is.")
-
-    @staticmethod
-    def _card(on=False, *, rows=None, events=True):
-        import autostream_config
-        from autostream_backend_events import ConnectInfo
-        from autostream_state.outputs import get_authority
-        from webui.browser.setup.cards_customise import _setup_customise_card_html
-        from fake_store import FakeStore
-        from output_fakes import homepods_row
-
-        parsed = autostream_config.parse_config(
-            {"outputs": {"speaker_volume_applies_to_all": on}}, high_perf=False)
-        FakeStore().outputs([homepods_row(1)] if rows is None else rows)
-        if events:
-            caps = frozenset({"device_volume", "receiver_command"})
-            get_authority().on_connected(ConnectInfo("b0", 1, caps, "unix_socket"))
-            get_authority().step(now=1000.0)
-        return _setup_customise_card_html(parsed)
-
-    @staticmethod
-    def _row(html):
-        start = html.rindex('<div class="setup-customise-row"', 0, html.index('id="outputs_speaker_volume_applies_to_all"'))
-        return html[start:html.index("</div>", start)]
-
-    @staticmethod
-    def _input(html):
-        start = html.index('<input type="checkbox" name="outputs_speaker_volume_applies_to_all"')
-        return html[start:html.index(">", start)]
-
-    def test_the_label_and_help_are_the_agreed_text_without_a_dash(self):
-        html = self._card().replace("&#x27;", "'")
-        assert self.LABEL in html and self.HELP in html
-        row = html[html.index(self.LABEL):]
-        assert "\u2014" not in row and "&mdash;" not in row
-        self._card().encode("latin-1")
-
-    def test_it_is_checked_only_when_the_setting_is_on(self):
-        assert " checked" in self._input(self._card(True))
-        assert " checked" not in self._input(self._card(False))
-
-    def test_the_input_saves_the_field_on_change(self):
-        tag = self._input(self._card())
-        assert "settingsSaveField('outputs.speaker_volume_applies_to_all', this.checked)" in tag
-        assert "liveEnabled" not in tag
-
-    def test_it_is_enabled_when_the_player_reports_device_events(self):
-        html = self._card()
-        assert " disabled" not in self._input(html)
-        assert "opacity:0.4" not in self._row(html)
-
-    def test_an_older_player_disables_it_with_the_version_text(self):
-        from output_fakes import row
-        html = self._card(rows=[row(1)], events=False)
-        assert " disabled" in self._input(html)
-        assert "opacity:0.4" in self._row(html)
-        assert self.VERSION in html
-        assert self.HELP not in html
-
-    def test_a_closed_event_channel_disables_it_with_the_channel_text(self):
-        html = self._card(events=False)
-        assert " disabled" in self._input(html)
-        assert self.EVENTS in html.replace("&#x27;", "'")
-        assert self.VERSION not in html
-
-    def test_a_stored_on_shows_checked_but_disabled_without_the_channel(self):
-        tag = self._input(self._card(True, events=False))
-        assert " checked" in tag and " disabled" in tag
-
-    def test_the_row_comes_after_the_pause_row(self):
-        html = self._card()
-        assert html.index('id="device_pause_scope"') < html.index('id="outputs_speaker_volume_applies_to_all"')

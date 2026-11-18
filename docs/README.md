@@ -22,7 +22,7 @@ This is the documentation for autostream and the autostream dial accessory. Pick
 - [Owntone Setup](SETUP-OWNTONE.md) - AirPlay settings that don't fit on the main Setup page: buffered audio, per-speaker modes, and output offsets.
 - [Setup: Track Identification](SETUP-TRACK-ID.md) - turn on track identification so autostream shows a real title, artist, and artwork.
 - [Dials (Setup)](SETUP-DIALS.md) - the appliance side of setting up an autostream dial.
-- [Personalisation](SETUP-PERSONALISATION.md) - appearance and multi-appliance-visibility switches for the Home page and web UI.
+- [Personalisation](SETUP-PERSONALISATION.md) - display, multi-appliance and speaker-control settings for the Home page and web UI.
 - [System & Updates](SETUP-SYSTEM.md) - hostname, mDNS discovery timing, SD card wear monitoring, and software updates.
 - [Factory Reset](SETUP-FACTORY-RESET.md) - return the appliance to first-run Wi-Fi setup mode.
 

@@ -316,7 +316,7 @@ Also check:
 
 * Every appliance must have a **unique hostname** - duplicate hostnames cause unpredictable mDNS discovery.
 * The **"Allow control of this from other appliances"** setting (Setup -> Personalisation) must be enabled on any appliance you want to appear in peers' selectors. Appliances that have opted out do not appear.
-* To *drive* other appliances from this one, the controlling appliance needs **"Allow control of other appliances"** enabled (Setup -> Personalisation). That toggle is greyed out unless **Display Hostname** is also on.
+* To *drive* other appliances from this one, the controlling appliance needs **"Allow control of other appliances"** enabled (Setup -> Personalisation). That toggle is greyed out unless **Display hostname** is also on.
 * An appliance with no stable identity (no CPU serial and no persistent fallback ID, such as a broken install) cannot participate in multi-appliance control.
 
 To inspect which `_autostream._tcp` services are visible from an appliance's console:
@@ -1338,7 +1338,7 @@ list.
 **Tip:** When **Allow control of other appliances** is enabled (Setup ->
 Personalisation), a greyed-out *In Use by* card is a shortcut. Tap anywhere on it
 except the toggle or volume slider to jump to that appliance's Home page in remote
-mode. If tapping does nothing, that toggle is off, or **Display Hostname** (which it
+mode. If tapping does nothing, that toggle is off, or **Display hostname** (which it
 depends on) is off.
 
 **After Wi-Fi loss or crash:** If the remote appliance lost network connectivity

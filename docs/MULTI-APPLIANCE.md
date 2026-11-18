@@ -22,10 +22,10 @@ looking at and controlling a different appliance.
 Multi-appliance control is configured in [Setup > Personalisation](SETUP-PERSONALISATION.md). Two
 switches matter here:
 
-- **Display Hostname** - shows this appliance's hostname as a pill in the top-right of
+- **Display hostname** - shows this appliance's hostname as a pill in the top-right of
   the Home page. This has to be on before the next switch can do anything.
 - **Allow control of other appliances** - lets you use the pill to jump to and control
-  other appliances. This switch is disabled (greyed out) until Display Hostname is
+  other appliances. This switch is disabled (greyed out) until Display hostname is
   switched on.
 
 With both on, and at least one other autostream appliance visible on the network, the
@@ -110,5 +110,6 @@ reconnect to it.
 
 - [Home Page](HOME-PAGE.md) - the appliance selector pill and the "In Use by" output
   card that this feature builds on.
-- [Setup-Personalisation](SETUP-PERSONALISATION.md) - where both switches live, and the
-  rest of the Personalisation settings card.
+- [Setup-Personalisation](SETUP-PERSONALISATION.md) - where these switches live (Display
+  hostname in the Display card, the other two in the Appliance control card), and the rest
+  of the Personalisation settings.
