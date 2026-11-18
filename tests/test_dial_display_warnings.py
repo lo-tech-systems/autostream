@@ -26,7 +26,7 @@ import dial_display_state as dds  # noqa: E402
 from dial_appliance_warnings import ApplianceWarning  # noqa: E402
 from dial_display_views import BellBadge  # noqa: E402
 from dial_info import INFO_LABELS  # noqa: E402
-from dial_network import LINK_CONNECTED, LINK_DOWN, NetworkView  # noqa: E402
+from dial_network import LINK_CONNECTED, LINK_DOWN  # noqa: E402
 from dial_sdhealth import STATUS_VALID, SdHealthView  # noqa: E402
 from dial_test_support import (  # noqa: E402
     WARNING_BY_ID,
@@ -49,18 +49,9 @@ from dial_warning_text import appliance_warning_key  # noqa: E402
 import dial_warning_text as dwt  # noqa: E402
 from dial_warning_text import WARNING_DESCRIPTORS  # noqa: E402
 from dial_warnings import KIND_STATUS, WarningManager  # noqa: E402
-from dial_display_test_support import _view  # noqa: E402
+from dial_display_test_support import _fold, _view  # noqa: E402
 
 AID = "a" * 20
-
-
-def _fold(display):
-    with display._lock:
-        display._repaint_current_locked()
-
-
-def _link(link, bars=0):
-    return NetworkView(link=link, bars=bars, updated_at=1.0)
 
 
 def _sd(percent):
@@ -82,9 +73,9 @@ def _rig(**kwargs):
 
 
 def _lose_wifi(display):
-    on_network_view(display, _link(LINK_CONNECTED, bars=3))
+    on_network_view(display, _view(LINK_CONNECTED, bars=3))
     for _ in range(3):
-        on_network_view(display, _link(LINK_DOWN))
+        on_network_view(display, _view(LINK_DOWN))
 
 
 def _painted(display):
@@ -196,7 +187,7 @@ class TestTheBell:
 
     def test_wifi_state_alone_adds_nothing_to_the_bell(self):
         display = _rig()
-        on_network_view(display, _link(LINK_DOWN))
+        on_network_view(display, _view(LINK_DOWN))
         assert display._bell_badge() is None
 
 
@@ -331,7 +322,7 @@ class TestAnEntryClears:
         on_sd_health_view(display, _sd(15))
         open_warnings_page(display)
         assert _painted(display).title == "No WiFi"
-        on_network_view(display, _link(LINK_CONNECTED, bars=3))
+        on_network_view(display, _view(LINK_CONNECTED, bars=3))
         display._apply_pending_snapshot()
         _fold(display)
         view = _painted(display)
@@ -383,7 +374,7 @@ class TestLateTaps:
         display = _rig()
         _lose_wifi(display)
         open_warnings_page(display)
-        on_network_view(display, _link(LINK_CONNECTED, bars=3))
+        on_network_view(display, _view(LINK_CONNECTED, bars=3))
         display._apply_pending_snapshot()
         _fold(display)
         assert display._screen_request == "main"

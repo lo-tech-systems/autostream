@@ -55,22 +55,11 @@ from dial_display_test_support import (
     _make_compact_display,
     _poll_focused_with_repeat,
     _poll_with_artwork,
+    _refresh_picker,
+    _refresh_selector,
+    picker_with_row,
+    selector_display,
 )
-
-
-def _refresh_selector(display, roster):
-    """Give the core *roster* and let the view rebuild the selector's rows
-    from the snapshot that carries it."""
-    set_roster(display, roster)
-    display._refresh_list_rows(display.core.snapshot())
-
-
-def _refresh_picker(display, roster, now):
-    """Give the core *roster*, each appliance reporting the repeat record
-    seeded for it, then let the view rebuild the picker's rows from the
-    snapshot."""
-    set_roster(display, roster)
-    display._refresh_list_rows(display.core.snapshot())
 
 
 # ---------------------------------------------------------------------------
@@ -259,29 +248,7 @@ class TestSelectorOpenCloseAndRepaint:
 
 class TestSelectorUnauthorizedRows:
     def _display(self, authorized_count=1):
-        targets = [
-            _target(name=f"T{i}", service_name=f"T{i}", appliance_id=str(i) * 20,
-                    auth="authorized", playing_since=float(i))
-            for i in range(authorized_count)
-        ]
-        targets.append(_target(
-            name="Lounge", service_name="Lounge", appliance_id="9" * 20, ip="192.168.1.99",
-            auth="unauthorized", playing_since=50.0,
-        ))
-        targets.append(_target(
-            name="Maybe", service_name="Maybe", appliance_id="8" * 20, ip="192.168.1.98", auth="unknown",
-        ))
-        display, fb, gt = make_display(targets=targets)
-        display.enable()
-
-        def reply(target, *args, **kwargs):
-            # Maybe has not said yet whether this dial may use it.
-            if target.appliance_id == "8" * 20:
-                return dict(_status_result(track_id=None), access="unknown")
-            return _status_result(track_id=None)
-        with patch("dial_test_support.fetch_target_status", side_effect=reply):
-            display.fold_for_tests()
-        return display
+        return selector_display(authorized_count)
 
     @pytest.mark.parametrize("proto", [0, 2])
     def test_the_list_marks_an_unauthorized_row(self, proto):
@@ -897,23 +864,7 @@ class TestReplayPickerRows:
 
 class TestPickerPick:
     def _opened_with_row(self, aid="a" * 20):
-        from dial_test_support import RosterEntry
-        display, fb, gt = make_display(targets=[])
-        display.enable()
-        row = RosterEntry(
-            appliance_id=aid, service_name="Kitchen", name="Kitchen", ip="10.0.0.9", port=8080,
-            playing=False, repeat_capable=True, auth="authorized",
-        )
-        now = time.monotonic()
-        seed_repeat(aid, _repeat_obj(state="hold", recording_seconds=12.0))
-        _refresh_picker(display, [row], now)
-        set_roster(display, [row])
-        display.core.set_field_for_tests("idle_affordance", True)
-        display.open_picker()
-        with display._lock:
-            display._repaint_current_locked()
-        assert display._screen == "picker"
-        return display, fb, gt
+        return picker_with_row(aid)
 
     def test_pick_sets_pending_focus_and_enqueues_seek(self):
         display, fb, gt = self._opened_with_row(aid="a" * 20)

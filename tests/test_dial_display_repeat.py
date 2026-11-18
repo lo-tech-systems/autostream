@@ -46,8 +46,9 @@ from dial_test_support import (
     sent,
     set_roster,
 )
-import test_dial_display_lists as t_lists
-from dial_display_test_support import _REPLAY_AID, _make_compact_display, _poll_focused_with_repeat
+from dial_display_test_support import (
+    _REPLAY_AID, _make_compact_display, _poll_focused_with_repeat, open_repeat_screen, picker_with_row,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -270,15 +271,7 @@ class TestToggleRepeatScreen:
 
 class TestRepeatScreenTouchEntries:
     def _opened(self, state="idle", armed=False, appliance_id="5" * 20):
-        t = _target(name="Kitchen", service_name="Kitchen", appliance_id=appliance_id)
-        display, fb, gt = make_display(targets=[t], repeat_capable=True)
-        display.enable()
-        _poll_focused_with_repeat(display, fb, appliance_id, _repeat_obj(state=state, armed=armed))
-        display.cycle_pages()
-        with display._lock:
-            display._repaint_current_locked()
-        assert display._screen == "repeat"
-        return display, appliance_id
+        return open_repeat_screen(state=state, armed=armed, appliance_id=appliance_id)
 
     def test_toggle_tap_arms_in_idle(self):
         display, aid = self._opened(state="idle", armed=False)
@@ -1250,7 +1243,7 @@ class TestReplayTimer:
         return display, fb
 
     def test_picker_pick_arms_the_timer(self):
-        display, fb, gt = t_lists.TestPickerPick()._opened_with_row(aid=self.AID)
+        display, fb, gt = picker_with_row(aid=self.AID)
         with patch("dial_core.DialCore._send"):
             display.picker_pick(0)
         assert display._repeat_line.timer_id == self.AID

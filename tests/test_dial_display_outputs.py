@@ -61,9 +61,7 @@ from dial_test_support import (
     tap_output,
     update_availability,
 )
-import test_dial_display_repeat as t_repeat
-import test_dial_display as t_display
-import test_dial_display_lists as t_lists
+from dial_display_test_support import idle_display, open_repeat_screen, picker_with_row, selector_display
 from dial_display_test_support import _HINT_TIERS, _view
 
 
@@ -923,7 +921,7 @@ class TestEqHeldByTheCore:
 
 class TestTransportRecordedByTheTaps:
     def _opened(self, state="idle", armed=False):
-        return t_repeat.TestRepeatScreenTouchEntries()._opened(state=state, armed=armed)
+        return open_repeat_screen(state=state, armed=armed)
 
     def test_arm_is_recorded_pending(self):
         display, aid = self._opened(state="idle")
@@ -964,7 +962,7 @@ class TestTapsCallTheCoreActions:
         return patch.object(display._core, name, return_value=result or ActionResult(True))
 
     def test_selector_pick_sets_the_focus_to_the_row_id(self):
-        display = t_lists.TestSelectorUnauthorizedRows()._display(authorized_count=2)
+        display = selector_display(authorized_count=2)
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -975,7 +973,7 @@ class TestTapsCallTheCoreActions:
 
     def test_selector_pick_shows_the_hint_when_the_core_says_unauthorized(self):
         from dial_core_state import ActionResult
-        display = t_lists.TestSelectorUnauthorizedRows()._display(authorized_count=2)
+        display = selector_display(authorized_count=2)
         display.open_selector()
         with display._lock:
             display._repaint_current_locked()
@@ -984,7 +982,7 @@ class TestTapsCallTheCoreActions:
         assert display._screen_request == "info_value"
 
     def test_picker_pick_starts_the_row_replay_and_arms_the_timer(self):
-        display, fb, gt = t_lists.TestPickerPick()._opened_with_row(aid="a" * 20)
+        display, fb, gt = picker_with_row(aid="a" * 20)
         with self._core_action(display, "start_replay") as action:
             display.picker_pick(0)
         action.assert_called_once_with("a" * 20)
@@ -992,41 +990,41 @@ class TestTapsCallTheCoreActions:
 
     def test_picker_pick_drops_the_timer_when_the_core_refuses(self):
         from dial_core_state import ActionResult
-        display, fb, gt = t_lists.TestPickerPick()._opened_with_row(aid="a" * 20)
+        display, fb, gt = picker_with_row(aid="a" * 20)
         with self._core_action(display, "start_replay", ActionResult(False, "wrong_state")):
             display.picker_pick(0)
         assert display._repeat_line.timer_id is None
 
     def test_picker_pick_with_a_stale_index_calls_nothing(self):
-        display, fb, gt = t_lists.TestPickerPick()._opened_with_row()
+        display, fb, gt = picker_with_row()
         with self._core_action(display, "start_replay") as action:
             display.picker_pick(5)
         action.assert_not_called()
 
     def test_repeat_toggle_tap_arms_and_disarms_by_the_record(self):
-        display, aid = t_repeat.TestRepeatScreenTouchEntries()._opened(state="idle", armed=False)
+        display, aid = open_repeat_screen(state="idle", armed=False)
         with self._core_action(display, "set_repeat_armed") as action:
             display.repeat_toggle_tap()
         action.assert_called_once_with(aid, True)
-        display, aid = t_repeat.TestRepeatScreenTouchEntries()._opened(state="recording", armed=True)
+        display, aid = open_repeat_screen(state="recording", armed=True)
         with self._core_action(display, "set_repeat_armed") as action:
             display.repeat_toggle_tap()
         action.assert_called_once_with(aid, False)
 
     def test_repeat_toggle_tap_while_replaying_is_an_artwork_tap(self):
-        display, aid = t_repeat.TestRepeatScreenTouchEntries()._opened(state="replaying")
+        display, aid = open_repeat_screen(state="replaying")
         with self._core_action(display, "set_repeat_armed") as action:
             display.repeat_toggle_tap()
         action.assert_not_called()
 
     def test_repeat_start_tap_restarts_the_open_appliance(self):
-        display, aid = t_repeat.TestRepeatScreenTouchEntries()._opened(state="hold")
+        display, aid = open_repeat_screen(state="hold")
         with self._core_action(display, "restart_replay") as action:
             display.repeat_start_tap()
         action.assert_called_once_with(aid)
 
     def test_repeat_stop_tap_stops_the_open_appliance(self):
-        display, aid = t_repeat.TestRepeatScreenTouchEntries()._opened(state="replaying")
+        display, aid = open_repeat_screen(state="replaying")
         with self._core_action(display, "stop_replay") as action:
             display.repeat_stop_tap()
         action.assert_called_once_with(aid)
@@ -1049,7 +1047,7 @@ class TestTapsCallTheCoreActions:
         action.assert_called_once_with(aid, "treble", -1)
 
     def test_the_card_restart_button_calls_the_reboot(self):
-        display = t_display.TestNoWifiStateMachine()._idle_display()[0]
+        display = idle_display()[0]
         for _ in range(3):
             on_network_view(display, _view(LINK_DOWN))
         open_warnings_page(display)

@@ -61,7 +61,7 @@ from dial_test_support import (
     seed_repeat,
     set_focus_pending,
 )
-from dial_display_test_support import _REPLAY_AID, _fold, _poll_with_artwork, _view
+from dial_display_test_support import _REPLAY_AID, _fold, _poll_with_artwork, _view, idle_display
 
 # ---------------------------------------------------------------------------
 # A change of the now-playing line asks for a repaint.
@@ -1857,15 +1857,7 @@ class TestIdleAffordanceRepaintSignal:
 
 class TestNoWifiStateMachine:
     def _idle_display(self, connected=True):
-        display, fb, gt = make_display(targets=[])
-        display.enable()
-        display.fold_for_tests()          # nothing playing: idle screen, _now_playing None
-        _fold(display)
-        if connected:
-            # The common case for the incident tests below: a link that was
-            # up since boot and is now lost.
-            on_network_view(display, _view(LINK_CONNECTED, bars=3))
-        return display, fb
+        return idle_display(connected)
 
     def test_unknown_before_first_poll_draws_steady_grey(self):
         display, fb = self._idle_display(connected=False)
