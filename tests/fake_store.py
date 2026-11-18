@@ -19,6 +19,7 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_state as state
+from autostream_playback_stats import PlaybackSnapshot
 from autostream_state import FrozenDict
 
 _LEVEL_DEFAULTS = {
@@ -85,7 +86,14 @@ class FakeStore:
         return self._put("monitor", state.MonitorRuntimeInfo(**fields))
 
     def playback(self, snapshot):
-        return self._put("playback", snapshot)
+        if isinstance(snapshot, PlaybackSnapshot):
+            return self._put("playback", snapshot)
+        # A stand-in object: installed as given, with no digest to compare.
+        st = state.store()
+        with st._lock:
+            st._snapshot = dataclasses.replace(st._snapshot, playback=snapshot)
+            st._digests["playback"] = object()
+            return st._snapshot
 
     def health(self, **fields):
         return self._put("health", state.HealthPart(**fields))
@@ -123,3 +131,24 @@ def fake_levels(levels, banner: str = ""):
         entries.append(dataclasses.replace(entry, level=dict(lv)))
     fake.inputs(entries, banner=banner)
     return contextlib.nullcontext()
+
+
+def fake_playback(snapshot):
+    """Put a playback snapshot into the store and return a context manager
+    that does nothing, so it can stand in a ``with`` statement where a test
+    used to patch a playback getter. A stand-in object (a mock with only the
+    attributes a page reads) is installed as given."""
+    FakeStore().playback(snapshot)
+    return contextlib.nullcontext()
+
+
+def fake_playback_mock():
+    """Install a MagicMock as the playback snapshot. As a context manager it
+    yields an object whose ``return_value`` is that mock, so a test that
+    configured ``patch(...) as gp`` through ``gp.return_value`` keeps its
+    body."""
+    from unittest.mock import MagicMock
+    from types import SimpleNamespace
+    mock = MagicMock()
+    FakeStore().playback(mock)
+    return contextlib.nullcontext(SimpleNamespace(return_value=mock))

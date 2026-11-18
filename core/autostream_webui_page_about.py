@@ -32,7 +32,6 @@ from autostream_bluetooth_client import (
     bluetooth_installed,
     bluetooth_services_enabled,
 )
-from autostream_core import get_playback_snapshot
 from autostream_player_service import get_owntone_runtime_info
 from autostream_rpi import get_cpu_busy_percent, get_cpu_temperature_c
 from autostream_state import store
@@ -563,7 +562,7 @@ def _collect_system_info() -> dict:
     # 5. Playback totals across inputs 1 and 2
     playback_hours = 0.0
     try:
-        playback_snapshot = get_playback_snapshot()
+        playback_snapshot = store().snapshot().playback
         total_seconds = sum(
             int(snap.total_playback_seconds)
             for idx, snap in playback_snapshot.inputs.items()

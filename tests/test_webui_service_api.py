@@ -18,6 +18,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
+from fake_store import fake_playback
 from autostream_webui_api import send_service_config_json, send_service_reset_json
 
 
@@ -82,7 +83,7 @@ def _call_service_config(body: dict | str, tmp_path: Path) -> tuple[int, dict]:
 
     with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
          patch("autostream_webui_api.update_playback_input_config"), \
-         patch("autostream_webui_api.get_playback_snapshot", return_value=MagicMock(inputs={})):
+         fake_playback(MagicMock(inputs={})):
         send_service_config_json(MagicMock(), state, body_str)
 
     return sent[0] if sent else (None, {})
@@ -110,8 +111,7 @@ def _call_service_reset(body: dict | str, tmp_path: Path,
          patch("autostream_webui_api.reset_input_stylus",   return_value=reset_result), \
          patch("autostream_webui_api.reset_input_belt",     return_value=reset_result), \
          patch("autostream_webui_api.reset_input_bearing",  return_value=reset_result), \
-         patch("autostream_webui_api.get_playback_snapshot",
-               return_value=MagicMock(inputs={})):
+         fake_playback(MagicMock(inputs={})):
         send_service_reset_json(MagicMock(), state, body_str)
 
     return sent[0] if sent else (None, {})
@@ -191,8 +191,7 @@ class TestServiceConfigSuccess:
     def test_tracker_updated_on_audio1_change(self, tmp_path):
         with patch("autostream_webui_api.send_json"), \
              patch("autostream_webui_api.update_playback_input_config") as mock_update, \
-             patch("autostream_webui_api.get_playback_snapshot",
-                   return_value=MagicMock(inputs={})):
+             fake_playback(MagicMock(inputs={})):
             send_service_config_json(
                 MagicMock(), _make_state(tmp_path),
                 json.dumps({"field": "service_stylus_life_hours_input1", "value": "300"}),
@@ -212,8 +211,7 @@ class TestServiceConfigSuccess:
 
         with patch("autostream_webui_api.send_json", side_effect=fake_send_json), \
              patch("autostream_webui_api.update_playback_input_config"), \
-             patch("autostream_webui_api.get_playback_snapshot",
-                   return_value=MagicMock(inputs={})), \
+             fake_playback(MagicMock(inputs={})), \
              patch("autostream_webui_api.save_config", side_effect=OSError("disk full")):
             send_service_config_json(
                 MagicMock(), state,

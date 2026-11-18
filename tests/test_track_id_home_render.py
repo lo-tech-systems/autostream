@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fake_store import fake_levels
+from fake_store import fake_levels, fake_playback
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -100,7 +100,7 @@ def _render_airplay_page(ti_snapshot=None, playback_snapshot=None, levels=None) 
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
         fake_levels(levels or []),
-        patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
+        fake_playback(playback),
         patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
         patch("autostream_core.get_active_track_identification_snapshot",

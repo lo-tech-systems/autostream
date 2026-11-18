@@ -29,7 +29,7 @@ try:
 except ImportError:
     _HAS_WEBUI = False
 
-from fake_store import fake_levels
+from fake_store import fake_levels, fake_playback
 import autostream_federation as fed
 
 _skip = pytest.mark.skipif(not _HAS_WEBUI, reason="autostream_webui import chain unavailable")
@@ -358,7 +358,7 @@ class TestFederationHome:
         playback.belt_banner_text = ""
         playback.bearing_banner_text = ""
         with fake_levels([]), \
-             patch("autostream_appliance_models.get_playback_snapshot", return_value=playback), \
+             fake_playback(playback), \
              patch("autostream_appliance_models.get_setting",
                    return_value=MagicMock(ok=True, value="100")), \
              patch("autostream_appliance_models.list_outputs",

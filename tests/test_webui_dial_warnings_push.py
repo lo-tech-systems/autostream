@@ -30,6 +30,7 @@ _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
     sys.path.insert(0, _core)
 
+from fake_store import fake_playback
 import autostream_dial_warnings as dw
 import autostream_webui_dials as wd
 from autostream_dials import DialSighting
@@ -347,8 +348,7 @@ class TestPokeSites:
                   return_value=SimpleNamespace(applied=True, persisted=True,
                                                last_service_at="stamp")),
             patch("autostream_webui_api._config_snapshot", side_effect=OSError("no config")),
-            patch("autostream_webui_api.get_playback_snapshot",
-                  return_value=SimpleNamespace(inputs={})),
+            fake_playback(SimpleNamespace(inputs={})),
             patch("autostream_webui_api.send_json"),
             patch("autostream_webui_api.poke_dial_warnings") as poke,
         ):
@@ -389,8 +389,7 @@ class TestPokeSites:
             patch("autostream_webui_api.save_config"),
             patch("autostream_webui_api.update_playback_input_config"),
             patch("autostream_webui_api.classify_loopback_hw", return_value="x"),
-            patch("autostream_webui_api.get_playback_snapshot",
-                  return_value=SimpleNamespace(inputs={})),
+            fake_playback(SimpleNamespace(inputs={})),
             patch("autostream_webui_api.send_json"),
             patch("autostream_webui_api.poke_dial_warnings") as poke,
         ):

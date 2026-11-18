@@ -30,7 +30,7 @@ from autostream_config import (
     VALID_BEARING_LIFE_HOURS,
     VALID_MAINTENANCE_LIFE_YEARS,
 )
-from autostream_core import get_playback_snapshot
+from autostream_state import store
 from autostream_playback_stats import InputPlaybackSnapshot
 
 from autostream_webui_assets import SERVICE_CSS, SERVICE_JS
@@ -558,7 +558,7 @@ def send_service_page(
     except Exception:
         parsed = None
 
-    playback_snapshot = get_playback_snapshot()
+    playback_snapshot = store().snapshot().playback
     service_warn = playback_snapshot.has_warning
     csrf_token = getattr(handler, "_csrf_token", None) or ""
 

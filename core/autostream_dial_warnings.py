@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
 from autostream_rpi import get_appliance_id
+from autostream_state import store
 
 # Limits a dial applies to what it receives; the text here is built to fit.
 WARNINGS_MAX = 8
@@ -125,9 +126,7 @@ def _item_state(snap, item: str) -> Optional[str]:
 
 
 def _maintenance_warnings() -> list[DialWarning]:
-    from autostream_core import get_playback_snapshot
-
-    snapshot = get_playback_snapshot()
+    snapshot = store().snapshot().playback
     overdue: list[DialWarning] = []
     due: list[DialWarning] = []
     for index, snap in sorted(snapshot.inputs.items()):

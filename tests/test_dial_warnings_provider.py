@@ -30,6 +30,7 @@ for _sub in ("core", "dial"):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from fake_store import fake_playback
 import autostream_dial_warnings as dw
 from autostream_playback_stats import make_fallback_input_snapshot
 import dial_core_state
@@ -48,7 +49,7 @@ def _playback(*snaps):
 
 
 def _maintenance(*snaps):
-    with patch("autostream_core.get_playback_snapshot", return_value=_playback(*snaps)):
+    with fake_playback(_playback(*snaps)):
         return dw._maintenance_warnings()
 
 
@@ -112,8 +113,7 @@ class TestOrderingAndCap:
         assert [w.id for w in out] == ["belt_in2", "stylus_in1"]
 
     def test_psu_follows_maintenance(self):
-        with patch("autostream_core.get_playback_snapshot",
-                   return_value=_playback(_snap(1, stylus_warning=True, stylus_remaining_hours=1.0))), \
+        with fake_playback(_playback(_snap(1, stylus_warning=True, stylus_remaining_hours=1.0))), \
              patch("autostream_system_stats._read_get_throttled_value", return_value=0x1):
             out = dw.current_warnings()
         assert [w.id for w in out] == ["stylus_in1", "psu"]
@@ -247,7 +247,7 @@ class TestDialValidatorCrossCheck:
     def test_every_provider_at_worst_case_text(self):
         everything = dict(stylus_overdue=True, belt_overdue=True, bearing_overdue=True)
         worst_label = "W" * 200
-        with patch("autostream_core.get_playback_snapshot", return_value=_playback(
+        with fake_playback(_playback(
                 _snap(1, label=worst_label, **everything),
                 _snap(2, label=worst_label, **everything))), \
              patch("autostream_system_stats._read_get_throttled_value", return_value=0x10001):
@@ -257,7 +257,7 @@ class TestDialValidatorCrossCheck:
         assert max(len(w.title) for w in produced) == dw.TITLE_MAX
 
     def test_due_soon_variants_at_worst_case_text(self):
-        with patch("autostream_core.get_playback_snapshot", return_value=_playback(
+        with fake_playback(_playback(
                 _snap(1, label="W" * 200, stylus_warning=True, stylus_remaining_hours=99999.9,
                       belt_warning=True, bearing_warning=True),
                 _snap(2, label="é" * 200, stylus_warning=True, stylus_remaining_hours=0.0))), \

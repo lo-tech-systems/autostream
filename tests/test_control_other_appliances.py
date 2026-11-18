@@ -24,7 +24,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import fake_levels
+from fake_store import fake_levels, fake_playback
 import autostream_config as c
 from autostream_webui_common import build_appliance_selector_html
 
@@ -737,7 +737,7 @@ class TestLocalHomeInUseCardHTML:
              patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]), \
              patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"), \
              fake_levels([]), \
-             patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback), \
+             fake_playback(playback), \
              patch("autostream_webui_page_airplay.list_outputs", return_value=list_result), \
              patch("autostream_webui_page_airplay.build_output_list",
                    return_value=[self._IN_USE_OUTPUT]), \

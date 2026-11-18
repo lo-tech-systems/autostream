@@ -24,7 +24,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-from fake_store import FakeStore, fake_levels
+from fake_store import FakeStore, fake_levels, fake_playback, fake_playback_mock
 import autostream_appliance_models as models
 from autostream_core import SAMPLE_RATE_MISMATCH_BANNER_TEXT
 from autostream_webui_api import send_status_json
@@ -64,7 +64,7 @@ def _status_body(state=None) -> dict:
     h = MagicMock()
     h.send_response.side_effect = lambda code: sent.__setitem__("code", code)
     h.wfile.write.side_effect = lambda data: sent.__setitem__("body", json.loads(data))
-    with patch("autostream_webui_api.get_playback_snapshot") as gp:
+    with fake_playback_mock() as gp:
         gp.return_value.to_public_dict.return_value = {}
         gp.return_value.stylus_banner_text = ""
         gp.return_value.belt_banner_text = ""
@@ -126,7 +126,7 @@ def _home_state(tmp_path) -> dict:
                   return_value=MagicMock(ok=True, value="2250")),
             patch("autostream_appliance_models.list_outputs",
                   return_value=MagicMock(ok=True, outputs=[])),
-            patch("autostream_appliance_models.get_playback_snapshot", return_value=playback),
+            fake_playback(playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="host"),
             patch("autostream_appliance_models.get_app_version", return_value="2.0.0"),
@@ -187,7 +187,7 @@ def _render_home(levels=None, show_input_detail=False) -> str:
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
             fake_levels(levels) if levels is not None else contextlib.nullcontext(),
-            patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=snap),
+            fake_playback(snap),
             patch("autostream_webui_page_airplay._dial_update_banner_text", return_value=""),
             patch("autostream_webui_page_airplay.list_outputs",
                   return_value=MagicMock(ok=False, outputs=[])),

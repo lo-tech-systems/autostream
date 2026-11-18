@@ -273,11 +273,8 @@ def test_refuses_when_input_actively_streaming(monkeypatch):
     class FakeSnapshot:
         inputs = {1: FakeInput()}
 
-    def fake_get_playback_snapshot():
-        return FakeSnapshot()
-
-    import autostream_core
-    monkeypatch.setattr(autostream_core, "get_playback_snapshot", fake_get_playback_snapshot)
+    from fake_store import fake_playback
+    fake_playback(FakeSnapshot())
 
     ok, err = _start(run, outputs)
     assert ok is False

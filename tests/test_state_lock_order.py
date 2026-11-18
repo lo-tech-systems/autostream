@@ -158,3 +158,23 @@ def test_the_inputs_publish_lock_is_released_before_subscribers_run(tracked_sing
     assert seen and all(held == frozenset() for held in seen)
     assert lockcheck.ACQUIRED_UNDER_STORE == []
     assert tracked_singleton.lock_violations == []
+
+
+def test_the_playback_publish_lock_is_released_before_subscribers_run(tracked_singleton, monkeypatch):
+    import autostream_core as core
+
+    monkeypatch.setattr(core, "_playback_publish_lock", lockcheck.TrackedLock("playback"))
+    seen = []
+    tracked_singleton.subscribe(lambda change: seen.append(lockcheck.held()))
+    monkeypatch.setattr(core, "_read_playback_snapshot", lambda: _playback_with_flag())
+    core._publish_playback()
+    assert seen == [frozenset()]
+    assert lockcheck.ACQUIRED_UNDER_STORE == []
+    assert tracked_singleton.lock_violations == []
+
+
+def _playback_with_flag():
+    import dataclasses
+
+    snap = state.empty_playback_snapshot()
+    return dataclasses.replace(snap, stylus_banner_text="Stylus due")

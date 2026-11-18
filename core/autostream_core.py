@@ -84,13 +84,10 @@ from autostream_rpi import is_high_performance_pi
 from autostream_playback_stats import (
     DEFAULT_FLUSH_INTERVAL_SECONDS,
     DEFAULT_STYLUS_LIFE_HOURS,
-    InputPlaybackSnapshot,
     MaintenanceResetResult,
     PlaybackInputConfig,
     PlaybackSnapshot,
     PlaybackTracker,
-    input_label,
-    make_fallback_input_snapshot,
 )
 from autostream_sysutils import (
     audit_static_system_facts,
@@ -393,21 +390,6 @@ def _set_owntone_selfheal_state(**fields) -> None:
     _health_writer.update(lambda cur: replace(cur, **fields)).notify()
 
 
-def _empty_playback_snapshot() -> PlaybackSnapshot:
-    return PlaybackSnapshot(
-        inputs={},
-        stylus_warning_indices=(),
-        stylus_overdue_indices=(),
-        stylus_banner_text=None,
-        belt_warning_indices=(),
-        belt_overdue_indices=(),
-        belt_banner_text=None,
-        bearing_warning_indices=(),
-        bearing_overdue_indices=(),
-        bearing_banner_text=None,
-    )
-
-
 def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
     return {
         1: PlaybackInputConfig.normalized(
@@ -444,27 +426,34 @@ def _ensure_playback_tracker(cfg) -> Optional[PlaybackTracker]:
         logging.warning("Playback tracker unavailable: %s", e)
         runtime._playback_tracker = None
 
+    _publish_playback()
     return runtime._playback_tracker
 
 
-def get_playback_snapshot() -> PlaybackSnapshot:
+_playback_writer = autostream_state.store().claim("playback", "autostream_core")
+# Held across read-and-publish, so of two concurrent publishers the one that
+# publishes last also read last.
+_playback_publish_lock = threading.Lock()
+
+
+def _read_playback_snapshot() -> PlaybackSnapshot:
     tracker = runtime._playback_tracker
     if tracker is None:
-        return _empty_playback_snapshot()
+        return autostream_state.empty_playback_snapshot()
     try:
         return tracker.snapshot()
     except Exception as e:
         logging.warning("Could not read playback snapshot: %s", e)
-        return _empty_playback_snapshot()
+        return autostream_state.empty_playback_snapshot()
 
 
-def get_input_playback_snapshot(input_index: int) -> InputPlaybackSnapshot:
-    idx = int(input_index)
-    snap = get_playback_snapshot().inputs.get(idx)
-    if snap is not None:
-        return snap
-
-    return make_fallback_input_snapshot(idx, input_label(idx))
+def _publish_playback() -> None:
+    """Publish the tracker's current hours and maintenance flags as the
+    playback part. Readers see the value as of the last publish: the tracker
+    accumulates seconds between poll cycles, so it is at most one cycle old."""
+    with _playback_publish_lock:
+        pending = _playback_writer.publish(_read_playback_snapshot())
+    pending.notify()
 
 
 def _reset_input(input_index: int, method_name: str, item_name: str) -> MaintenanceResetResult:
@@ -472,10 +461,12 @@ def _reset_input(input_index: int, method_name: str, item_name: str) -> Maintena
     if tracker is None:
         return MaintenanceResetResult(applied=False, persisted=False)
     try:
-        return getattr(tracker, method_name)(int(input_index))
+        result = getattr(tracker, method_name)(int(input_index))
     except Exception as e:
         logging.warning("Could not reset %s for input %s: %s", item_name, input_index, e)
         return MaintenanceResetResult(applied=False, persisted=False)
+    _publish_playback()
+    return result
 
 
 def reset_input_stylus(input_index: int) -> MaintenanceResetResult:
@@ -519,6 +510,7 @@ def update_playback_input_config(
             bearing_life_years=bearing_life_years,
             input_type=input_type,
         )
+        _publish_playback()
         return True
     except Exception as e:
         logging.warning(
@@ -4756,6 +4748,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 # includes the silence timeout used to detect playback end.
                 for m in monitors:
                     m._sync_playback_tracker_state(tick_snapshot.repeat_status)
+                _publish_playback()
 
                 # Per-input duties only (track-ID scheduling + logging); see
                 # _on_capture_started/_on_capture_stopped docstrings. Fire
@@ -4925,6 +4918,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 m.stop()
             if tracker is not None:
                 tracker.save()
+            _publish_playback()
             with runtime._monitors_lock:
                 runtime.all_monitors.clear()
             _publish_inputs()

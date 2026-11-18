@@ -84,7 +84,7 @@ def get_repeat_status():
     return autostream_state.store().snapshot().repeat.block
 
 
-from fake_store import fake_repeat
+from fake_store import fake_playback_mock, fake_repeat
 
 from autostream_monitor_client import MonitorClient
 import autostream_runtime as runtime
@@ -568,7 +568,7 @@ class TestP4StatusPassthrough:
         try:
             responses: list = []
             h = _handler(responses)
-            with patch("autostream_webui_api.get_playback_snapshot") as gp:
+            with fake_playback_mock() as gp:
                 gp.return_value.to_public_dict.return_value = {}
                 gp.return_value.stylus_banner_text = ""
                 gp.return_value.belt_banner_text = ""
@@ -583,7 +583,7 @@ class TestP4StatusPassthrough:
         _set_repeat_status(None)
         responses: list = []
         h = _handler(responses)
-        with patch("autostream_webui_api.get_playback_snapshot") as gp:
+        with fake_playback_mock() as gp:
             gp.return_value.to_public_dict.return_value = {}
             gp.return_value.stylus_banner_text = ""
             gp.return_value.belt_banner_text = ""
@@ -610,7 +610,7 @@ class TestP4StatusPassthrough:
         try:
             responses: list = []
             h = _handler(responses)
-            with patch("autostream_webui_api.get_playback_snapshot") as gp:
+            with fake_playback_mock() as gp:
                 gp.return_value.to_public_dict.return_value = {}
                 gp.return_value.stylus_banner_text = ""
                 gp.return_value.belt_banner_text = ""
@@ -633,7 +633,7 @@ class TestP4StatusPassthrough:
         _set_session_state(False, None)
         responses: list = []
         h = _handler(responses)
-        with patch("autostream_webui_api.get_playback_snapshot") as gp:
+        with fake_playback_mock() as gp:
             gp.return_value.to_public_dict.return_value = {}
             gp.return_value.stylus_banner_text = ""
             gp.return_value.belt_banner_text = ""

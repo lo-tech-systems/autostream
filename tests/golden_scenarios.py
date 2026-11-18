@@ -451,6 +451,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
     fake.health(**scenario.selfheal)
     fake.session(scenario.session.get("active"), scenario.session.get("source"))
     fake.repeat(scenario.repeat)
+    fake.playback(scenario.playback)
     sample_rate_text = "Sample rate: 44.1 kHz"
     rate_note = state.RATE_MATCHING_NOTE_DEFAULT
 
@@ -473,7 +474,6 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
             monkeypatch.setattr(module, name, value)
 
     shared = dict(
-        get_playback_snapshot=lambda: scenario.playback,
         list_outputs=list_outputs,
         get_appliance_id=lambda: APPLIANCE_ID,
         get_app_version=lambda: FIXED_APP_VERSION,
@@ -500,8 +500,8 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              },
              parse_config=functools.partial(_parse_without_hardware_probe))
     setattrs(airplay, **{k: v for k, v in shared.items()
-                         if k in ("get_playback_snapshot", "list_outputs",
-                                  "get_appliance_id", "_dial_update_banner_text")},
+                         if k in ("list_outputs", "get_appliance_id",
+                                  "_dial_update_banner_text")},
              get_app_version=lambda: FIXED_APP_VERSION,
              _config_snapshot=lambda state: cfg,
              get_setting=get_setting,
@@ -509,8 +509,7 @@ def apply(scenario: Scenario, monkeypatch) -> Recorder:
              get_system_hostname=lambda: "golden.local",
              build_top_banner_html=lambda **kwargs: ("", ""))
     setattrs(core,
-             get_active_track_identification_snapshot=lambda: scenario.track,
-             get_playback_snapshot=lambda: scenario.playback)
+             get_active_track_identification_snapshot=lambda: scenario.track)
     setattrs(autostream_repeat, apply_repeat_ack=lambda ack: ack)
     setattrs(monitor_client, _connected_monitor=connected_monitor)
     setattrs(start_buffer_cache, current_ms=lambda base_url=None: START_BUFFER_MS)

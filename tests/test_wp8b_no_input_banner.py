@@ -22,7 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from fake_store import fake_levels
+from fake_store import fake_levels, fake_playback
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -136,7 +136,7 @@ class TestMainPageBanner:
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
             fake_levels([]),
-            patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=_make_playback_snapshot()),
+            fake_playback(_make_playback_snapshot()),
             patch("autostream_webui_page_airplay.list_outputs",
                   return_value=ListOutputsResult(ok=False, error="unreachable")),
             patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),

@@ -27,7 +27,6 @@ from autostream_core import (
     clear_user_silence_latch,
     get_active_track_identification_snapshot,
     get_live_output_eq_status,
-    get_playback_snapshot,
     note_user_output_action,
     set_live_output_auto_trim,
     set_live_output_eq,
@@ -279,7 +278,7 @@ def build_home_state(
 
     input_levels = snap.inputs.levels()
 
-    playback = get_playback_snapshot()
+    playback = snap.playback
 
     owntone_base_url = parsed.owntone.base_url
     vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT

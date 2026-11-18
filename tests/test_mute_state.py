@@ -49,7 +49,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_mute_state as mute_state
-from fake_store import fake_levels, fake_repeat, fake_session
+from fake_store import fake_levels, fake_playback, fake_playback_mock, fake_repeat, fake_session
 
 
 @pytest.fixture(autouse=True)
@@ -573,7 +573,7 @@ class TestBuildOutputListAndHomeStateMuteAware:
         with patch("autostream_appliance_models.locked_load_config", return_value={}), \
              patch("autostream_appliance_models.parse_config") as mock_parse, \
              fake_levels([]), \
-             patch("autostream_appliance_models.get_playback_snapshot") as mock_playback, \
+             fake_playback_mock() as mock_playback, \
              patch("autostream_appliance_models.list_outputs", return_value=_list_result([])), \
              patch("autostream_appliance_models.get_setting") as mock_setting, \
              patch("autostream_appliance_models.get_active_track_identification_snapshot") as mock_ti, \
@@ -737,7 +737,7 @@ def _render_airplay_page_html(show_input_detail: bool = True, playing: bool = Fa
         patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
         patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
         fake_levels(input_levels),
-        patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=playback),
+        fake_playback(playback),
         patch("autostream_webui_page_airplay.list_outputs", return_value=list_result),
         patch("autostream_webui_page_airplay.get_setting", return_value=buf_result),
         patch("autostream_core.get_active_track_identification_snapshot",

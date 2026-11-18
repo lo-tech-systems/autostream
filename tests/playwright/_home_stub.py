@@ -104,7 +104,7 @@ def render_home(
     snap.to_public_dict.return_value = {}
 
     sys.path.insert(0, str(REPO_ROOT / "tests"))
-    from fake_store import FakeStore  # noqa: PLC0415
+    from fake_store import FakeStore, fake_playback  # noqa: PLC0415
 
     fake = FakeStore()
     fake.inputs(
@@ -119,7 +119,7 @@ def render_home(
             patch("autostream_webui_page_airplay.get_appliance_id", return_value="0" * 20),
             patch("autostream_webui_page_airplay.get_all_appliances", return_value=[]),
             patch("autostream_webui_page_airplay.get_system_hostname", return_value="autostream"),
-            patch("autostream_webui_page_airplay.get_playback_snapshot", return_value=snap),
+            fake_playback(snap),
             patch("autostream_webui_page_airplay._dial_update_banner_text",
                   return_value=banners.get("dial_update", "")),
             patch("autostream_webui_page_airplay.list_outputs",

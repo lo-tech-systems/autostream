@@ -20,6 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
+from fake_store import fake_playback_mock
 from autostream_settings import SettingsStore
 
 
@@ -210,7 +211,7 @@ class TestServiceConfigJsonViaStore:
         body = json.dumps({"field": "service_stylus_life_hours_input1", "value": "500"})
         with patch("autostream_webui_api.save_config") as m_save, \
              patch("autostream_webui_api.update_playback_input_config"), \
-             patch("autostream_webui_api.get_playback_snapshot") as m_snap:
+             fake_playback_mock() as m_snap:
             m_snap.return_value = MagicMock(inputs={})
             send_service_config_json(handler, state, body)
         m_save.assert_not_called()
@@ -228,7 +229,7 @@ class TestServiceConfigJsonViaStore:
              patch("autostream_webui_api.load_config") as m_load, \
              patch("autostream_webui_api.parse_config") as m_parse, \
              patch("autostream_webui_api.update_playback_input_config"), \
-             patch("autostream_webui_api.get_playback_snapshot") as m_snap:
+             fake_playback_mock() as m_snap:
             m_snap.return_value = MagicMock(inputs={})
             m_load.return_value = {
                 "audio1": {"is_turntable": True, "stylus_life_hours": 1000,

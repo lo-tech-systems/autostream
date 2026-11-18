@@ -18,7 +18,6 @@ from autostream_appliance_models import _dial_update_banner_text, build_output_l
 from autostream_appliances import get_all_appliances
 from autostream_core import (
     format_khz,
-    get_playback_snapshot,
 )
 from autostream_player_service import get_setting, list_outputs
 from autostream_state import store
@@ -269,7 +268,7 @@ def send_airplay_page(
     snap = store().snapshot()
     input_levels = snap.inputs.levels()
 
-    playback_snapshot = get_playback_snapshot()
+    playback_snapshot = snap.playback
     stylus_banner_text = playback_snapshot.stylus_banner_text or ""
     belt_banner_text = playback_snapshot.belt_banner_text or ""
     bearing_banner_text = playback_snapshot.bearing_banner_text or ""

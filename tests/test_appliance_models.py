@@ -413,7 +413,7 @@ class TestBuildHomeStateLocal:
             patch("autostream_appliance_models.get_setting", return_value=buf_result),
             patch("autostream_appliance_models.list_outputs", return_value=out_result),
             fake_levels([]),
-            patch("autostream_appliance_models.get_playback_snapshot", return_value=playback),
+            fake_playback(playback),
             patch("autostream_appliance_models.get_appliance_id", return_value="aabbccdd1122"),
             patch("autostream_appliance_models.get_system_hostname", return_value="test-host"),
             patch("autostream_appliance_models.get_app_version", return_value="2.0.0"),
@@ -586,7 +586,7 @@ class TestBuildHomeStateFederation:
         with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
              patch("autostream_appliance_models.list_outputs", return_value=out_result), \
              fake_levels([]), \
-             patch("autostream_appliance_models.get_playback_snapshot", return_value=playback), \
+             fake_playback(playback), \
              patch("autostream_appliance_models.get_appliance_id", return_value=""), \
              patch("autostream_appliance_models.get_system_hostname", return_value=""), \
              patch("autostream_appliance_models.get_app_version", return_value=""):
@@ -605,7 +605,7 @@ class TestBuildHomeStateFederation:
         deadline = time.monotonic() - 1.0  # already expired
 
         with fake_levels([]), \
-             patch("autostream_appliance_models.get_playback_snapshot", return_value=playback), \
+             fake_playback(playback), \
              patch("autostream_appliance_models.get_appliance_id", return_value=""), \
              patch("autostream_appliance_models.get_system_hostname", return_value=""), \
              patch("autostream_appliance_models.get_app_version", return_value=""):
@@ -664,7 +664,7 @@ class TestBuildHomeStateAnnotation:
             with patch("autostream_appliance_models.get_setting", return_value=buf_result), \
                  patch("autostream_appliance_models.list_outputs", return_value=out_result), \
                  fake_levels([]), \
-                 patch("autostream_appliance_models.get_playback_snapshot", return_value=playback), \
+                 fake_playback(playback), \
                  patch("autostream_appliance_models.get_appliance_id", return_value=""), \
                  patch("autostream_appliance_models.get_system_hostname", return_value="host"), \
                  patch("autostream_appliance_models.get_app_version", return_value="1.0"), \
@@ -765,7 +765,7 @@ class TestBuildHomeStateAnnotation:
 import logging as _logging
 
 import autostream_pin_pairing as _pairing
-from fake_store import fake_levels, fake_repeat, fake_session
+from fake_store import fake_levels, fake_playback, fake_repeat, fake_session
 
 
 def _result(ok: bool, error_code: str = "", message: str = ""):

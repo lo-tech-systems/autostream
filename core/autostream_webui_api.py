@@ -110,7 +110,6 @@ from autostream_dial_warnings import current_warnings, poke as poke_dial_warning
 from autostream_core import (
     apply_track_id_config_live_from_parsed,
     get_live_output_eq_status,
-    get_playback_snapshot,
     reset_input_belt,
     reset_input_bearing,
     reset_input_stylus,
@@ -416,7 +415,7 @@ def send_status_json(handler, state: Optional[WebUIState] = None) -> None:
         ti_dict = home.get("track_identification", {})
     else:
         input_levels = snap.inputs.levels()
-        playback = get_playback_snapshot()
+        playback = snap.playback
         playback_dict = playback.to_public_dict()
         warnings = {
             "stylus": playback.stylus_banner_text or "",
@@ -605,7 +604,7 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         _is_turntable = bool(getattr(_audio, "is_turntable", False))
         _life_hours   = normalised if _dimension == "hours" else int(getattr(_audio, f"{_item}_life_hours", 0) or 0)
         _life_years   = (normalised if _dimension == "years" else int(getattr(_audio, f"{_item}_life_years", 0) or 0)) if _item != "stylus" else 0
-        _playback = get_playback_snapshot()
+        _playback = store().snapshot().playback
         _snap = _playback.inputs.get(_input_idx)
         if _snap is None:
             _snap = _fallback_input_snapshot(_audio, _input_idx, enabled=True)
@@ -677,7 +676,7 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
 
     # Build display dict from the live snapshot (updated by the reset).
     try:
-        _playback = get_playback_snapshot()
+        _playback = store().snapshot().playback
         _snap = _playback.inputs.get(input_index)
         if _snap is None and _audio_cfg is not None:
             _snap = _fallback_input_snapshot(_audio_cfg, input_index, enabled=True)

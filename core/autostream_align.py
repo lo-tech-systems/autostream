@@ -30,6 +30,8 @@ from dataclasses import dataclass, field
 from typing import Callable, Optional
 from urllib.parse import quote, unquote
 
+from autostream_state import store
+
 _log = logging.getLogger(__name__)
 
 # ---- Protocol v1 fixed contract (see autostream_align_tone.py for the tone
@@ -379,8 +381,7 @@ class AlignRun:
         cheap hook for this today.
         """
         try:
-            from autostream_core import get_playback_snapshot
-            snap = get_playback_snapshot()
+            snap = store().snapshot().playback
             return any(getattr(i, "active", False) for i in snap.inputs.values())
         except Exception:
             _log.debug("AlignRun: playback activity check unavailable", exc_info=True)
