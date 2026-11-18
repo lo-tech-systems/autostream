@@ -430,10 +430,29 @@ class AudioInputConfig:
     dynamic_rate_matching: bool = True
 
 
+DEFAULT_OUTPUTS_MAX = 32
+
+
+@dataclass(frozen=True)
+class DefaultOutput:
+    """One speaker of the Auto-Start set."""
+
+    id: str  # the player's unit id; "" when not yet known
+    name: str  # display name when saved; the match fallback
+    volume: int  # 0..100
+
+    @property
+    def key(self) -> str:
+        """Stable within the set."""
+        return self.id or "name:" + self.name
+
+
 @dataclass(frozen=True)
 class OwntoneConfig:
     base_url: str
-    output_name: str
+    # The Auto-Start set, in order. volume_percent is the start level for a
+    # speaker outside it.
+    default_outputs: tuple[DefaultOutput, ...]
     volume_percent: int
     output_offsets_ms: dict[str, int]
     output_airplay_modes: dict[str, str]
@@ -441,6 +460,11 @@ class OwntoneConfig:
     # Output id -> the user's choice of playing an Apple TV's HomePods with
     # (True) or without (False) the Apple TV. Absent: with.
     include_tv: Mapping[str, bool] = field(default_factory=dict)
+
+    @property
+    def output_name(self) -> str:
+        """The first member's name, "" when the set is empty."""
+        return self.default_outputs[0].name if self.default_outputs else ""
 
 
 # What a Pause pressed on a speaker does.
@@ -887,10 +911,13 @@ def parse_config(
             if key and name:
                 known_outputs[key] = name
 
+    volume_percent = int(owntone_d.get("volume_percent", 20) or 20)
+    default_outputs = _parse_default_outputs(owntone_d, volume_percent, known_outputs)
+
     owntone = OwntoneConfig(
         base_url=str(owntone_d.get("base_url", "http://localhost:3689") or ""),
-        output_name=str(owntone_d.get("output_name", "") or ""),
-        volume_percent=int(owntone_d.get("volume_percent", 20) or 20),
+        default_outputs=default_outputs,
+        volume_percent=volume_percent,
         output_offsets_ms=offsets,
         output_airplay_modes=airplay_modes,
         known_outputs=known_outputs,
@@ -1032,6 +1059,60 @@ def is_valid_monitor_device_id(device: str) -> bool:
     return bool(_MONITOR_DEVICE_RE.fullmatch((device or "").strip()))
 
 
+def _parse_default_outputs(
+    owntone_d: Mapping[str, object],
+    volume_percent: int,
+    known_outputs: Mapping[str, str],
+) -> tuple[DefaultOutput, ...]:
+    """The Auto-Start set from owntone.default_outputs, else from the legacy
+    owntone.output_name (one member at volume_percent)."""
+    raw = owntone_d.get("default_outputs")
+    if isinstance(raw, list):
+        members: list[DefaultOutput] = []
+        seen: set[str] = set()
+        for entry in raw:
+            name = str(entry.get("name", "") or "").strip() if isinstance(entry, dict) else ""
+            if not name or len(name) > 256:
+                logging.warning("config: skipping a malformed owntone.default_outputs entry")
+                continue
+            uid = str(entry.get("id", "") or "").strip()
+            if len(uid) > 64:
+                uid = ""
+            try:
+                vol = max(0, min(100, int(entry["volume"])))
+            except (KeyError, TypeError, ValueError):
+                vol = volume_percent
+            member = DefaultOutput(id=uid, name=name, volume=vol)
+            if member.key in seen:
+                logging.debug("config: dropping a repeated default output %r", member.key)
+                continue
+            if len(members) >= DEFAULT_OUTPUTS_MAX:
+                logging.warning("config: owntone.default_outputs capped at %d", DEFAULT_OUTPUTS_MAX)
+                break
+            seen.add(member.key)
+            members.append(member)
+        return tuple(members)
+
+    legacy = str(owntone_d.get("output_name", "") or "")
+    if not legacy:
+        return ()
+    ids = [k for k, v in known_outputs.items() if v == legacy]
+    return (DefaultOutput(id=ids[0] if len(ids) == 1 else "", name=legacy, volume=volume_percent),)
+
+
+def has_default_output(owntone_raw: object) -> bool:
+    """True for a non-empty default_outputs list with a named entry, or the
+    legacy non-empty output_name."""
+    if not isinstance(owntone_raw, dict):
+        return False
+    listed = owntone_raw.get("default_outputs")
+    if isinstance(listed, list):
+        return any(
+            isinstance(e, dict) and str(e.get("name", "") or "").strip() for e in listed
+        )
+    return bool(str(owntone_raw.get("output_name", "") or "").strip())
+
+
 def unconfigured(path: str) -> bool:
     """
     True if the system should be treated as unconfigured.
@@ -1040,7 +1121,8 @@ def unconfigured(path: str) -> bool:
       - general.fifo_path (non-empty)
       - audio1.capture_device in an ALSA hw:* format, unless audio1.enabled
         is explicitly False (absent defaults to True)
-      - owntone.output_name (non-empty)
+      - owntone.default_outputs with a named entry (or the legacy
+        owntone.output_name)
 
     Cached by (mtime, size) so we only re-parse when the JSON changes.
     """
@@ -1068,11 +1150,10 @@ def unconfigured(path: str) -> bool:
         audio1_section = data.get("audio1") or {}
         audio1_enabled = bool(audio1_section.get("enabled", True))
         audio1_dev = str(audio1_section.get("capture_device", "") or "").strip()
-        output_name = str((data.get("owntone") or {}).get("output_name", "") or "").strip()
         is_unconfigured = not (
             fifo_path
             and (not audio1_enabled or is_valid_monitor_device_id(audio1_dev))
-            and output_name
+            and has_default_output(data.get("owntone"))
         )
     except Exception:
         is_unconfigured = True

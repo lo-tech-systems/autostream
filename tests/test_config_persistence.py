@@ -493,6 +493,82 @@ class TestParseConfigOwntone:
         cfg = c.parse_config({"owntone": {"offsets": "bad"}})
         assert cfg.owntone.output_offsets_ms == {}
 
+    def test_default_outputs_list_parsed(self):
+        cfg = c.parse_config({"owntone": {"volume_percent": 25, "default_outputs": [
+            {"id": "a1", "name": "Lounge", "volume": 30},
+            {"name": "Kitchen"},
+        ]}})
+        assert cfg.owntone.default_outputs == (
+            c.DefaultOutput("a1", "Lounge", 30),
+            c.DefaultOutput("", "Kitchen", 25),
+        )
+        assert cfg.owntone.default_outputs[1].key == "name:Kitchen"
+        assert cfg.owntone.output_name == "Lounge"
+
+    def test_default_outputs_win_over_legacy_name(self):
+        cfg = c.parse_config({"owntone": {"output_name": "Old", "default_outputs": [
+            {"id": "a1", "name": "New", "volume": 10}]}})
+        assert [m.name for m in cfg.owntone.default_outputs] == ["New"]
+
+    def test_legacy_output_name_becomes_one_member(self):
+        cfg = c.parse_config({"owntone": {"output_name": "Lounge", "volume_percent": 35}})
+        assert cfg.owntone.default_outputs == (c.DefaultOutput("", "Lounge", 35),)
+
+    def test_legacy_member_takes_id_from_known_outputs(self):
+        state = {"owntone": {"known_outputs": {"a1": "Lounge", "b2": "Kitchen"}}}
+        cfg = c.parse_config({"owntone": {"output_name": "Lounge"}}, state=state)
+        assert cfg.owntone.default_outputs[0].id == "a1"
+
+    def test_legacy_member_id_blank_when_name_is_ambiguous(self):
+        state = {"owntone": {"known_outputs": {"a1": "Lounge", "b2": "Lounge"}}}
+        cfg = c.parse_config({"owntone": {"output_name": "Lounge"}}, state=state)
+        assert cfg.owntone.default_outputs[0].id == ""
+
+    def test_no_output_is_an_empty_set(self):
+        assert c.parse_config({}).owntone.default_outputs == ()
+        assert c.parse_config({}).owntone.output_name == ""
+
+    def test_malformed_entries_skipped_and_volume_clamped(self):
+        cfg = c.parse_config({"owntone": {"volume_percent": 22, "default_outputs": [
+            "x", {"name": ""}, {"name": "n" * 257}, {"id": "i"},
+            {"name": "A", "volume": 500}, {"name": "B", "volume": "loud"},
+            {"name": "C", "id": "z" * 65, "volume": -4},
+        ]}})
+        assert cfg.owntone.default_outputs == (
+            c.DefaultOutput("", "A", 100),
+            c.DefaultOutput("", "B", 22),
+            c.DefaultOutput("", "C", 0),
+        )
+
+    def test_repeated_key_dropped(self):
+        cfg = c.parse_config({"owntone": {"default_outputs": [
+            {"id": "a1", "name": "Lounge"}, {"id": "a1", "name": "Renamed"},
+            {"name": "Kitchen"}, {"name": "Kitchen"},
+        ]}})
+        assert [m.key for m in cfg.owntone.default_outputs] == ["a1", "name:Kitchen"]
+
+    def test_set_is_capped(self):
+        cfg = c.parse_config({"owntone": {"default_outputs": [
+            {"name": f"S{i}"} for i in range(40)]}})
+        assert len(cfg.owntone.default_outputs) == c.DEFAULT_OUTPUTS_MAX
+
+    def test_empty_list_is_an_empty_set_despite_legacy_name(self):
+        cfg = c.parse_config({"owntone": {"output_name": "Old", "default_outputs": []}})
+        assert cfg.owntone.default_outputs == ()
+
+    @pytest.mark.parametrize("raw,expected", [
+        ({"default_outputs": [{"name": "A"}]}, True),
+        ({"default_outputs": [{"name": " "}]}, False),
+        ({"default_outputs": []}, False),
+        ({"default_outputs": [], "output_name": "Old"}, False),
+        ({"output_name": "Old"}, True),
+        ({"output_name": " "}, False),
+        ({}, False),
+        (None, False),
+    ])
+    def test_has_default_output(self, raw, expected):
+        assert c.has_default_output(raw) is expected
+
 
 # ---------------------------------------------------------------------------
 # Config/state separation — PIN in state only
@@ -589,6 +665,24 @@ class TestUnconfigured:
             "general": {"fifo_path": "/tmp/x.fifo"},
             "audio1": {"capture_device": "default"},
             "owntone": {"output_name": "X"},
+        }))
+        assert c.unconfigured(str(p)) is True
+
+    def test_default_outputs_without_output_name_is_not_unconfigured(self, tmp_path):
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({
+            "general": {"fifo_path": "/tmp/x.fifo"},
+            "audio1": {"capture_device": "hw:0,0"},
+            "owntone": {"default_outputs": [{"id": "a1", "name": "Lounge", "volume": 20}]},
+        }))
+        assert c.unconfigured(str(p)) is False
+
+    def test_empty_default_outputs_is_unconfigured(self, tmp_path):
+        p = tmp_path / "cfg.json"
+        p.write_text(json.dumps({
+            "general": {"fifo_path": "/tmp/x.fifo"},
+            "audio1": {"capture_device": "hw:0,0"},
+            "owntone": {"default_outputs": []},
         }))
         assert c.unconfigured(str(p)) is True
 

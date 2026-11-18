@@ -52,6 +52,22 @@ def _complete_config() -> dict:
 # ── is_technically_complete ───────────────────────────────────────────────────
 
 class TestIsTechnicallyComplete:
+    def test_default_outputs_without_output_name_is_complete(self, tmp_path):
+        from autostream_commissioning import is_technically_complete
+        cfg = _complete_config()
+        cfg["owntone"] = {"default_outputs": [{"id": "a1", "name": "Kitchen", "volume": 20}]}
+        path = str(tmp_path / "config.json")
+        _write_config(path, cfg)
+        assert is_technically_complete(path) is True
+
+    def test_empty_default_outputs_is_incomplete(self, tmp_path):
+        from autostream_commissioning import is_technically_complete
+        cfg = _complete_config()
+        cfg["owntone"] = {"default_outputs": []}
+        path = str(tmp_path / "config.json")
+        _write_config(path, cfg)
+        assert is_technically_complete(path) is False
+
     def test_missing_file_returns_false(self, tmp_path):
         from autostream_commissioning import is_technically_complete
         assert is_technically_complete(str(tmp_path / "nonexistent.json")) is False
@@ -234,6 +250,17 @@ class TestRequiredFirstBootStep:
             {"first_boot": {"required": True, "completed": False}}
         )
         assert required_first_boot_step(cfg_path, state_path) == "owntone"
+
+    def test_default_outputs_without_output_name_skips_owntone_step(self, tmp_path):
+        from autostream_commissioning import required_first_boot_step
+        cfg = _complete_config()
+        cfg["owntone"] = {"default_outputs": [{"id": "", "name": "Kitchen", "volume": 20}]}
+        cfg["audio1"]["capture_device"] = ""
+        cfg_path, state_path = self._paths(
+            tmp_path, cfg,
+            {"first_boot": {"required": True, "completed": False}}
+        )
+        assert required_first_boot_step(cfg_path, state_path) == "appliance"
 
     def test_output_set_but_alsa_missing_returns_appliance(self, tmp_path):
         from autostream_commissioning import required_first_boot_step
