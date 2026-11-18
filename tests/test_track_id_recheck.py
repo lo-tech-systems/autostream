@@ -24,7 +24,7 @@ for _p in (str(REPO_ROOT / "core"), str(REPO_ROOT / "tests")):
 
 import autostream_core as core
 from autostream_artwork import ArtworkImage
-from autostream_core import NowPlayingMetadata
+from autostream_nowplaying import NowPlayingMetadata
 from autostream_state import active_track, store, track_digest
 from autostream_webui_api import _dial_track_id_dict
 from track_id.models import (
@@ -43,6 +43,7 @@ from track_id.models import (
 from test_track_id_core import _active_monitor, _make_client, _make_service
 import autostream_runtime as runtime
 import autostream_input_status as input_status
+import autostream_audio_monitor as audio_monitor
 
 
 ART_URL = "https://art.example/kind-of-blue.jpg"
@@ -103,7 +104,7 @@ class _Rig:
 
     def publish(self) -> None:
         input_status.publish_inputs()
-        core._publish_track_service(runtime._track_id_service is not None)
+        audio_monitor.publish_track_service(runtime._track_id_service is not None)
 
     def snapshot(self):
         self.publish()

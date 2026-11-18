@@ -1,0 +1,13 @@
+# The audio monitor moved out of the coordinator.
+autostream_core.AudioMonitor -> autostream_audio_monitor.AudioMonitor  alias=audio_monitor
+autostream_core.PersistentNowPlayingCache -> autostream_audio_monitor.PersistentNowPlayingCache  alias=audio_monitor
+autostream_core.get_shared_metadata_publisher -> autostream_audio_monitor.get_shared_metadata_publisher  alias=audio_monitor
+autostream_core.release_shared_metadata_publisher -> autostream_audio_monitor.release_shared_metadata_publisher  alias=audio_monitor
+autostream_core._load_placeholder_artwork -> autostream_audio_monitor._load_placeholder_artwork  alias=audio_monitor
+autostream_core._default_nowplaying_title -> autostream_audio_monitor._default_nowplaying_title  alias=audio_monitor
+autostream_core._publish_track_service -> autostream_audio_monitor.publish_track_service  alias=audio_monitor
+autostream_core._track_writer -> autostream_audio_monitor._track_writer  alias=audio_monitor
+autostream_core.NowPlayingMetadata -> autostream_nowplaying.NowPlayingMetadata  alias=nowplaying
+autostream_core.ArtworkMemoryCache -> autostream_audio_monitor.ArtworkMemoryCache  alias=audio_monitor
+autostream_core.input_type_label -> autostream_audio_monitor.input_type_label  alias=audio_monitor
+autostream_core.normalize_input_type -> autostream_audio_monitor.normalize_input_type  alias=audio_monitor

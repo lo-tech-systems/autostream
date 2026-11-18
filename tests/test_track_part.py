@@ -19,7 +19,7 @@ if _CORE not in sys.path:
 import autostream_core as core
 import autostream_runtime as runtime
 import autostream_state as state
-from autostream_core import AudioMonitor
+from autostream_audio_monitor import AudioMonitor
 from track_id.models import (
     STATE_DISABLED,
     STATE_IDENTIFIED,
@@ -28,6 +28,7 @@ from track_id.models import (
     disabled_snapshot,
 )
 import autostream_input_status as input_status
+import autostream_audio_monitor as audio_monitor
 
 
 def make_monitor(index=1, **overrides) -> AudioMonitor:
@@ -38,8 +39,8 @@ def make_monitor(index=1, **overrides) -> AudioMonitor:
         owntone_volume_percent=50, dynamic_rate_matching=False,
     )
     defaults.update(overrides)
-    with patch("autostream_core.PersistentNowPlayingCache") as cache, \
-         patch("autostream_core.get_shared_metadata_publisher") as pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as cache, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as pub:
         cache.return_value.get_manual_hint.return_value = None
         pub.side_effect = lambda path: MagicMock()
         return AudioMonitor(**defaults)
@@ -142,12 +143,12 @@ def test_applying_a_service_publishes_the_waiting_entry():
 
 def test_the_service_flag_is_published_when_the_service_is_rebuilt():
     seen = collect()
-    core._publish_track_service(True)
+    audio_monitor.publish_track_service(True)
     assert track().service_enabled is True
     assert [c.parts for c in seen] == [frozenset({"track"})]
-    core._publish_track_service(True)
+    audio_monitor.publish_track_service(True)
     assert len(seen) == 1
-    core._publish_track_service(False)
+    audio_monitor.publish_track_service(False)
     assert track().service_enabled is False
 
 
@@ -157,12 +158,12 @@ def test_the_active_track_follows_the_part_and_the_inputs():
     with mon._ti_locked():
         mon._set_ti_snapshot(identified())
     input_status.publish_inputs()
-    core._publish_track_service(True)
+    audio_monitor.publish_track_service(True)
     assert state.active_track(state.store().snapshot()).title == "Blue in Green"
     mon.is_capturing = False
     input_status.publish_inputs()
     assert state.active_track(state.store().snapshot()).state == STATE_WAITING
-    core._publish_track_service(False)
+    audio_monitor.publish_track_service(False)
     assert state.active_track(state.store().snapshot()).state == STATE_DISABLED
 
 

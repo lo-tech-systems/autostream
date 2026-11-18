@@ -59,9 +59,9 @@ from autostream_live_config import _validate_repeat_target_minutes
 from autostream_live_config import _validate_repeat_codec
 import autostream_core as core
 from autostream_core import (
-    AudioMonitor,
     _resync_monitor_daemon,
 )
+from autostream_audio_monitor import AudioMonitor
 from autostream_session import _session_nowplaying_end
 from autostream_session import _session_nowplaying_start
 from autostream_session import _start_session_owntone
@@ -143,8 +143,8 @@ def _make_monitor(**overrides) -> AudioMonitor:
         owntone_volume_percent=50,
     )
     defaults.update(overrides)
-    with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as mock_get_pub:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
         # Fresh MagicMock per call: see test_audio_monitor_coordination.py's
         # _make_monitor for why this doesn't just use a shared return_value.
@@ -623,7 +623,7 @@ class TestP4StatusPassthrough:
             assert body["session"] == {"active": True, "source": "replay"}
             assert body["playing"] is True, (
                 "playing must follow session.active even though no input is "
-                "capturing (any_monitor_capturing() is mocked False here)"
+                "capturing"
             )
         finally:
             _set_session_state(False, None)

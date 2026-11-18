@@ -406,7 +406,7 @@ class TestStoppingState:
 
 from fake_store import fake_levels, fake_playback, fake_track, fake_outputs_result
 import autostream_core as _core_mod
-from autostream_core import AudioMonitor as _AudioMonitor
+from autostream_audio_monitor import AudioMonitor as _AudioMonitor
 from track_id.models import disabled_snapshot as _disabled_snapshot
 from track_id.models import waiting_snapshot as _waiting_snapshot
 from track_id.models import TrackIdentificationSnapshot as _TISnapshot
@@ -419,10 +419,11 @@ def _active_track():
     """Publish the inputs and the identification service flag from the
     running monitors, then read the active track from the snapshot."""
     input_status.publish_inputs()
-    _core_mod._publish_track_service(runtime._track_id_service is not None)
+    audio_monitor.publish_track_service(runtime._track_id_service is not None)
     return autostream_state.active_track(autostream_state.store().snapshot())
 import autostream_session as session
 import autostream_input_status as input_status
+import autostream_audio_monitor as audio_monitor
 
 
 def _mk_monitor(**overrides) -> _AudioMonitor:
@@ -444,8 +445,8 @@ def _mk_monitor(**overrides) -> _AudioMonitor:
         owntone_volume_percent=50,
     )
     defaults.update(overrides)
-    with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as mock_get_pub:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
         mock_get_pub.side_effect = lambda path: MagicMock()
         mon = _AudioMonitor(**defaults)

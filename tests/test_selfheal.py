@@ -22,7 +22,7 @@ import autostream_core as core
 import autostream_player_service as player_service
 import autostream_runtime as runtime
 import autostream_state
-from autostream_core import AudioMonitor
+from autostream_audio_monitor import AudioMonitor
 from autostream_selfheal import maybe_run_owntone_hang_watchdog as _maybe_run_owntone_hang_watchdog
 from autostream_selfheal import OwntoneHangWatchdog as _OwntoneHangWatchdog
 from autostream_selfheal import SelfHeal as _SelfHeal
@@ -51,8 +51,8 @@ def _make_monitor(**overrides) -> AudioMonitor:
         owntone_volume_percent=50,
     )
     defaults.update(overrides)
-    with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as mock_get_pub:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
         mock_get_pub.side_effect = lambda path: MagicMock()
         mon = AudioMonitor(**defaults)

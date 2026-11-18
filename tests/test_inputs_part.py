@@ -17,7 +17,7 @@ if _CORE not in sys.path:
 
 import autostream_core as core
 import autostream_state as state
-from autostream_core import AudioMonitor
+from autostream_audio_monitor import AudioMonitor
 import autostream_live_config as live_config
 import autostream_input_status as input_status
 
@@ -37,8 +37,8 @@ def make_monitor(index=1, **overrides) -> AudioMonitor:
         owntone_volume_percent=50, dynamic_rate_matching=False,
     )
     defaults.update(overrides)
-    with patch("autostream_core.PersistentNowPlayingCache") as cache, \
-         patch("autostream_core.get_shared_metadata_publisher") as pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as cache, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as pub:
         cache.return_value.get_manual_hint.return_value = None
         pub.side_effect = lambda path: MagicMock()
         return AudioMonitor(**defaults)

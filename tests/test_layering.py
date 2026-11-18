@@ -32,7 +32,7 @@ owntone owntone_mini pin_pairing playback_stats player_service players rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats
 sysutils watcher_client wifi_network
 """.split()
-_L2 = "align announce appliances dial_push dial_warnings input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal session".split()
+_L2 = "align announce appliances audio_monitor dial_push dial_warnings input_status live_config log_policy monitor_control output_intents output_policy output_usage playback_tracking repeat selfheal session".split()
 _L3 = """
 appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay

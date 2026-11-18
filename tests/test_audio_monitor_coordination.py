@@ -28,7 +28,7 @@ if _core not in sys.path:
 import autostream_core as core
 import autostream_monitor_control as monitor_control
 import autostream_state
-from autostream_core import AudioMonitor
+from autostream_audio_monitor import AudioMonitor
 from autostream_monitor_client import MonitorClient
 from autostream_nowplaying import NowPlayingMetadata
 
@@ -60,8 +60,8 @@ def _make_monitor(**overrides) -> AudioMonitor:
     )
     defaults.update(overrides)
 
-    with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as mock_get_pub:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
         # Fresh MagicMock per call (not a shared return_value): the real
         # get_shared_metadata_publisher() would hand out the SAME instance
@@ -429,9 +429,9 @@ class TestStop:
         the same fifo_path may still be using it. See
         TestSharedMetadataPublisher for the registry's own refcount/close
         behaviour in autostream_nowplaying.py."""
-        with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-             patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub, \
-             patch("autostream_core.release_shared_metadata_publisher") as mock_release:
+        with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
+             patch("autostream_audio_monitor.get_shared_metadata_publisher") as mock_get_pub, \
+             patch("autostream_audio_monitor.release_shared_metadata_publisher") as mock_release:
             mock_cache_cls.return_value.get_manual_hint.return_value = None
             mock_get_pub.side_effect = lambda path: MagicMock()
             mon = AudioMonitor(
@@ -1143,8 +1143,7 @@ class TestCaptureStopOrdering:
     def test_stopped_does_not_touch_owntone_or_nowplaying(self):
         mon = _make_monitor(owntone_base_url="http://localhost:3689")
         mock_client = MagicMock(spec=MonitorClient)
-        with patch.object(core.intents, "submit") as stop_mock, \
-             patch.object(core, "any_monitor_capturing", return_value=False):
+        with patch.object(core.intents, "submit") as stop_mock:
             mon._on_capture_stopped(mock_client)
         stop_mock.assert_not_called()
         mon._nowplaying_publisher.publish_end.assert_not_called()

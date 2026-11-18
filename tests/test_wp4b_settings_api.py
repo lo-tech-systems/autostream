@@ -28,7 +28,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "core"))
 
 import autostream_core as _core_mod
-from autostream_core import AudioMonitor
+from autostream_audio_monitor import AudioMonitor
 from autostream_monitor_client import MonitorClient
 from autostream_settings import SettingsStore
 from autostream_webui_api import (
@@ -98,8 +98,8 @@ def _make_live_monitor(input_index: int, **overrides) -> AudioMonitor:
         owntone_volume_percent=50,
     )
     defaults.update(overrides)
-    with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as mock_get_pub:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
         mock_get_pub.side_effect = lambda path: MagicMock()
         return AudioMonitor(**defaults)

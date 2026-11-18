@@ -51,7 +51,7 @@ from autostream_nowplaying import (
     _load_placeholder_artwork,
     _resolve_placeholder_artwork_path,
 )
-from autostream_core import _default_nowplaying_title
+from autostream_audio_monitor import _default_nowplaying_title
 
 try:
     from PIL import Image

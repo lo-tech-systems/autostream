@@ -22,7 +22,7 @@ if _core not in sys.path:
     sys.path.insert(0, _core)
 
 import autostream_core as core
-from autostream_core import AudioMonitor
+from autostream_audio_monitor import AudioMonitor
 from autostream_monitor_client import MonitorClient
 from track_id.models import (
     STATE_DISABLED,
@@ -46,12 +46,13 @@ def _active_track():
     """Publish the inputs and the identification service flag from the
     running monitors, then read the active track from the snapshot."""
     input_status.publish_inputs()
-    core._publish_track_service(runtime._track_id_service is not None)
+    audio_monitor.publish_track_service(runtime._track_id_service is not None)
     return autostream_state.active_track(autostream_state.store().snapshot())
 import autostream_session as session
 import autostream_repeat as repeat
 import autostream_input_status as input_status
 import autostream_session
+import autostream_audio_monitor as audio_monitor
 
 
 # ---------------------------------------------------------------------------
@@ -70,8 +71,8 @@ def _make_monitor(**overrides) -> AudioMonitor:
         owntone_volume_percent=50,
     )
     defaults.update(overrides)
-    with patch("autostream_core.PersistentNowPlayingCache") as mock_cache_cls, \
-         patch("autostream_core.get_shared_metadata_publisher") as mock_get_pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as mock_cache_cls, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as mock_get_pub:
         mock_cache_cls.return_value.get_manual_hint.return_value = None
         # Fresh MagicMock per call: see test_audio_monitor_coordination.py's
         # _make_monitor for why this doesn't just use a shared return_value.
@@ -604,7 +605,7 @@ class TestWorkerIdentified:
         mon._nowplaying_publisher.publish_start.assert_not_called()
 
     def test_identified_does_not_publish_when_nowplaying_unchanged(self):
-        from autostream_core import NowPlayingMetadata
+        from autostream_nowplaying import NowPlayingMetadata
         svc = _make_service(matched=True)
         mon = _active_monitor()
         runtime._track_id_service = svc
@@ -1165,8 +1166,7 @@ class TestCaptureStopReset:
                 updated_at=time.time(),
             ))
         client = MagicMock(spec=MonitorClient)
-        with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core.intents, "submit"):
+        with patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
         assert mon._ti_snapshot.state == STATE_WAITING
 
@@ -1174,8 +1174,7 @@ class TestCaptureStopReset:
         runtime._track_id_service = None
         mon = _active_monitor()
         client = MagicMock(spec=MonitorClient)
-        with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core.intents, "submit"):
+        with patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
         assert mon._ti_snapshot.state == STATE_DISABLED
 
@@ -1188,8 +1187,7 @@ class TestCaptureStopReset:
         mon._ti_next_attempt = time.time() + 100.0
         mon._ti_next_attempt_reason = "match"
         client = MagicMock(spec=MonitorClient)
-        with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core.intents, "submit"):
+        with patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
         assert mon._ti_next_attempt == 0.0
         assert mon._ti_next_attempt_reason == ""
@@ -1202,8 +1200,7 @@ class TestCaptureStopReset:
         mon._apply_track_id_service(svc)
         gen_before = mon._ti_generation
         client = MagicMock(spec=MonitorClient)
-        with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core.intents, "submit"):
+        with patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
         assert mon._ti_generation == gen_before + 1
 
@@ -1242,8 +1239,7 @@ class TestCaptureStopReset:
 
         # Call stop while worker is blocked: bumps generation.
         client = MagicMock(spec=MonitorClient)
-        with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core.intents, "submit"):
+        with patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
         waiting_snap = mon._ti_snapshot
@@ -1290,8 +1286,7 @@ class TestCaptureStoppedReplayOriginGuard:
         snapshot_before = mon._ti_snapshot
         client = MagicMock(spec=MonitorClient)
 
-        with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core.intents, "submit"):
+        with patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
         assert mon._ti_generation == gen_before
@@ -1309,8 +1304,7 @@ class TestCaptureStoppedReplayOriginGuard:
         gen_before = mon._ti_generation
         client = MagicMock(spec=MonitorClient)
 
-        with patch.object(core, "any_monitor_capturing", return_value=False), \
-             patch.object(core.intents, "submit"):
+        with patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
         assert mon._ti_generation == gen_before + 1
@@ -1331,7 +1325,6 @@ class TestCaptureStoppedReplayOriginGuard:
         client = MagicMock(spec=MonitorClient)
 
         with caplog.at_level(logging.INFO), \
-             patch.object(core, "any_monitor_capturing", return_value=False), \
              patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
@@ -1351,7 +1344,6 @@ class TestCaptureStoppedReplayOriginGuard:
         client = MagicMock(spec=MonitorClient)
 
         with caplog.at_level(logging.DEBUG), \
-             patch.object(core, "any_monitor_capturing", return_value=False), \
              patch.object(core.intents, "submit"):
             mon._on_capture_stopped(client)
 
@@ -1837,7 +1829,7 @@ class TestTrackChangeInterstitial:
         mon = _make_capturing_monitor_with_service(svc)
         expected_default = mon._default_nowplaying_metadata()
 
-        with patch("autostream_core._load_placeholder_artwork", return_value=placeholder):
+        with patch("autostream_audio_monitor._load_placeholder_artwork", return_value=placeholder):
             mon._on_possible_track_change(1)
 
         mon._nowplaying_publisher.publish_refresh.assert_called_once()
@@ -1853,7 +1845,7 @@ class TestTrackChangeInterstitial:
         svc = _make_service()
         mon = _make_capturing_monitor_with_service(svc)
 
-        with patch("autostream_core._load_placeholder_artwork", return_value=None):
+        with patch("autostream_audio_monitor._load_placeholder_artwork", return_value=None):
             mon._on_possible_track_change(1)
 
         mon._nowplaying_publisher.publish_refresh.assert_called_once()
@@ -1879,7 +1871,7 @@ class TestTrackChangeInterstitial:
         runtime._track_id_service = svc
         mon._apply_track_id_service(svc)
 
-        with patch("autostream_core._load_placeholder_artwork", return_value=placeholder):
+        with patch("autostream_audio_monitor._load_placeholder_artwork", return_value=placeholder):
             mon._on_possible_track_change(1)
         mon._nowplaying_publisher.publish_refresh.reset_mock()
         interstitial_meta = mon._current_nowplaying
@@ -2248,7 +2240,7 @@ class TestReplaySeekRearm:
     def test_in_session_seek_publishes_interstitial_nowplaying(self):
         mon, _ = self._armed_origin()
         sentinel = object()
-        with patch.object(core, "_load_placeholder_artwork", return_value=sentinel):
+        with patch.object(audio_monitor, "_load_placeholder_artwork", return_value=sentinel):
             mon.on_replay_seek_accepted(in_session=True)
         mon._nowplaying_publisher.publish_refresh.assert_called_once()
         published = mon._nowplaying_publisher.publish_refresh.call_args[0][0]
@@ -2326,7 +2318,7 @@ class TestReplaySeekRearm:
         origin, _ = self._armed_origin()
         repeat.publish_from_daemon(_repeat_block(replaying=True))
         with patch.object(runtime, "all_monitors", [origin]), \
-             patch.object(core, "_load_placeholder_artwork", return_value=None):
+             patch.object(audio_monitor, "_load_placeholder_artwork", return_value=None):
             repeat.apply_repeat_ack(_repeat_ack("repeat_seek", "replaying", position=0.0))
         origin._nowplaying_publisher.publish_refresh.assert_called_once()
 

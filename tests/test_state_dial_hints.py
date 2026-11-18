@@ -147,7 +147,7 @@ def test_a_non_dial_requester_excludes_nobody(rig):
 def test_an_immediate_repeat_or_track_change_makes_no_call(rig):
     rig.cycle(repeat_block=_block(), track=_track("identified", "A"))
     repeat.publish_from_daemon(_block(replay_active=True))
-    state.store().claim("track", "autostream_core").publish(state.TrackPart(
+    state.store().claim("track", "autostream_audio_monitor").publish(state.TrackPart(
         entries=state.FrozenDict({1: _track("identified", "B")}), service_enabled=True)).notify()
     assert rig.calls == []
 

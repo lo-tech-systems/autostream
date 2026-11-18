@@ -348,7 +348,7 @@ class AlignRun:
         # the second, defense-in-depth layer that actually prevents two
         # cycles ever running under this key at once -- the same
         # belt-and-braces relationship _fire_owntone_hang_restart() has with
-        # its own rate limiter (autostream_core.py), where the pool rejecting
+        # its own rate limiter (autostream_selfheal.py), where the pool rejecting
         # a submission is "not expected to be hit in practice."
         pool = self._get_task_pool()
         submitted = pool.submit(ALIGN_RUN_TASK_KEY, self._run_cycle)

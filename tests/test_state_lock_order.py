@@ -43,6 +43,7 @@ from autostream_state import SessionPart, SettingsPart
 from autostream_state.store import StateStore
 import autostream_playback_tracking as playback_tracking
 import autostream_input_status as input_status
+import autostream_audio_monitor as audio_monitor
 
 
 @pytest.fixture
@@ -200,11 +201,11 @@ def test_a_monitors_identification_lock_is_released_before_subscribers_run(track
 
     import autostream_core as core
 
-    with patch("autostream_core.PersistentNowPlayingCache") as cache, \
-         patch("autostream_core.get_shared_metadata_publisher") as pub:
+    with patch("autostream_audio_monitor.PersistentNowPlayingCache") as cache, \
+         patch("autostream_audio_monitor.get_shared_metadata_publisher") as pub:
         cache.return_value.get_manual_hint.return_value = None
         pub.side_effect = lambda path: MagicMock()
-        mon = core.AudioMonitor(
+        mon = audio_monitor.AudioMonitor(
             input_index=1, input_device="hw:0,0", silence_threshold_dbfs=-50.0,
             silence_seconds=5, fifo_path="/tmp/test.fifo",
             owntone_base_url="http://localhost:3689", owntone_output_name="Speaker A",
