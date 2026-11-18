@@ -25,9 +25,7 @@ from dial_touch import (  # noqa: E402
     ACTION_VOLUME_UP,
     ACTION_ZONE_TAP,
     DISMISS_S,
-    FIRST_REPEAT_S,
     PRESSED_FLASH_S,
-    REPEAT_INTERVAL_S,
     TouchAction,
     TouchEventSource,
     TouchStateMachine,
@@ -56,7 +54,7 @@ from dial_touch_surfaces import (  # noqa: E402
     SURFACE_SELECTOR,
     SURFACE_UPDATE,
 )
-from dial_touch_filter import TouchEvent, TouchEventType, TouchFilter  # noqa: E402
+from dial_touch_filter import FIRST_REPEAT_S, REPEAT_INTERVAL_S, TouchEvent, TouchEventType, TouchFilter  # noqa: E402
 from dial_touch_layout import (  # noqa: E402
     GEOMETRY_INFO,
     GEOMETRY_INFO_VALUE,

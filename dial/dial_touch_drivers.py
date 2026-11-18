@@ -45,7 +45,7 @@ import dial_spi_bus
 # T_IRQ is the controller's active-low interrupt line, polled/waited-on by
 # dial_touch.TouchEventSource.
 _TOUCH_CS_GPIO = 16   # plain GPIO, driven by this driver (physical pin 36)
-_TOUCH_IRQ_GPIO = 26  # T_IRQ, active-low
+TOUCH_IRQ_GPIO = 26  # T_IRQ, active-low
 
 # XPT2046 control-byte command set (12-bit mode, single-ended, power-down
 # between conversions so T_IRQ stays usable). Byte layout: S=1, A2-A0

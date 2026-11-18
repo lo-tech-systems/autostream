@@ -120,7 +120,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from dial_touch_filter import TouchEvent, TouchEventType
+from dial_touch_filter import FIRST_REPEAT_S, REPEAT_INTERVAL_S, TouchEvent, TouchEventType
 from dial_touch_surfaces import (
     SURFACE_CARD1, SURFACE_CARD2, SURFACE_CARD3, SURFACE_EQ, SURFACE_HELD, SURFACE_HIDDEN, SURFACE_IDLE,
     SURFACE_INFO, SURFACE_INFO_VALUE, SURFACE_OUTPUT, SURFACE_OUTPUTS, SURFACE_PICKER, SURFACE_REPEAT,
@@ -157,11 +157,6 @@ DISMISS_S = 4.0
 # state; each change costs one full-frame push. Repeating zones (UP/DOWN)
 # ignore this and stay lit until release — see the module docstring.
 PRESSED_FLASH_S = 0.25
-
-# Mirrored here from dial_touch_filter so TouchStateMachine can run its own
-# repeat clock with identical cadence to the filter's.
-FIRST_REPEAT_S = 0.4
-REPEAT_INTERVAL_S = 0.15
 
 # Action kinds produced by TouchStateMachine.
 ACTION_REVEAL_OVERLAY = "reveal-overlay"
@@ -705,11 +700,6 @@ class TouchStateMachine:
 # TouchEventSource — thin thread wrapper
 # ---------------------------------------------------------------------------
 
-# T_IRQ is active-low; mirrors dial_touch_drivers._TOUCH_IRQ_GPIO (kept as
-# its own constant here too so this module has no import-time dependency on
-# the drivers module beyond what open_driver() itself needs).
-_T_IRQ_GPIO = 26
-
 # How often the sample loop polls the driver while T_IRQ is active.
 _POLL_INTERVAL_S = 0.01
 
@@ -958,7 +948,11 @@ class TouchEventSource:
     def _make_default_irq(self):
         from gpiozero import DigitalInputDevice
 
-        return DigitalInputDevice(_T_IRQ_GPIO, pull_up=True)
+        # Imported here so this module keeps no import-time dependency on
+        # the drivers. T_IRQ is active-low.
+        from dial_touch_drivers import TOUCH_IRQ_GPIO
+
+        return DigitalInputDevice(TOUCH_IRQ_GPIO, pull_up=True)
 
     def _run(self) -> None:
         # Close only what this thread created. An injected irq belongs to

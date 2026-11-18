@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
+from dial_config import BRIGHTNESS_DEFAULT, SLEEP_AFTER_DEFAULT_S
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, awaiting_pin, pin_window_end
 from dial_values import clamp_percent, int_or_none
 from dial_warning_bell import appliance_bell, descriptor_map, dial_bell
@@ -44,10 +45,6 @@ ARTWORK_PATH = "/api/v1/artwork/"
 
 # The blurred backdrop of the held artwork hangs off the artwork's own path.
 BACKDROP_SUFFIX = "/backdrop"
-
-# The panel values shown before the panel service has said anything.
-DEFAULT_BRIGHTNESS = 80
-DEFAULT_SLEEP_AFTER_S = 300
 
 _REPLAYING_STATES = ("replaying", "fading_out")
 
@@ -256,8 +253,8 @@ def _panel_block(panel: "Mapping | None", settings: "Mapping | None") -> dict:
 
     return {
         "asleep": bool(panel.get("asleep", False)),
-        "brightness": pick("brightness", DEFAULT_BRIGHTNESS),
-        "sleep_after_s": pick("sleep_after_s", DEFAULT_SLEEP_AFTER_S),
+        "brightness": pick("brightness", BRIGHTNESS_DEFAULT),
+        "sleep_after_s": pick("sleep_after_s", SLEEP_AFTER_DEFAULT_S),
         "backlight": _text(panel.get("backlight", "none")),
         "kiosk": bool(panel.get("kiosk", False)),
     }
