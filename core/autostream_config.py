@@ -486,13 +486,13 @@ class OwntoneConfig:
 # What a Pause pressed on a speaker does.
 DEVICE_PAUSE_OUTPUT = "output"        # mute that speaker
 DEVICE_PAUSE_ALL = "all"              # mute every playing speaker
-DEVICE_PAUSE_OFF_ALL = "off_all"      # turn every speaker off
-DEVICE_PAUSE_SCOPES = (DEVICE_PAUSE_OUTPUT, DEVICE_PAUSE_ALL, DEVICE_PAUSE_OFF_ALL)
+DEVICE_PAUSE_SCOPES = (DEVICE_PAUSE_OUTPUT, DEVICE_PAUSE_ALL)
 # What a Pause on a speaker does when the owner has not chosen.
 DEVICE_PAUSE_SCOPE_DEFAULT = DEVICE_PAUSE_OUTPUT
-# A choice that is no longer offered, and what it now reads as. A speaker
-# that pauses itself cannot be kept playing.
-_DEVICE_PAUSE_RETIRED = {"ignore": DEVICE_PAUSE_OUTPUT}
+# Choices that are no longer offered, and what they now read as. A speaker
+# that pauses itself cannot be kept playing; turning the others off at once
+# became muting them, which the pause timeout turns off later anyway.
+_DEVICE_PAUSE_RETIRED = {"ignore": DEVICE_PAUSE_OUTPUT, "off_all": DEVICE_PAUSE_ALL}
 # Speakers a Pause muted are turned off once the Pause has lasted this long.
 PAUSE_OFF_SECONDS_DEFAULT = 300
 PAUSE_OFF_SECONDS_RANGE = (30, 3600)

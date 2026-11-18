@@ -20,7 +20,6 @@ from webui.browser.setup import context
 _DEVICE_PAUSE_OPTIONS = (
     ("output", "Only that speaker pauses"),
     ("all", "Mute the other speakers too"),
-    ("off_all", "Turn the other speakers off too"),
 )
 _DEVICE_PAUSE_HELP = (
     "Applies to Pause on a HomePod or on an Apple TV remote. That speaker always "

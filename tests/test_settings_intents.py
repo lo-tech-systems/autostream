@@ -267,7 +267,7 @@ def test_the_form_is_for_users_only():
 # ------------------------------------------------------------------ the output policy settings
 
 @pytest.mark.parametrize("path,value,read", [
-    ("outputs.device_pause_scope", "off_all", lambda c: c.outputs.device_pause_scope),
+    ("outputs.device_pause_scope", "all", lambda c: c.outputs.device_pause_scope),
     ("outputs.pause_off_seconds", 90, lambda c: c.outputs.pause_off_seconds),
     ("outputs.speaker_volume_applies_to_all", True, lambda c: c.outputs.speaker_volume_applies_to_all),
 ])

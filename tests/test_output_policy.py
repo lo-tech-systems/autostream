@@ -58,14 +58,6 @@ def _scenario(name, tmp_path, monkeypatch):
     return policy_replay.replay(name, tmp_path, monkeypatch)
 
 
-def test_turning_the_others_off_keeps_the_paused_speaker_on_and_chooses_no_silence(tmp_path, monkeypatch):
-    got = _scenario("pause_off_all", tmp_path, monkeypatch)
-    assert ["update_output", "1002", {"enabled": False}] in got.writes
-    assert ["set_selected_outputs", []] not in got.writes
-    assert got.silence_chosen is False
-    assert got.units["1001"]["selected"] and not got.units["1002"]["selected"]
-
-
 def test_the_pause_timeout_leaves_the_default_speaker_off_when_it_was_the_last(tmp_path, monkeypatch):
     got = _scenario("pause_timeout_only_speaker", tmp_path, monkeypatch)
     assert got.silence_chosen is True
@@ -202,13 +194,6 @@ class TestIntentLog:
             "intent receiver.play origin=device requester=device:1 result=ok",
             "intent receiver.wake origin=device requester=device:1 result=ok",
         ]
-
-    def test_turning_the_others_off_switches_off_all_but_the_paused_speaker(self, w, caplog):
-        w.box.cfg = OutputsConfig(device_pause_scope="off_all")
-        with caplog.at_level(logging.INFO, logger="autostream.output_policy"):
-            deliver(w, event("paus", received=T0 + 1))
-        assert snap().unit("1").selected and not snap().unit("2").selected
-        assert any(r.getMessage().endswith("Speaker 2 turned off") for r in caplog.records)
 
     def test_the_timeout_logs_one_policy_line_per_speaker_turned_off(self, w, caplog):
         deliver(w, event("paus", received=T0 + 1))

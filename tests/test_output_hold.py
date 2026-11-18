@@ -183,21 +183,6 @@ class TestTheOthers:
         merge(w, [playing(1)])
         assert w.a.mute_all(Origin.DEVICE, except_id="1").refused == "no_active_outputs"
 
-    def test_switch_off_all_but_the_held_speaker(self, w):
-        merge(w, [playing(1), playing(2), playing(3)])
-        w.a.hold("1", Origin.DEVICE)
-        w.a.deselect_others("1", Origin.POLICY)
-        p = snap()
-        assert p.unit("1").selected and p.unit("1").held
-        assert not p.unit("2").selected and not p.unit("3").selected
-        deselects = [c[1] for c in w.fb.calls if c[0] == "update_output" and c[2].get("enabled") is False]
-        assert sorted(d[0] for d in deselects) == ["2", "3"]
-        assert not p.silence_chosen
-
-    def test_switch_off_others_with_none_is_refused(self, w):
-        merge(w, [playing(1)])
-        assert w.a.deselect_others("1", Origin.POLICY).refused == "no_active_outputs"
-
 
 class TestResumeMeansSound:
     def test_resuming_a_muted_held_speaker_ends_the_hold_then_the_mute(self, w):

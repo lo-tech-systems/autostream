@@ -1162,21 +1162,6 @@ class OutputAuthority:
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, batch.future)
 
-    def deselect_others(self, keep_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
-        """Switch off every selected speaker but *keep_id*."""
-        self._touched = True
-        now = self._clock()
-        with self._lock:
-            others = [u for u in self._selected_locked() if u.id != keep_id]
-            if not others:
-                return self._refused("no_active_outputs")
-            batch = _Batch(len(others))
-            for i, u in enumerate(others):
-                self._deselect_locked(u, cause, now)
-                self._enqueue(_Write("deselect", u.id, u.desired_seq, {}, [(batch, i)]))
-            pending = self._publish_locked(cause, requester)
-        return self._finish_intent(pending, batch.future)
-
     def hold(self, unit_id: str, cause: Origin, *, requester: Optional[str] = None) -> Applied:
         """The speaker paused itself: ask the player to hold it, so it is sent
         no audio until its hold ends. Refused as not_holdable when the

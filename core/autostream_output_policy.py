@@ -40,7 +40,6 @@ from typing import Callable, Optional
 from autostream_backend_events import DeviceEvent
 from autostream_config import (
     DEVICE_PAUSE_ALL,
-    DEVICE_PAUSE_OFF_ALL,
     OutputsConfig,
 )
 from autostream_intents.table import Intent, Outcome, bind, submit
@@ -273,10 +272,6 @@ class OutputPolicy:
                 if since_token is None:
                     since_token = muted_all.token_at
                 others = _names(ctx.outputs, [u for u, _ in muted_all.mute_tokens]) + " muted"
-        elif scope == DEVICE_PAUSE_OFF_ALL:
-            off = [u.id for u in ctx.outputs.units if u.selected and u.id != uid]
-            if authority.deselect_others(uid, Origin.POLICY, requester=_REQUESTER).refused is None:
-                others = _names(ctx.outputs, off) + " turned off"
         marks = authority.unit_marks(uid)
         entry = PauseEntry(
             unit_id=uid, name=who, by=by, at=ctx.now,
