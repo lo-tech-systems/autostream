@@ -1,0 +1,3 @@
+{"type":"changed","seq":2,"what":"outputs"}
+{"type":"event","seq":3,"kind":"receiver_command","verb":"paus","protocol":"airplay2_events","speaker":{"id":"9988776655443322","name":"TV A"},"at_ms":190511}
+{"type":"event","seq":4,"kind":"device_volume","verb":"volumeup","value":"45","speaker":{"id":"8734567012345678","name":"Speaker A"},"at_ms":191002}

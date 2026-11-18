@@ -25,8 +25,8 @@ CORE_DIR = Path(__file__).resolve().parent.parent / "core"
 ORDER = ["L0", "L1a", "L1b", "L2", "L3", "L4"]
 
 _L0 = """
-align_tone appliance_identity artwork auth bluetooth_client bluetooth_facts
-bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
+align_tone appliance_identity artwork auth backend_events bluetooth_client
+bluetooth_facts bluetooth_presentation commissioning config debounce dial_gpio dials eq_bands
 federation licensing logging mdns monitor_client mute_state nowplaying
 owntone owntone_mini pin_pairing playback_stats player_service players rpi
 runtime runtime_state settings settings_schema start_buffer_cache system_stats

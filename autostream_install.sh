@@ -971,6 +971,10 @@ bootstrap_phase() {
 
   apt_install --soft python3-requests
 
+  # Lets autostream follow output changes pushed by an upstream OwnTone; without
+  # it autostream polls the player instead.
+  apt_install --soft python3-websocket
+
   # Track identification: Vibra/Shazam daemon build dependencies.
   apt_install libfftw3-dev libcurl4-openssl-dev libjson-c-dev cmake
 

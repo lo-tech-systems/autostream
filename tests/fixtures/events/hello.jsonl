@@ -1,0 +1,1 @@
+{"type":"hello","seq":1,"protocol":1,"version":"1.6.0","boot":"3f9a1c2e77b04d15","uptime_ms":1843,"capabilities":["changed","receiver_command","device_volume","include_tv"],"ping_interval_ms":10000,"idle_close_ms":30000,"max_line":4096}
