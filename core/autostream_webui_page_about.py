@@ -20,7 +20,6 @@ Shared helpers (imported from autostream_webui_common):
 from __future__ import annotations
 
 import html
-import json
 import logging
 import math
 import subprocess
@@ -43,6 +42,7 @@ from autostream_sysutils import (
     sdcard_health_display,
 )
 
+import autostream_webui_static as static
 from autostream_webui_common import (
     _config_snapshot,
     build_page_html,
@@ -120,7 +120,6 @@ def send_about_page(handler, state: WebUIState) -> None:
         license_inner = f'<div class="about-license-text">{render_license_md(license_text)}</div>'
     else:
         license_inner = "<div class='about-license-text'><p>License text is unavailable.</p></div>"
-    license_text_js = json.dumps(license_text or "")
 
     # Pre-render service rows from the fixed service list.  The OwnTone label
     # defaults to "OwnTone" here; JS updates it to "OwnTone Mini" if needed.
@@ -179,138 +178,6 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"<div id='aboutServices'>{_svc_rows_html}</div>"
         "</div>"
         "</div>"
-    )
-
-    _extra_css = (
-        ".about-license-text { min-height:calc(100svh - 17rem); color:var(--color-text-secondary); font-size:0.95rem; padding-bottom:4.5rem; }\n"
-        ".about-license-text p { margin: 0.1rem 0 0.3rem; }\n"
-        ".about-license-text h2, .about-license-text h3, .about-license-text h4 { margin: 0.5rem 0 0.15rem; }\n"
-        ".about-license-text ul { margin: 0.1rem 0 0.3rem; padding-left: 1.4rem; }\n"
-        ".about-license-text hr { margin: 0.5rem 0; border: 0; border-top: 1px solid currentColor; opacity: 0.2; }\n"
-        ".about-license-text blockquote { margin: 0 0 1rem; padding: 0.9rem 1rem 1rem; border-radius: 10px; border: 1px solid var(--color-border-card); background: var(--color-surface-raised); color: var(--color-text); }\n"
-        ".about-license-text blockquote p:first-child { font-weight: 700; font-size: 1rem; color: var(--color-text-strong); margin: 0 0 0.5rem; }\n"
-        ".about-license-text blockquote p { margin: 0 0 0.5rem; }\n"
-        ".about-license-text blockquote ul { padding-left: 1.2rem; margin: 0.2rem 0 0; }\n"
-        ".about-page { min-height:calc(100svh - 9.5rem); }\n"
-        ".about-hero { text-align:center; padding:2.25rem 0 1.5rem; }\n"
-        ".about-hero-logo { display:block; width:min(100%, 250px); height:auto; margin:0 auto; }\n"
-        ".about-hero-powered-by, .about-hero-version { font-size:0.78rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--color-text-secondary); }\n"
-        ".about-hero-powered-by { display:block; margin:2.6rem 0 0.4rem; }\n"
-        ".about-hero-partner-logo { display:block; max-height:44px; width:auto; margin:0 auto; }\n"
-        ".about-hero-meta { margin:0.45rem 0 0; color:var(--color-text-secondary); }\n"
-        ".about-hero-version { margin-top:0.4rem; }\n"
-        ".about-slide-viewport { overflow: hidden; width: 100%; }\n"
-        ".about-slide-track { display: flex; width: 200%; transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1); }\n"
-        ".about-slide-track.panel-open { transform: translateX(-50%); }\n"
-        ".about-slide-list, .about-slide-detail { width: 50%; flex-shrink: 0; min-width: 0; }\n"
-        ".about-slide-list { display:flex; flex-direction:column; min-height:calc(100svh - 12.5rem); }\n"
-        ".about-list-cards { margin-top:auto; padding:1rem 0 0; }\n"
-        ".about-slide-detail { padding-top:0.25rem; }\n"
-        ".about-info-card { margin-bottom:1.25rem; padding:1rem 0.9rem 1.1rem; border-radius:8px; border:1px solid var(--color-border); background:var(--color-surface-raised); }\n"
-        ".about-services-heading { margin:0 0 0.6rem; font-size:0.95rem; font-weight:600; color:var(--color-text-strong); }\n"
-        ".about-svc-row { display:flex; align-items:center; justify-content:space-between; padding:0.4rem 0; border-bottom:1px solid var(--color-border); }\n"
-        ".about-svc-row:last-child { border-bottom:none; }\n"
-        ".about-svc-label { font-size:0.9rem; }\n"
-        ".about-svc-state { font-size:0.8rem; font-weight:600; padding:0.15rem 0.5rem; border-radius:4px; }\n"
-        ".about-svc-state[data-state='ok'] { color:var(--color-status-success); background:color-mix(in srgb,var(--color-status-success) 15%,transparent); }\n"
-        ".about-svc-state[data-state='failed'] { color:var(--color-status-danger); background:color-mix(in srgb,var(--color-status-danger) 15%,transparent); }\n"
-        ".about-svc-state[data-state='disabled'] { color:var(--color-text-secondary); background:color-mix(in srgb,var(--color-text-secondary) 12%,transparent); }\n"
-        ".about-svc-loading { color:var(--color-text-secondary); font-weight:400; font-size:0.85rem; }\n"
-    )
-
-    # DOMContentLoaded fetch: populates System Info and Services from /api/about/system.
-    # Uses textContent throughout — never innerHTML.
-    _fetch_js = (
-        "(function(){"
-        "function _s(id,t){var e=document.getElementById(id);if(e)e.textContent=t;}"
-        "function _gib(b){return(b/1073741824).toFixed(1)+' GB';}"
-        "function _clamp(v){var n=Number(v);return isNaN(n)?0:Math.max(0,Math.min(100,n));}"
-        "var _VS={healthy:1,warning:1,critical:1};"
-        "function _ss(s){return _VS[s]?String(s):'healthy';}"
-        "function _fail(){"
-        "['aboutBuildAutostream','aboutDeviceModel','aboutOsBuild',"
-        "'aboutPlaybackHours'].forEach(function(id){"
-        "var e=document.getElementById(id);"
-        "if(e&&e.textContent==='Loading...')e.textContent='Unavailable';});"
-        "document.querySelectorAll('#aboutServices [data-service-unit] .about-svc-state')"
-        ".forEach(function(e){"
-        "if(e.textContent==='Loading...'){"
-        "e.textContent='Failed';e.setAttribute('data-state','failed');"
-        "e.classList.remove('about-svc-loading');}});}"
-        "document.addEventListener('DOMContentLoaded',function(){"
-        "fetch('/api/about/system',{cache:'no-store',headers:{'Accept':'application/json'}})"
-        ".then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json();})"
-        ".then(function(d){"
-        "if(d.ok!==true)throw new Error('ok!=true');"
-        "var b=d.builds||{};"
-        "var dev=d.device||{};"
-        "var os=d.os||{};"
-        "_s('aboutBuildAutostream',String(b.autostream||'unknown'));"
-        "_s('aboutDeviceModel',String(dev.model||'unknown'));"
-        "_s('aboutOsBuild',String(os.pretty_name||os.version_codename||'unknown'));"
-        "_s('aboutPlaybackHours',typeof d.playback_hours==='number'"
-        "?d.playback_hours.toFixed(1)+' hours':'Unavailable');"
-        "var temp=d.cpu_temperature||{};"
-        "if(temp.available===true){"
-        "var tp=_clamp(temp.percent);"
-        "_s('aboutTempLabel','CPU Temperature: '+Number(temp.celsius).toFixed(1)+'°C');"
-        "var tb=document.getElementById('aboutTempBar');"
-        "if(tb){tb.style.width=tp+'%';tb.setAttribute('data-status',_ss(temp.status));}"
-        "var ts=document.getElementById('aboutTempSection');if(ts)ts.style.display='';}"
-        "var cl=d.cpu_load||{};"
-        "if(cl.available===true){"
-        "var cp=_clamp(cl.percent);"
-        "_s('aboutCpuLabel','CPU Load: '+cp.toFixed(1)+'%');"
-        "var cb=document.getElementById('aboutCpuBar');"
-        "if(cb){cb.style.width=cp+'%';cb.setAttribute('data-status',_ss(cl.status));}"
-        "var cs=document.getElementById('aboutCpuSection');if(cs)cs.style.display='';}"
-        "var mem=d.memory||{};"
-        "if(mem.available===true){"
-        "var mp=_clamp(mem.used_percent);"
-        "_s('aboutMemLabel','Memory Usage: '+mp.toFixed(1)+'%');"
-        "var mb=document.getElementById('aboutMemBar');"
-        "if(mb){mb.style.width=mp+'%';mb.setAttribute('data-status',_ss(mem.status));}"
-        "_s('aboutMemMeta',"
-        "(typeof mem.free_mib==='number'?mem.free_mib:0)+' MB free of '"
-        "+(typeof mem.total_mib==='number'?mem.total_mib:0)+' MB');"
-        "var ms=document.getElementById('aboutMemSection');if(ms)ms.style.display='';}"
-        "var dk=d.disk||{};"
-        "if(dk.available===true){"
-        "var dp=_clamp(dk.used_percent);"
-        "_s('aboutDiskLabel','Disk Usage: '+dp.toFixed(1)+'%');"
-        "var db=document.getElementById('aboutDiskBar');"
-        "if(db){db.style.width=dp+'%';db.setAttribute('data-status',_ss(dk.status));}"
-        "_s('aboutDiskMeta','Free: '"
-        "+_gib(typeof dk.free_bytes==='number'?dk.free_bytes:0)"
-        "+'  /  '"
-        "+_gib(typeof dk.total_bytes==='number'?dk.total_bytes:0));"
-        "var ds=document.getElementById('aboutDiskSection');if(ds)ds.style.display='';}"
-        "var sd=d.sd_card||{};"
-        "if(sd.available===true){"
-        "var sp=_clamp(sd.health_percent);"
-        "_s('aboutSdLabel','SD Health: '+Math.round(sp)+'%');"
-        "var sb=document.getElementById('aboutSdBar');"
-        "if(sb){sb.style.width=sp+'%';sb.setAttribute('data-status',_ss(sd.status));}"
-        "var ss=document.getElementById('aboutSdSection');if(ss)ss.style.display='';}"
-        "var svcs=Array.isArray(d.services)?d.services:[];"
-        "document.querySelectorAll('#aboutServices [data-service-unit]').forEach(function(row){"
-        "var unit=row.getAttribute('data-service-unit');"
-        "var svc=null;"
-        "for(var i=0;i<svcs.length;i++){if(svcs[i].unit===unit){svc=svcs[i];break;}}"
-        "if(!svc)return;"
-        "var lbl=row.querySelector('.about-svc-label');"
-        "if(lbl&&svc.label)lbl.textContent=String(svc.label);"
-        "var st=row.querySelector('.about-svc-state');"
-        "if(st){var state=svc.state;var suffix=state==='ok'?' - OK':"
-        "(state==='disabled'?' - Disabled':' - Failed');"
-        "var base=state==='ok'?'OK':(state==='disabled'?'Disabled':'Failed');"
-        "st.textContent=svc.version?String(svc.version)+suffix:base;"
-        "st.setAttribute('data-state',"
-        "(state==='ok'||state==='disabled')?state:'failed');"
-        "st.classList.remove('about-svc-loading');}});})"
-        ".catch(function(){_fail();});"
-        "});"
-        "}());"
     )
 
     # Copyright panel content
@@ -408,50 +275,13 @@ def send_about_page(handler, state: WebUIState) -> None:
         f"</div>"
         f"</div>"
         f"</div>"
-        f"<script>"
-        f"function openAboutPanel(name){{"
-        f"document.querySelectorAll('.setup-detail-panel').forEach(function(p){{p.classList.remove('active');}});"
-        f"var panel=document.getElementById('about-panel-'+name);"
-        f"if(panel)panel.classList.add('active');"
-        f"document.getElementById('aboutSlideTrack').classList.add('panel-open');"
-        f"window.scrollTo(0,0);"
-        f"}}"
-        f"function closeAboutPanel(){{"
-        f"document.querySelectorAll('.setup-detail-panel').forEach(function(p){{p.classList.remove('active');}});"
-        f"document.getElementById('aboutSlideTrack').classList.remove('panel-open');"
-        f"window.scrollTo(0,0);"
-        f"}}"
-        f"async function copyLicenseText(){{"
-        f"var btn=document.getElementById('copyLicenseBtn');"
-        f"var original=btn?btn.textContent:'Copy';"
-        f"var text={license_text_js};"
-        f"if(!text){{if(btn){{btn.textContent='Unavailable';setTimeout(function(){{btn.textContent=original;}},1200);}}return;}}"
-        f"try{{"
-        f"if(navigator.clipboard&&navigator.clipboard.writeText){{"
-        f"await navigator.clipboard.writeText(text);"
-        f"}}else{{"
-        f"var ta=document.createElement('textarea');"
-        f"ta.value=text;"
-        f"ta.setAttribute('readonly','');"
-        f"ta.style.position='fixed';"
-        f"ta.style.opacity='0';"
-        f"document.body.appendChild(ta);"
-        f"ta.select();"
-        f"document.execCommand('copy');"
-        f"document.body.removeChild(ta);"
-        f"}}"
-        f"if(btn){{btn.textContent='Copied';setTimeout(function(){{btn.textContent=original;}},1200);}}"
-        f"}}catch(e){{"
-        f"if(btn){{btn.textContent='Failed';setTimeout(function(){{btn.textContent=original;}},1200);}}"
-        f"}}"
-        f"}}"
-        f"</script>"
-        f"<script>{_fetch_js}</script>"
+        + static.script_tag("page/about.js")
     )
     html_body = build_page_html(
         "About",
         _body_html,
-        extra_css=_extra_css,
+        style_files=("page/about.css",),
+        head_extra=static.page_data_island({"license_text": license_text or ""}),
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="about",

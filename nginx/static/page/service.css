@@ -1,0 +1,7 @@
+.service-slide-viewport { overflow: hidden; width: 100%; }
+.service-slide-track { display: flex; width: 200%; transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1); }
+.service-slide-track.panel-detail { transform: translateX(-50%); }
+.service-slide-list, .service-slide-detail { width: 50%; flex-shrink: 0; min-width: 0; }
+.service-slide-detail .service-control-card { margin-bottom: 1.25rem; padding: 1rem 0.9rem 1.1rem; border-radius: 8px; border: 1px solid var(--color-border); background: var(--color-surface-raised); }
+.service-slide-detail .service-control-card-title { font-weight: 700; font-size: 1.05rem; margin-bottom: 0.85rem; color: var(--color-text); line-height: 1.25; }
+.service-divider { border: none; border-top: 1px solid var(--color-border-nav); margin: 0.4rem 0; }

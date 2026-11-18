@@ -14,7 +14,6 @@ Responsibilities:
 from __future__ import annotations
 
 import html
-import json
 import logging
 import os
 import shutil
@@ -28,6 +27,7 @@ from autostream_config import get_log_level_options
 
 from autostream_sysutils import tail_lines
 
+import autostream_webui_static as static
 from autostream_webui_common import (
     _config_snapshot,
     build_page_html,
@@ -41,11 +41,6 @@ from autostream_webui_state import WebUIState
 # -----------------------------------------------------------------------------
 # Small view helpers
 # -----------------------------------------------------------------------------
-
-def _js_str(value: str) -> str:
-    """Encode a Python string as a safe JS string literal (double-quoted)."""
-    return json.dumps(value)
-
 
 def _logs_detail_header(title: str) -> str:
     return (
@@ -108,24 +103,6 @@ def send_logs_page(
         for level in get_log_level_options()
     )
 
-    _extra_css = (
-        "body { font-size: 14px !important; }\n"
-        ".logs-level-card { border:1px solid var(--color-border); border-radius:8px; padding:0.85rem 0.9rem; background:var(--color-surface-raised); margin-bottom:1rem; }\n"
-        ".logs-level-row { display:flex; align-items:center; gap:0.75rem; }\n"
-        ".logs-level-row label { display:flex; align-items:center; gap:0.75rem; width:100%; }\n"
-        ".logs-level-row label span { color:var(--color-text); }\n"
-        ".logs-level-row select { width:min(100%, 11rem); margin-left:auto; }\n"
-        ".logs-level-actions { margin:0.75rem 0 0; display:flex; align-items:center; gap:0.75rem; }\n"
-        ".logs-level-meta { font-size:0.78rem; color:var(--color-text-muted,#888); margin-top:0.4rem; }\n"
-        ".logs-apply-msg { font-size:0.82rem; margin-left:0.5rem; }\n"
-        ".log-wrapper { background:#111; color:#f5f5f5; padding:0.65rem; border-radius:6px;"
-        " font-family:monospace; font-size:0.65rem; max-height:48vh; overflow:auto; white-space:pre-wrap; }\n"
-        "#applyingOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45);"
-        " z-index:9999; align-items:center; justify-content:center; }\n"
-        "#applyingOverlay.visible { display:flex; }\n"
-        "#applyingBox { background:#fff; color:#222; padding:1.4rem 2rem; border-radius:10px;"
-        " font-size:1.1rem; font-weight:600; box-shadow:0 4px 24px rgba(0,0,0,0.25); }"
-    )
     _body_prefix = (
         "<div id='applyingOverlay' role='status' aria-live='polite'>"
         "<div id='applyingBox'>Applying Change\u2026</div>"
@@ -155,86 +132,12 @@ def send_logs_page(
         f" style='display:block;width:100%;text-align:center;box-sizing:border-box;'>"
         f"Download Log Bundle</a></p>"
     )
-    _body_suffix = (
-        "<script>\n"
-        f"  var _csrfToken = {_js_str(csrf_token)};\n"
-        "  function _fmtChangedAt(ts) {\n"
-        "    if (!ts) return 'Time unknown';\n"
-        "    try { return new Date(ts).toLocaleString(); } catch(e) { return ts; }\n"
-        "  }\n"
-        "  function _loadLevel() {\n"
-        "    fetch('/api/log-level', {credentials:'same-origin'})\n"
-        "      .then(function(r){return r.json();})\n"
-        "      .then(function(d){\n"
-        "        if (!d.ok) return;\n"
-        "        var sel = document.getElementById('log_level');\n"
-        "        if (sel) sel.value = d.level;\n"
-        "        var meta = document.getElementById('logLevelMeta');\n"
-        "        if (meta) {\n"
-        "          var who = d.changed_by === 'system' ? 'System' : 'User';\n"
-        "          meta.textContent = 'Last changed by ' + who + ' \u00b7 ' + _fmtChangedAt(d.changed_at);\n"
-        "        }\n"
-        "      })\n"
-        "      .catch(function(){});\n"
-        "  }\n"
-        "  document.getElementById('logLevelSaveBtn').addEventListener('click', function() {\n"
-        "    var sel = document.getElementById('log_level');\n"
-        "    if (!sel) return;\n"
-        "    var lvl = sel.value;\n"
-        "    var overlay = document.getElementById('applyingOverlay');\n"
-        "    var msg = document.getElementById('logLevelMsg');\n"
-        "    if (overlay) overlay.classList.add('visible');\n"
-        "    if (msg) msg.textContent = '';\n"
-        "    fetch('/api/log-level', {\n"
-        "      method: 'PUT',\n"
-        "      credentials: 'same-origin',\n"
-        "      headers: {'Content-Type':'application/json','X-CSRF-Token':_csrfToken},\n"
-        "      body: JSON.stringify({level: lvl})\n"
-        "    })\n"
-        "    .then(function(r){return r.json();})\n"
-        "    .then(function(d){\n"
-        "      if (overlay) overlay.classList.remove('visible');\n"
-        "      if (msg) {\n"
-        "        if (d.ok) {\n"
-        "          var ap = d.applied || {};\n"
-        "          var parts = [];\n"
-        "          if (ap.monitor === false) parts.push('monitor not updated');\n"
-        "          if (ap.owntone === false) parts.push('OwnTone not updated');\n"
-        "          if (ap.nginx === false) parts.push('NGINX not updated');\n"
-        "          msg.textContent = parts.length ? 'Saved (partial: ' + parts.join(', ') + ')' : 'Saved';\n"
-        "        } else {\n"
-        "          msg.textContent = 'Error: ' + (d.error || 'save failed');\n"
-        "        }\n"
-        "      }\n"
-        "      if (d.ok) _loadLevel();\n"
-        "    })\n"
-        "    .catch(function(e){\n"
-        "      if (overlay) overlay.classList.remove('visible');\n"
-        "      if (msg) msg.textContent = 'Save failed';\n"
-        "    });\n"
-        "  });\n"
-        "  window.addEventListener('load', function() {\n"
-        "    _loadLevel();\n"
-        "    var w = document.getElementById('logWrapper');\n"
-        "    var b = document.getElementById('logDlBtn');\n"
-        "    var ua = navigator.userAgent || '';\n"
-        "    var isIPhone = /iPhone/.test(ua);\n"
-        "    var isStandalone =\n"
-        "      (window.navigator && window.navigator.standalone === true) ||\n"
-        "      (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches);\n"
-        "    if (b && isIPhone && isStandalone) {\n"
-        "      b.style.display = 'none';\n"
-        "    }\n"
-        "    if (w && b && b.style.display !== 'none') {\n"
-        "      b.style.width = w.offsetWidth + 'px';\n"
-        "    }\n"
-        "  });\n"
-        "</script>"
-    )
+    _body_suffix = static.script_tag("page/logs.js")
     html_body = build_page_html(
         "Logs",
         _body_html,
-        extra_css=_extra_css,
+        style_files=("page/logs.css",),
+        head_extra=static.page_data_island({"csrf_token": csrf_token}),
         body_prefix=_body_prefix,
         body_suffix=_body_suffix,
         lic_html=lic_html,

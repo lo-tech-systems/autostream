@@ -20,6 +20,7 @@ import autostream_player_service as _ps
 import autostream_state as _state
 from autostream_sysutils import StaticSystemFacts
 import autostream_webui_page_about as _about
+from _source_text import page_with_static
 
 
 # ---------------------------------------------------------------------------
@@ -1259,7 +1260,7 @@ def _render_about_page_html() -> str:
          patch("autostream_webui_page_about.render_license_md", return_value=""):
         _about.send_about_page(handler, state)
 
-    return buf.getvalue().decode("utf-8")
+    return page_with_static(buf.getvalue().decode("utf-8"))
 
 
 class TestAboutPageDomIds:

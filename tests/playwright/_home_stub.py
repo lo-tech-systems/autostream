@@ -9,7 +9,9 @@ while its dict is non-empty, so a test that leaves one empty sees the plain
 containers are shared by every importer and are mutated in place, never
 rebound. ``START_FAILURE``, when non-empty, is added to the outputs reply as its
 ``start_failure`` field. ``PATHS`` lists the path of every ``/api/*`` GET the
-server has answered.
+server has answered; ``API`` maps a GET path to the reply it gets, ahead of the
+plain ``{"ok": true}``. ``POST_PATHS`` and ``POST_TOKENS`` record, for each POST
+or PUT, its path and its ``X-CSRF-Token`` header.
 """
 from __future__ import annotations
 
@@ -39,6 +41,9 @@ REMOTE_HOME: dict = {}
 REMOTE_HOME_POLLS: list = []
 START_FAILURE: dict = {}
 PATHS: list = []
+API: dict = {}
+POST_PATHS: list = []
+POST_TOKENS: list = []
 
 _BANNER_KEYS = ("stylus", "belt", "bearing", "dial_update", "sample_rate")
 
@@ -183,6 +188,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path.startswith("/api/appliances/") and path.endswith("/home") and REMOTE_HOME:
             REMOTE_HOME_POLLS.append(1)
             self._send(json.dumps(REMOTE_HOME).encode(), "application/json")
+        elif path in API:
+            self._send(json.dumps(API[path]).encode(), "application/json")
         elif self.path.startswith("/api/"):
             self._send(b'{"ok": true}', "application/json")
         else:
@@ -191,8 +198,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         n = int(self.headers.get("Content-Length", "0"))
         POSTS.append(json.loads(self.rfile.read(n) or b"{}"))
+        POST_PATHS.append(self.path.split("?", 1)[0])
+        POST_TOKENS.append(self.headers.get("X-CSRF-Token", ""))
         reply = REPLIES.pop(0) if REPLIES else {"ok": True}
         self._send(json.dumps(reply).encode(), "application/json")
+
+    do_PUT = do_POST
 
     def log_message(self, *_a) -> None:
         pass

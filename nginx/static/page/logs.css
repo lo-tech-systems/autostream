@@ -1,0 +1,13 @@
+body { font-size: 14px !important; }
+.logs-level-card { border:1px solid var(--color-border); border-radius:8px; padding:0.85rem 0.9rem; background:var(--color-surface-raised); margin-bottom:1rem; }
+.logs-level-row { display:flex; align-items:center; gap:0.75rem; }
+.logs-level-row label { display:flex; align-items:center; gap:0.75rem; width:100%; }
+.logs-level-row label span { color:var(--color-text); }
+.logs-level-row select { width:min(100%, 11rem); margin-left:auto; }
+.logs-level-actions { margin:0.75rem 0 0; display:flex; align-items:center; gap:0.75rem; }
+.logs-level-meta { font-size:0.78rem; color:var(--color-text-muted,#888); margin-top:0.4rem; }
+.logs-apply-msg { font-size:0.82rem; margin-left:0.5rem; }
+.log-wrapper { background:#111; color:#f5f5f5; padding:0.65rem; border-radius:6px; font-family:monospace; font-size:0.65rem; max-height:48vh; overflow:auto; white-space:pre-wrap; }
+#applyingOverlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:9999; align-items:center; justify-content:center; }
+#applyingOverlay.visible { display:flex; }
+#applyingBox { background:#fff; color:#222; padding:1.4rem 2rem; border-radius:10px; font-size:1.1rem; font-weight:600; box-shadow:0 4px 24px rgba(0,0,0,0.25); }

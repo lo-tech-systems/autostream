@@ -29,6 +29,7 @@ from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _source_text import page_with_static
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -555,7 +556,8 @@ class TestAlignPageSelectionVisibility:
 
         send_align_page(handler, state)
 
-        body = sent["body"] if isinstance(sent["body"], str) else sent["body"].decode("utf-8")
+        body = page_with_static(
+            sent["body"] if isinstance(sent["body"], str) else sent["body"].decode("utf-8"))
         assert "alignStartBtn" in body
         assert "Measurement result" not in body
 
@@ -592,7 +594,8 @@ class TestAlignPagePrivacyAndTitle:
 
         send_align_page(handler, state)
 
-        body = sent["body"] if isinstance(sent["body"], str) else sent["body"].decode("utf-8")
+        body = page_with_static(
+            sent["body"] if isinstance(sent["body"], str) else sent["body"].decode("utf-8"))
         assert "onclick='alignShowPrivacy()'" in body
         assert ">Privacy<" in body
         assert "id=\"infoModal\"" in body

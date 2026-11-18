@@ -47,6 +47,10 @@ def _clean_stub():
     stub.REMOTE_HOME_POLLS.clear()
     stub.POSTS.clear()
     stub.PATHS.clear()
+    stub.API.clear()
+    stub.REPLIES.clear()
+    stub.POST_PATHS.clear()
+    stub.POST_TOKENS.clear()
 
 
 def _wait_for(page: "Page", done, what: str) -> None:
@@ -125,5 +129,95 @@ class TestEqualiser:
             poll = f"/api/appliances/{stub.REMOTE_APPLIANCE_ID}/equaliser"
             _wait_for(page, lambda: poll in stub.PATHS, "the remote equaliser poll")
             assert page.evaluate("window.__POLL_URL") == poll
+        finally:
+            server.shutdown()
+
+
+@_requires_browser
+class TestAbout:
+    def test_the_system_panel_fills_from_the_system_reply(self, page: "Page"):
+        server, base = start_server(_page_stub.render("about"))
+        try:
+            errors = _watch_errors(page)
+            stub.API["/api/about/system"] = {
+                "ok": True, "builds": {"autostream": "9.9.9"}, "device": {"model": "Test Model"},
+                "os": {"pretty_name": "Test OS"}, "playback_hours": 12.5, "services": []}
+            page.goto(f"{base}/")
+            expect(page.locator("#aboutBuildAutostream")).to_have_text("9.9.9")
+            expect(page.locator("#aboutDeviceModel")).to_have_text("Test Model")
+            expect(page.locator("#aboutPlaybackHours")).to_have_text("12.5 hours")
+            assert errors == []
+        finally:
+            server.shutdown()
+
+    def test_the_copy_button_copies_the_licence_text_from_the_island(self, page: "Page"):
+        text = "Licence line one </script> & more"
+        server, base = start_server(_page_stub.render("about", license_text=text))
+        try:
+            page.goto(f"{base}/")
+            page.evaluate(
+                "Object.defineProperty(navigator, 'clipboard', {configurable: true,"
+                " value: {writeText: async function (t) { window.__copied = t; }}});")
+            page.evaluate("openAboutPanel('license')")
+            page.click("#copyLicenseBtn")
+            expect(page.locator("#copyLicenseBtn")).to_have_text("Copied")
+            assert page.evaluate("window.__copied") == text
+        finally:
+            server.shutdown()
+
+
+@_requires_browser
+class TestAlign:
+    def test_start_shows_the_reason_the_server_gives(self, page: "Page"):
+        server, base = start_server(_page_stub.render("align"))
+        try:
+            stub.REPLIES.append({"ok": False, "error": "output_ids must list at least two outputs"})
+            page.goto(f"{base}/")
+            page.click("#alignStartBtn")
+            expect(page.locator("#alignStatus")).to_have_text(
+                "Could not start: output_ids must list at least two outputs")
+            assert stub.POST_PATHS == ["/api/align/start"]
+        finally:
+            server.shutdown()
+
+    def test_the_status_poll_runs(self, page: "Page"):
+        server, base = start_server(_page_stub.render("align"))
+        try:
+            page.goto(f"{base}/")
+            _wait_for(page, lambda: "/api/align/status" in stub.PATHS, "the align status poll")
+        finally:
+            server.shutdown()
+
+
+@_requires_browser
+class TestService:
+    def test_a_reset_button_posts_the_reset(self, page: "Page"):
+        server, base = start_server(_page_stub.render("service"))
+        try:
+            page.goto(f"{base}/")
+            page.evaluate("doServiceReset('stylus', 1)")
+            page.wait_for_timeout(300)
+            if page.locator("#svcConfirmModal.show").count():
+                page.click("#svcConfirmOk")
+            _wait_for(page, lambda: "/api/service/reset" in stub.POST_PATHS, "the reset post")
+            assert stub.POSTS[-1] == {"item": "stylus", "input": 1}
+        finally:
+            server.shutdown()
+
+
+@_requires_browser
+class TestLogs:
+    def test_saving_the_log_level_posts_it_with_the_page_token(self, page: "Page"):
+        server, base = start_server(_page_stub.render("logs"))
+        try:
+            errors = _watch_errors(page)
+            page.goto(f"{base}/")
+            page.select_option("#log_level", index=1)
+            level = page.input_value("#log_level")
+            page.click("#logLevelSaveBtn")
+            _wait_for(page, lambda: "/api/log-level" in stub.POST_PATHS, "the log level save")
+            assert stub.POSTS[-1] == {"level": level}
+            assert stub.POST_TOKENS[-1] == "t"
+            assert errors == []
         finally:
             server.shutdown()

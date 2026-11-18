@@ -28,10 +28,10 @@ MAX_INLINE = {
     "remote_home": 1,
     "equaliser": 0,
     "remote_equaliser": 1,
-    "about": 2,
-    "align": 2,
-    "service": 1,
-    "logs": 1,
+    "about": 0,
+    "align": 1,
+    "service": 0,
+    "logs": 0,
     "owntone": 2,
     "owntone_restarting": 1,
     "rebooting": 2,
@@ -43,7 +43,7 @@ MAX_INLINE = {
 SETUP_INLINE = 12
 
 # Pages whose scripts are all files: nothing inline but the token bootstrap.
-EXTRACTED = ("home", "remote_home", "equaliser", "remote_equaliser")
+EXTRACTED = ("home", "remote_home", "equaliser", "remote_equaliser", "about", "align", "service", "logs")
 
 _BOOTSTRAP = "window.__CSRF='t';"
 # The local equaliser reads its token from a hidden field, so it carries no inline script.
@@ -52,6 +52,10 @@ EXPECTED_INLINE = {
     "remote_home": [_BOOTSTRAP],
     "equaliser": [],
     "remote_equaliser": [_BOOTSTRAP],
+    "about": [],
+    "align": [_BOOTSTRAP],
+    "service": [],
+    "logs": [],
 }
 # The page's own scripts; the island must come before the first of them.
 FIRST_FILES = {
@@ -59,6 +63,8 @@ FIRST_FILES = {
     "remote_home": ("home_cards.js",),
     "equaliser": ("equaliser_curve.js", "equaliser.js"),
     "remote_equaliser": ("remote_equaliser.js", "equaliser_curve.js"),
+    "about": ("about.js",),
+    "logs": ("logs.js",),
 }
 
 # Island keys each extracted page may carry, and the route that serves it.
@@ -73,12 +79,20 @@ ISLAND_KEYS = {
     "remote_home": _HOME_KEYS | {"remote_aid", "remote_hostname", "poll_url"},
     "equaliser": _EQ_KEYS,
     "remote_equaliser": _EQ_KEYS | {"save_url", "reset_url", "status_url", "remote_aid", "remote_hostname"},
+    "about": {"license_text"},
+    "align": set(),
+    "service": set(),
+    "logs": {"csrf_token"},
 }
 PAGE_PATH = {
     "home": "/",
     "remote_home": "/a/" + _page_stub.REMOTE_APPLIANCE_ID + "/",
     "equaliser": "/equaliser",
     "remote_equaliser": "/a/" + _page_stub.REMOTE_APPLIANCE_ID + "/equaliser",
+    "about": "/about",
+    "align": "/align",
+    "service": "/service",
+    "logs": "/logs",
 }
 
 
@@ -119,6 +133,9 @@ def test_an_extracted_page_carries_nothing_inline_but_its_token(page):
 @pytest.mark.parametrize("page", EXTRACTED)
 def test_the_island_comes_before_the_first_page_script(page):
     html = _render(page)
+    if not ISLAND_KEYS[page]:
+        assert 'id="page-data"' not in html
+        return
     island = html.index('id="page-data"')
     first = min(html.index(f"/static/page/{name}") for name in FIRST_FILES[page])
     assert island < first
@@ -191,3 +208,15 @@ def test_the_equaliser_island_holds_the_curve_geometry_and_the_bands(page):
     assert all(set(b) == {"key", "type", "freq_hz", "q", "label"} for b in island["eq_bands"])
     assert isinstance(island["eq_fs"], int) and island["eq_fs"] > 0
     assert island["selector_current_page"] == "equaliser"
+
+
+def test_the_about_island_carries_the_licence_text_and_cannot_end_its_element():
+    text = "Terms </script><script>alert(1)</script> & <!-- more"
+    html = _page_stub.render("about", license_text=text).decode("utf-8")
+    assert _source_text.page_data(html) == {"license_text": text}
+    assert html.count("</script>") == html.count("<script")
+    assert "alert(1)" not in _source_text.page_scripts(html)
+
+
+def test_the_logs_island_carries_the_page_token():
+    assert _source_text.page_data(_render("logs")) == {"csrf_token": "t"}

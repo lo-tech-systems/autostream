@@ -33,7 +33,7 @@ from autostream_config import (
 from autostream_state import store
 from autostream_playback_stats import InputPlaybackSnapshot
 
-from autostream_webui_assets import SERVICE_CSS, SERVICE_JS
+import autostream_webui_static as static
 
 from autostream_webui_common import (
     _config_snapshot,
@@ -613,14 +613,13 @@ def send_service_page(
         + "</div>"
         f"</div>"
         f"</div>"
-        f"<script>{SERVICE_JS}</script>"
+        + static.script_tag("page/service.js")
     )
 
     html_body = build_page_html(
         "Service",
         _body_html,
-        style_files=("page/modal.css",),
-        extra_css=SERVICE_CSS,
+        style_files=("page/modal.css", "page/service.css"),
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="service",
