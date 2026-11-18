@@ -3578,6 +3578,15 @@ class TestPinWithSelect:
         send(ew, "1", "connected", selected=True, pin_pending=False, at_s=1)
         assert applied.outcome.result(1) == (WriteOutcome(ok=True),)
 
+    def test_the_wait_covers_a_slow_pairing(self, ew):
+        # The computation's bound and one slow answer, with a margin
+        assert outputs.PIN_OUTCOME_S == 30.0
+        applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
+        at(ew, 26)
+        assert not applied.outcome.done()
+        send(ew, "1", "stopped", selected=True, pin_pending=False, at_s=27)
+        assert applied.outcome.result(1) == (WriteOutcome(ok=True),)
+
     def test_parked_outcomes_expire_as_pending(self, ew):
         applied = ew.a.submit_pin("1", "1234", select=True, volume=30)
         at(ew, outputs.PIN_OUTCOME_S - 1)

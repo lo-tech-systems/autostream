@@ -94,8 +94,15 @@ _READ_BACKOFF_S = (0.5, 1.0, 2.0, 5.0)
 _FAILED_READS_BEFORE_DOWN = 3
 # With events, a burst of output changes is read at most once a second
 CHANGED_READ_MIN_S = 1.0
-# A PIN sent with its select waits this long for the player's verdict
-PIN_OUTCOME_S = 15.0
+# owntone-mini's own bounds on a PIN pairing: the pair-setup computation is
+# given up after 10 s, its time in the queue included, and each request to
+# the speaker waits up to 15 s for its answer
+PAIR_COMPUTE_BOUND_S = 10.0
+PAIR_ANSWER_BOUND_S = 15.0
+# A PIN sent with its select waits this long for the player's verdict: a
+# pairing whose computation and one slow answer both run to their bounds,
+# and a margin for the event that reports it
+PIN_OUTCOME_S = PAIR_COMPUTE_BOUND_S + PAIR_ANSWER_BOUND_S + 5.0
 
 # The speaker states an output_state event may carry; any other makes the
 # authority read the list
