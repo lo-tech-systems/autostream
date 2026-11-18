@@ -37,7 +37,7 @@ from dial_hd_actions import (
     ACTION_NAME_RE, ACTIONS, HD_INTENTS, Context, InvalidArgument, integer, prepare,
 )
 from dial_hd_backdrop import BackdropStore
-from dial_hd_session import SESSION_TTL_S, SessionStore
+from dial_hd_session import SESSION_TTL_S, DevListener, SessionStore
 from dial_hd_events import SSE_MAX_CLIENTS, PartDiffer, PartStep, encode_parts, serve_events, state_bytes
 from dial_hd_state import build_parts
 from dial_http_common import MAX_BODY, TOO_MANY_ATTEMPTS, content_length, json_bytes
@@ -261,19 +261,11 @@ class HdServer:
         # page can tell a restarted dial's sequence from this one's.
         self._boot = secrets.token_hex(8)
         self._port = HD_PORT if port is None else port
-        self._dev_port = HD_DEV_PORT if dev_port is None else dev_port
-        self._dev_bind_address = dev_bind_address
         self._info_fn = info_fn
         self._info_lock = threading.Lock()
         self._info_cache: tuple[float, list] | None = None
         self._backdrops = backdrops or BackdropStore(self.static_path("logo.png") or LOGO_PATH)
         self._ctx = Context(core, http_server)
-        # Development listener: the listener, its thread, a flag that ends its
-        # event streams, and the sessions.
-        self._dev_lock = threading.Lock()
-        self._dev_httpd: _HdHTTPServer | None = None
-        self._dev_thread: threading.Thread | None = None
-        self._dev_stopping = threading.Event()
         self.sessions = SessionStore(clock)
         self._stopping = threading.Event()
         self._client_lock = threading.Lock()
@@ -307,6 +299,13 @@ class HdServer:
             method, path, handler, *prefix = route
             self._routes.append((method, path, handler, bool(prefix and prefix[0])))
         self._handler_class = self._make_handler()
+        # The development listener, bound only while access is on.
+        self.dev_listener = DevListener(
+            (dev_bind_address, HD_DEV_PORT if dev_port is None else dev_port),
+            make_server=lambda address: _HdHTTPServer(address, self._handler_class),
+            sessions=self.sessions, read_pin=self._current_pin,
+            on_closed=hub.publish if hub is not None else None,
+        )
         self._server = _HdHTTPServer((LOOPBACK_ADDRESS, self._port), self._handler_class)
         self._differ = PartDiffer(self.client_count)
         if hub is not None:
@@ -358,7 +357,7 @@ class HdServer:
 
     def stop(self) -> None:
         self._stopping.set()
-        self._close_dev()
+        self.dev_listener.stop()
         with self._lifecycle_lock:
             thread, self._thread = self._thread, None
         if thread is not None:
@@ -445,11 +444,7 @@ class HdServer:
     @property
     def dev_port(self) -> "int | None":
         """The development listener's bound port, or None while it is off."""
-        httpd = self._dev_httpd
-        return httpd.server_address[1] if httpd is not None else None
-
-    def dev_access_enabled(self) -> bool:
-        return self._dev_httpd is not None
+        return self.dev_listener.port
 
     def set_dev_access(self, enabled: bool) -> None:
         """Open or close the development listener. Opening needs a PIN
@@ -460,9 +455,9 @@ class HdServer:
             logging.warning("HD development access needs a PIN; not opened")
             enabled = False
         if enabled and not self._stopping.is_set():
-            self._open_dev()
+            self.dev_listener.start()
         else:
-            self._close_dev()
+            self.dev_listener.stop()
 
     def on_config(self, cfg) -> None:
         """Config listener: follow the development access setting, and drop
@@ -477,45 +472,6 @@ class HdServer:
         if self._http_server is None:
             return ""
         return self._http_server.current_pin or ""
-
-    def _open_dev(self) -> None:
-        with self._dev_lock:
-            if self._dev_httpd is not None:
-                return
-            self._dev_stopping = threading.Event()
-            try:
-                httpd = _HdHTTPServer(
-                    (self._dev_bind_address, self._dev_port), self._handler_class,
-                )
-            except OSError as e:
-                logging.warning("HD development listener not opened: %s", e)
-                return
-            httpd.hd_dev = True
-            httpd.hd_stopping = self._dev_stopping
-            thread = threading.Thread(
-                target=httpd.serve_forever, kwargs={"poll_interval": 0.2},
-                daemon=True, name="dial-hd-dev",
-            )
-            self._dev_httpd, self._dev_thread = httpd, thread
-            thread.start()
-        self.sessions.adopt_pin(self._current_pin())
-        logging.info("HD development listener open on port %d", self.dev_port)
-
-    def _close_dev(self) -> None:
-        with self._dev_lock:
-            httpd, self._dev_httpd = self._dev_httpd, None
-            thread, self._dev_thread = self._dev_thread, None
-            self._dev_stopping.set()
-        self.sessions.clear()
-        if httpd is None:
-            return
-        httpd.shutdown()
-        if thread is not None:
-            thread.join(2.0)
-        httpd.server_close()
-        if self._hub is not None:
-            self._hub.publish()
-        logging.info("HD development listener closed")
 
     # ---- sessions ----------------------------------------------------------
 

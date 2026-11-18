@@ -4,14 +4,16 @@ The development (LAN) listener is behind a PIN login. A login issues a
 session: a token, an expiry and the PIN epoch it was issued under. Sessions
 live in memory only, are capped in number, and all end when the PIN changes.
 
-SessionStore holds them. Its lock is held alone: the PIN is read from the
-management server before the store is asked to adopt it, never under the
-store's lock.
+SessionStore holds them. DevListener owns the listener itself: it binds only
+when asked, and closing it drops every session and ends its event streams.
+The store's lock and the listener's lock are each held alone: the PIN is read
+from the management server before the store is asked to adopt it.
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 """
 from __future__ import annotations
 
+import logging
 import re
 import secrets
 import threading
@@ -86,3 +88,77 @@ class SessionStore:
         with self._lock:
             if self._last_pin is None:
                 self._last_pin = pin
+
+
+class DevListener:
+    """The development listener: one HTTP server on the LAN address, run on
+    its own thread while it is open.
+
+    *make_server* builds the server for an address (and may raise OSError);
+    *sessions* is cleared whenever the listener closes; *read_pin* returns
+    the PIN now in force; *on_closed*, when given, is called after a listener
+    that was open has closed, so its event streams wake and end."""
+
+    def __init__(
+        self, address: tuple[str, int], *, make_server: Callable[[tuple[str, int]], object],
+        sessions: SessionStore, read_pin: Callable[[], str], on_closed: Callable[[], None] | None,
+    ) -> None:
+        self._address = address
+        self._make_server = make_server
+        self._sessions = sessions
+        self._read_pin = read_pin
+        self._on_closed = on_closed
+        self._lock = threading.Lock()
+        self._httpd = None
+        self._thread: threading.Thread | None = None
+        self._stopping = threading.Event()
+
+    @property
+    def port(self) -> int | None:
+        """The bound port, or None while closed."""
+        httpd = self._httpd
+        return httpd.server_address[1] if httpd is not None else None
+
+    @property
+    def is_open(self) -> bool:
+        return self._httpd is not None
+
+    def start(self) -> None:
+        """Bind and serve. Does nothing when already open, and leaves the
+        listener closed when the port cannot be bound."""
+        with self._lock:
+            if self._httpd is not None:
+                return
+            self._stopping = threading.Event()
+            try:
+                httpd = self._make_server(self._address)
+            except OSError as e:
+                logging.warning("HD development listener not opened: %s", e)
+                return
+            httpd.hd_dev = True
+            httpd.hd_stopping = self._stopping
+            thread = threading.Thread(
+                target=httpd.serve_forever, kwargs={"poll_interval": 0.2},
+                daemon=True, name="dial-hd-dev",
+            )
+            self._httpd, self._thread = httpd, thread
+            thread.start()
+        self._sessions.adopt_pin(self._read_pin())
+        logging.info("HD development listener open on port %d", self.port)
+
+    def stop(self) -> None:
+        """Close the listener, drop every session and end its event streams."""
+        with self._lock:
+            httpd, self._httpd = self._httpd, None
+            thread, self._thread = self._thread, None
+            self._stopping.set()
+        self._sessions.clear()
+        if httpd is None:
+            return
+        httpd.shutdown()
+        if thread is not None:
+            thread.join(2.0)
+        httpd.server_close()
+        if self._on_closed is not None:
+            self._on_closed()
+        logging.info("HD development listener closed")

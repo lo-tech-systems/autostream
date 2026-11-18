@@ -196,7 +196,7 @@ class Sse:
 
 class TestOffByDefault:
     def test_no_dev_listener_exists_until_enabled(self, server):
-        assert server.dev_access_enabled() is False
+        assert server.dev_listener.is_open is False
         assert server.dev_port is None
 
     def test_the_loopback_listener_does_not_serve_login(self, server):
@@ -218,14 +218,14 @@ class TestEnablingAndDisabling:
     def test_enabling_without_a_pin_is_refused(self, stack, caplog):
         stack.management.update_cfg(SimpleNamespace(pin="", hd_dev_access=False, display=stack.management.display_config))
         stack.server.set_dev_access(True)
-        assert stack.server.dev_access_enabled() is False
+        assert stack.server.dev_listener.is_open is False
         assert stack.server.dev_port is None
 
     def test_enabling_with_no_management_server_is_refused(self, core, tmp_path):
         server = hds.HdServer(SimpleNamespace(), core, port=0, dev_port=0, static_root=write_static(tmp_path / "x"))
         try:
             server.set_dev_access(True)
-            assert server.dev_access_enabled() is False
+            assert server.dev_listener.is_open is False
         finally:
             server.stop()
 
@@ -272,7 +272,7 @@ class TestEnablingAndDisabling:
         )
         try:
             server.set_dev_access(True)
-            assert server.dev_access_enabled() is False
+            assert server.dev_listener.is_open is False
         finally:
             server.stop()
             blocker.close()
@@ -284,23 +284,23 @@ class TestConfigListener:
 
     def test_access_on_with_a_pin_opens_it(self, server):
         server.on_config(self.cfg())
-        assert server.dev_access_enabled()
+        assert server.dev_listener.is_open
 
     def test_access_off_closes_it(self, server):
         server.on_config(self.cfg())
         server.on_config(self.cfg(access=False))
-        assert not server.dev_access_enabled()
+        assert not server.dev_listener.is_open
 
     def test_clearing_the_pin_closes_it_and_drops_sessions(self, server, stack):
         server.on_config(self.cfg())
         cookie = signed_in(server)
         server.on_config(self.cfg(pin=""))
-        assert not server.dev_access_enabled()
+        assert not server.dev_listener.is_open
         assert server.session_valid(cookie.split("=", 1)[1]) is False
 
     def test_access_on_with_no_pin_stays_closed(self, server):
         server.on_config(self.cfg(pin=""))
-        assert not server.dev_access_enabled()
+        assert not server.dev_listener.is_open
 
     def test_a_changed_pin_invalidates_sessions_and_keeps_the_listener(self, server, stack):
         server.on_config(self.cfg())
@@ -308,7 +308,7 @@ class TestConfigListener:
         assert api(server, "/api/v1/state", cookie)[0].status == 200
         stack.management._cfg.pin = "1357"
         server.on_config(self.cfg(pin="1357"))
-        assert server.dev_access_enabled()
+        assert server.dev_listener.is_open
         assert api(server, "/api/v1/state", cookie)[0].status == 401
         # The new PIN signs in; the old one does not.
         assert login(server, pin=PIN)[0].status == 403
@@ -326,11 +326,11 @@ class TestConfigListener:
         new_cfg = copy.copy(stack.management._cfg)
         new_cfg.hd_dev_access = True
         stack.management.update_cfg(new_cfg)
-        assert server.dev_access_enabled()
+        assert server.dev_listener.is_open
         new_cfg = copy.copy(new_cfg)
         new_cfg.hd_dev_access = False
         stack.management.update_cfg(new_cfg)
-        assert not server.dev_access_enabled()
+        assert not server.dev_listener.is_open
 
 
 # ---- before a login --------------------------------------------------------

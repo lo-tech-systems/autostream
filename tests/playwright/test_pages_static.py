@@ -600,8 +600,8 @@ def test_every_hd_page_module_has_a_ceiling():
 HD_PY_CEILINGS = {
     "dial_hd_state.py": 338,
     "dial_hd_actions.py": 145,
-    "dial_hd_server.py": 897,
-    "dial_hd_session.py": 75,
+    "dial_hd_server.py": 856,
+    "dial_hd_session.py": 143,
     "dial_hd_events.py": 285,
 }
 
