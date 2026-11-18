@@ -358,6 +358,8 @@ _SPECIAL_SCHEME_EXPECTED = [
     ("/api/federation/v1", True, "GET", "bearer"),
     ("/api/federation/v1", True, "POST", "bearer"),
     ("/api/v1/intents/", True, "POST", "protocol"),
+    ("/api/v1/peers/", True, "POST", "protocol"),
+    ("/api/v1/peers/", True, "GET", "browser"),
     ("/api/dial/volume", False, "POST", "dial"),
     ("/api/dial/mute", False, "POST", "dial"),
     ("/api/dial/status", False, "POST", "dial"),

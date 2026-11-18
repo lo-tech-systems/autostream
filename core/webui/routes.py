@@ -699,6 +699,32 @@ register(
 
 register(
     Route(
+        prefix="/api/v1/peers/",
+        methods=("GET",),
+        handler="webui.peer.relay.serve_peer_get",
+        auth=AuthRequirement.NONE,
+        kind="api",
+        allow_unconfigured=False,
+        poll_log=True,
+        comment="Another appliance's state and change stream; AUTH.ALLOWLIST_PREFIXES covers the prefix.",
+    )
+)
+
+register(
+    Route(
+        prefix="/api/v1/peers/",
+        methods=("POST",),
+        handler="webui.peer.relay.serve_peer_intent",
+        auth=AuthRequirement.NONE,
+        scheme="protocol",
+        kind="api",
+        allow_unconfigured=True,
+        comment="Checks the browser's token and the unconfigured case itself, as the intents route does.",
+    )
+)
+
+register(
+    Route(
         path="/api/about/system",
         methods=("GET",),
         handler="webui.browser.about._route_get_about_system",

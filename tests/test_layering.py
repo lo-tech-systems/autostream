@@ -122,6 +122,7 @@ ALLOWED_FOR_WEBUI: dict[str, frozenset[str]] = {
     "autostream_appliances": frozenset({
         "get_all_appliances", "get_appliance_sighting", "get_conflict_ids",
         "scanner_ready", "grace_remaining_ms", "ApplianceSighting",
+        "resolve",
     }),
     "autostream_pin_pairing": frozenset({"PIN_RE", "REQUESTER_WEBUI", "dial_requester"}),
     "autostream_align": frozenset({

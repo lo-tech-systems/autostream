@@ -337,6 +337,15 @@ class TestGatewayRoutesAuth:
         mgr._pin_status = "ok"
         assert mgr.requires_auth("/api/appliances/aabbccdd1122334455aa/equaliser") is False
 
+    @pytest.mark.parametrize("tail", ["state", "events", "intents/outputs.set"])
+    def test_requires_auth_returns_false_for_the_peer_relay(self, tail):
+        from autostream_auth import AuthManager
+        mgr = AuthManager(config_path="dummy.ini")
+        mgr._pin_loaded = True
+        mgr._pin_value = "secret"
+        mgr._pin_status = "ok"
+        assert mgr.requires_auth(f"/api/v1/peers/aabbccdd1122334455aa/{tail}") is False
+
 
 # ---------------------------------------------------------------------------
 # /api/about/system — GET allowlist coverage (Test 18)

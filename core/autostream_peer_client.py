@@ -158,6 +158,11 @@ class PeerClient:
         with self._cond:
             self._cond.notify_all()
 
+    @property
+    def stopped(self) -> bool:
+        """Whether stop() has been called."""
+        return self._stop.is_set()
+
     @staticmethod
     def _shut(sock: socket.socket) -> None:
         try:

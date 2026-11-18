@@ -48,6 +48,7 @@ import webui.dial.api
 import webui.dial.management
 import webui.peer.federation
 import webui.peer.gateway
+import webui.peer.relay
 import webui.protocol.hub
 import webui.protocol.intents
 import webui.protocol.state
@@ -86,6 +87,7 @@ _ROUTE_MODULES = (
     webui.dial.management,
     webui.peer.federation,
     webui.peer.gateway,
+    webui.peer.relay,
     webui.protocol.state,
     webui.protocol.stream,
     webui.repeat,

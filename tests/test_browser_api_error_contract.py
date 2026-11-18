@@ -684,6 +684,24 @@ class TestStateStreamLocation:
         assert "error_page" not in block
         assert "proxy_intercept_errors" not in block
 
+    def test_the_relayed_stream_has_the_same_unbuffered_location(self):
+        conf = _conf_main()
+        header = 'location ~ "^/api/v1/peers/[0-9a-f]{20}/events$"'
+        assert conf.count(header) == 1
+        block = _location_block(conf[conf.index(header) + len(header):], "")   # past the regex braces
+        assert re.search(r"^\s*proxy_buffering\s+off;", block, re.MULTILINE)
+        assert re.search(r"^\s*proxy_read_timeout\s+90s;", block, re.MULTILINE)
+        assert "proxy_pass $html_backend$uri$is_args$args;" in block
+        assert "error_page" not in block
+
+    def test_only_the_events_path_of_a_peer_matches_the_stream_regex(self):
+        pattern = re.compile(r"^/api/v1/peers/[0-9a-f]{20}/events$")
+        peer = "0123456789abcdef0123"
+        assert pattern.match(f"/api/v1/peers/{peer}/events")
+        assert not pattern.match(f"/api/v1/peers/{peer}/state")
+        assert not pattern.match(f"/api/v1/peers/{peer}/events/x")
+        assert not pattern.match("/api/v1/peers/short/events")
+
     def test_the_general_location_keeps_its_short_read_timeout(self):
         block = _location_block(_conf_main(), "location / {")
         assert re.search(r"^\s*proxy_read_timeout\s+15s;", block, re.MULTILINE)
