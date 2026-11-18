@@ -163,6 +163,9 @@ def speaker_rows(parts) -> list[SpeakerRow]:
             auto_start=auto_start, in_use_by=by,
             in_use_id=(u.get("in_use_id") or "") if by else "",
             connecting=connecting,
+            # Offline units are skipped above, so the offline terms here are
+            # always false; they mirror state_view.js, which can include
+            # offline rows.
             offline=not by and not connecting and offline,
             disabled=bool(by) or (offline and not in_session),
             pin_pending=bool(reported.get("pin_pending")),

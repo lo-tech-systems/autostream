@@ -73,8 +73,7 @@ SCOPES = (SCOPE_CURRENT, SCOPE_ALL)
 
 # How often the dial's poll loop asks the appliances for their state, in
 # whole seconds. Faster means a quicker reaction to a new track or a
-# start/stop, at the cost of more traffic. The default matches
-# dial_display.DISPLAY_POLL_INTERVAL_SECONDS.
+# start/stop, at the cost of more traffic.
 POLL_INTERVAL_MIN_S = 2
 POLL_INTERVAL_MAX_S = 6
 POLL_INTERVAL_DEFAULT_S = 6

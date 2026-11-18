@@ -177,7 +177,8 @@ SELECTOR_TIMEOUT_SECONDS = 18
 
 # The page-dots cycle order — see cycle_pages(). "main" is always available
 # (the fallback every cycle lands on); "repeat" and "eq" are skipped when
-# _repeat_page_available()/self._eq_available says there is nothing to show.
+# _repeat_page_available() / the snapshot's eq_available say there is nothing
+# to show.
 _PAGE_ORDER = ("main", "repeat", "eq")
 
 # The idle screen's offline flash: the Wi-Fi glyph alternates grey/red,

@@ -251,8 +251,8 @@ GEOMETRY_INFO = "info"
 # returns to the list (close_list()'s existing back_to resolution already
 # does the rest). Tier-agnostic and pure like every table here.
 GEOMETRY_INFO_VALUE = "info_value"
-# The EQ page's own table: rich/large only (see eq_layout_for/DialDisplay.
-# _eq_available) -- DOTS/NAME/OUTPUTS reused from the main geometry, plus
+# The EQ page's own table: rich/large only (see eq_layout_for and the
+# snapshot's eq_available) -- DOTS/NAME/OUTPUTS reused from the main geometry, plus
 # the bass/treble bar steppers.
 GEOMETRY_EQ = "eq"
 # A warning or status card's tables, one per button count (1, 2 or 3 cells
