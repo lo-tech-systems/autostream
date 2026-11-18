@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -205,8 +206,12 @@ class TestAccessEvent:
         try:
             assert c.pull_until(b"event: change")
             assert access_events(c) == [{"client": DIAL, "role": "none", "reason": "dial_not_authorized"}]
-            event = server_events(c)[0]
-            assert "session" in event["parts"] and "appliance" in event["parts"]
+            assert server_events(c)[0]["resync"] is True
+            publish("session")
+            deadline = time.monotonic() + 3.0
+            while len(server_events(c)) < 2 and time.monotonic() < deadline:
+                c.pull(0.05)
+            assert "session" in server_events(c)[-1]["data"]
         finally:
             c.close()
 
