@@ -907,7 +907,7 @@ def test_the_new_scenarios_say_what_they_need():
     assert any(ln.startswith("expect log teardown_timeout >= 2: No answer to TEARDOWN") for ln in lines)
 
 
-# --- the concurrency series ----------------------------------------------------------
+# --- concurrent starts and stops ------------------------------------------------------
 
 def _ev(t, row, state, reason="none", member=None, member_state=None, **fields):
     msg = {"type": "event", "kind": "output_state", "speaker": {"id": row, "member_id": member or row},
