@@ -45,8 +45,6 @@ from autostream_config import (
     FIFO_PATH,
     DEVICE_PAUSE_SCOPE_DEFAULT,
     DEVICE_PAUSE_SCOPES,
-    PLAY_GUARD_SECONDS_DEFAULT,
-    PLAY_GUARD_SECONDS_RANGE,
     REPEAT_CODEC_CHOICES,
     SILENCE_THRESHOLD_MAX_DBFS,
     SILENCE_THRESHOLD_MIN_DBFS,
@@ -1347,14 +1345,6 @@ def _validate_pause_off_seconds(value: object) -> int:
     return value
 
 
-def _validate_play_guard_seconds(value: object) -> float:
-    low, high = PLAY_GUARD_SECONDS_RANGE
-    if (isinstance(value, bool) or not isinstance(value, (int, float))
-            or not math.isfinite(value) or not low <= value <= high):
-        raise ValueError(f"play_after_metadata_ignore_seconds must be a number from {low:g} to {high:g}")
-    return float(value)
-
-
 def _live_read_at_use(state: object, value: object) -> bool:
     """These settings are read when the event arrives, so a stored value is
     already in force."""
@@ -1370,12 +1360,6 @@ register_field(
     "outputs.pause_off_seconds", "outputs", "pause_off_seconds", _validate_pause_off_seconds,
     live=_live_read_at_use, type=int, bounds=PAUSE_OFF_SECONDS_RANGE,
     default=PAUSE_OFF_SECONDS_DEFAULT, live_class=LiveClass.LIVE,
-)
-register_field(
-    "outputs.play_after_metadata_ignore_seconds", "outputs", "play_after_metadata_ignore_seconds",
-    _validate_play_guard_seconds,
-    live=_live_read_at_use, type=float, bounds=PLAY_GUARD_SECONDS_RANGE,
-    default=PLAY_GUARD_SECONDS_DEFAULT, live_class=LiveClass.LIVE,
 )
 register_field(
     "outputs.speaker_volume_applies_to_all", "outputs", "speaker_volume_applies_to_all",

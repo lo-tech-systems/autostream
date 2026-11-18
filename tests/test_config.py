@@ -59,7 +59,6 @@ class TestOutputsSettings:
         o = self.parse({}).outputs
         assert o.device_pause_scope == c.DEVICE_PAUSE_SCOPE_DEFAULT
         assert o.pause_off_seconds == c.PAUSE_OFF_SECONDS_DEFAULT == 300
-        assert o.play_after_metadata_ignore_seconds == c.PLAY_GUARD_SECONDS_DEFAULT == 10.0
         assert c.DEVICE_PAUSE_SCOPE_DEFAULT in c.DEVICE_PAUSE_SCOPES
 
     def test_the_default_scope_constant_is_the_dataclass_default(self):
@@ -88,13 +87,9 @@ class TestOutputsSettings:
     def test_the_pause_timeout_is_clamped_or_defaulted(self, value, expected):
         assert self.parse({"outputs": {"pause_off_seconds": value}}).outputs.pause_off_seconds == expected
 
-    @pytest.mark.parametrize("value,expected", [
-        (0, 0.0), (0.5, 0.5), (60, 60.0), (-3, 0.0), (500, 60.0), ("2.5", 2.5),
-        ("soon", 10.0), (None, 10.0), (True, 10.0), (float("nan"), 10.0),
-    ])
-    def test_the_play_guard_is_clamped_or_defaulted(self, value, expected):
-        got = self.parse({"outputs": {"play_after_metadata_ignore_seconds": value}})
-        assert got.outputs.play_after_metadata_ignore_seconds == expected
+    def test_a_saved_play_guard_from_an_earlier_release_is_not_read(self):
+        o = self.parse({"outputs": {"play_after_metadata_ignore_seconds": 10}}).outputs
+        assert not hasattr(o, "play_after_metadata_ignore_seconds")
 
     def test_speaker_volume_applies_to_all_is_off_by_default(self):
         assert c.OutputsConfig().speaker_volume_applies_to_all is False

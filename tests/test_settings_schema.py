@@ -137,7 +137,6 @@ _EXPECTED_SETTINGS_FIELD_PATHS = frozenset({
     "repeat.target_minutes",
     "outputs.device_pause_scope",
     "outputs.pause_off_seconds",
-    "outputs.play_after_metadata_ignore_seconds",
     "outputs.speaker_volume_applies_to_all",
 })
 
@@ -343,7 +342,6 @@ class TestOutputPolicyRows:
     def test_the_rows_are_live_and_read_at_use(self):
         from autostream_settings_schema import LiveClass, get_field_spec
         for path in ("outputs.device_pause_scope", "outputs.pause_off_seconds",
-                     "outputs.play_after_metadata_ignore_seconds",
                      "outputs.speaker_volume_applies_to_all"):
             spec = get_field_spec(path)
             assert spec.live_class is LiveClass.LIVE
@@ -354,7 +352,6 @@ class TestOutputPolicyRows:
         from autostream_settings_schema import get_field_spec
         assert get_field_spec("outputs.device_pause_scope").default == cfg.DEVICE_PAUSE_SCOPE_DEFAULT
         assert get_field_spec("outputs.pause_off_seconds").default == cfg.PAUSE_OFF_SECONDS_DEFAULT
-        assert get_field_spec("outputs.play_after_metadata_ignore_seconds").default == cfg.PLAY_GUARD_SECONDS_DEFAULT
 
     def test_the_speaker_volume_switch_defaults_off_and_takes_only_a_boolean(self):
         from autostream_settings_schema import get_field_spec
@@ -382,13 +379,9 @@ class TestOutputPolicyRows:
             with pytest.raises(ValueError, match="pause_off_seconds"):
                 spec.validate(bad)
 
-    def test_the_play_guard_is_a_number_in_range(self):
+    def test_the_play_guard_is_no_longer_a_setting(self):
         from autostream_settings_schema import get_field_spec
-        spec = get_field_spec("outputs.play_after_metadata_ignore_seconds")
-        assert spec.validate(0) == 0.0 and spec.validate(2.5) == 2.5 and spec.validate(60) == 60.0
-        for bad in (-0.1, 60.1, "3", True, None, float("nan"), float("inf")):
-            with pytest.raises(ValueError, match="play_after_metadata_ignore_seconds"):
-                spec.validate(bad)
+        assert get_field_spec("outputs.play_after_metadata_ignore_seconds") is None
 
     def test_the_include_tv_template_matches_any_output_and_is_passive(self):
         from autostream_settings_schema import LiveClass, get_field_spec, template_leaf

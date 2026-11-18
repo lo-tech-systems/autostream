@@ -21,7 +21,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional
 
-import autostream_runtime as runtime
 from autostream_artwork import ArtworkImage, ARTWORK_TARGET_BYTES, normalise_artwork
 
 
@@ -463,18 +462,11 @@ class OwntoneMetadataPipePublisher:
             try:
                 with os.fdopen(fd, "wb", buffering=0) as out:
                     if kind == "start" and meta is not None:
-                        try:
-                            self._emit_start_bundle(out, meta)
-                        finally:
-                            # The receiver can have the artwork from here.
-                            runtime.note_metadata_push()
+                        self._emit_start_bundle(out, meta)
                         self._session_open = True
                     elif kind == "refresh" and meta is not None:
                         if self._session_open:
-                            try:
-                                self._emit_metadata_refresh_bundle(out, meta)
-                            finally:
-                                runtime.note_metadata_push()
+                            self._emit_metadata_refresh_bundle(out, meta)
                         else:
                             # No open session to refresh -- fall back to a
                             # full session-begin so we still emit valid
@@ -494,10 +486,7 @@ class OwntoneMetadataPipePublisher:
                                 meta = replace(meta, artwork=_load_placeholder_artwork())
                                 with self._held_lock:
                                     self._held_artwork = meta.artwork
-                            try:
-                                self._emit_start_bundle(out, meta)
-                            finally:
-                                runtime.note_metadata_push()
+                            self._emit_start_bundle(out, meta)
                             self._session_open = True
                     elif kind == "end":
                         if self._session_open:

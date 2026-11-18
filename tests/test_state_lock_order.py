@@ -535,12 +535,10 @@ def _watch_authority_calls(a, monkeypatch, held):
 @pytest.mark.parametrize("scope", ["output", "all", "off_all"])
 def test_a_receiver_pause_and_play_break_no_rule(authority, monkeypatch, scope):
     import autostream_output_policy as op
-    import autostream_runtime as runtime
     from autostream_backend_events import DeviceEvent
     from autostream_config import OutputsConfig
 
     a = authority
-    monkeypatch.setattr(runtime, "_metadata_push_lock", lockcheck.TrackedLock("metadata_push"))
     pol = op.get_policy()
     pol.bind_settings(lambda: OutputsConfig(device_pause_scope=scope))
     a.set_policy(pol)
@@ -548,7 +546,6 @@ def test_a_receiver_pause_and_play_break_no_rule(authority, monkeypatch, scope):
     _watch_authority_calls(a, monkeypatch, held)
     a.merge_for_tests([row(1, selected=True, volume_percent=40), row(2, selected=True, volume_percent=30)],
                       boot="b0", now=100.0)
-    runtime.note_metadata_push(50.0)
     a.note_session(True)
     a.on_device_event(DeviceEvent("receiver_command", "1", "Speaker 1", "paus", None, 1, 100.0))
     a.step(now=100.0)

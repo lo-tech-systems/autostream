@@ -60,31 +60,6 @@ def test_reset_for_tests_frees_a_held_admission_gate():
     runtime._track_id_request_gate.release()
 
 
-def test_the_metadata_push_stamp_is_none_until_noted():
-    runtime.reset_for_tests()
-    assert runtime.last_metadata_push() is None
-
-
-def test_the_metadata_push_stamp_keeps_the_time_given():
-    runtime.note_metadata_push(12.5)
-    assert runtime.last_metadata_push() == 12.5
-    runtime.note_metadata_push(20.0)
-    assert runtime.last_metadata_push() == 20.0
-
-
-def test_the_metadata_push_stamp_defaults_to_the_monotonic_clock():
-    import time
-    before = time.monotonic()
-    runtime.note_metadata_push()
-    assert before <= runtime.last_metadata_push() <= time.monotonic()
-
-
-def test_reset_for_tests_clears_the_metadata_push_stamp():
-    runtime.note_metadata_push(5.0)
-    runtime.reset_for_tests()
-    assert runtime.last_metadata_push() is None
-
-
 def test_lifecycle_is_over_the_current_stop_event():
     life = runtime.lifecycle()
     assert life.stop is runtime.stop_flag

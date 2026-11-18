@@ -269,7 +269,6 @@ def test_the_form_is_for_users_only():
 @pytest.mark.parametrize("path,value,read", [
     ("outputs.device_pause_scope", "off_all", lambda c: c.outputs.device_pause_scope),
     ("outputs.pause_off_seconds", 90, lambda c: c.outputs.pause_off_seconds),
-    ("outputs.play_after_metadata_ignore_seconds", 2.5, lambda c: c.outputs.play_after_metadata_ignore_seconds),
     ("outputs.speaker_volume_applies_to_all", True, lambda c: c.outputs.speaker_volume_applies_to_all),
 ])
 def test_an_output_policy_setting_is_stored_and_reported_live(ctx, store, path, value, read):

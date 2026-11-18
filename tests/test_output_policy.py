@@ -21,7 +21,6 @@ if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
 import autostream_output_policy as policy_module
-import autostream_runtime as runtime
 import policy_replay
 from autostream_backend_events import DeviceEvent
 from autostream_config import OutputsConfig
@@ -128,40 +127,6 @@ class TestScopeIsReadAtEachEvent:
         assert not snap().unit("1").muted
         deliver(w, event("paus", received=T0 + 3))
         assert snap().unit("1").muted and snap().unit("2").muted
-
-
-class TestPlayGuard:
-    def test_the_guard_compares_the_time_the_event_was_received(self, w):
-        deliver(w, event("paus", received=T0 + 1))
-        runtime.note_metadata_push(T0 + 100)
-        # Received 5 s after the push but handled much later: still inside the window.
-        w.t[0] = T0 + 120
-        w.a.on_device_event(event("play", received=T0 + 105))
-        w.a.step(now=T0 + 120)
-        assert snap().unit("1").muted
-        # Received outside the window, handled at the same worker time.
-        deliver(w, event("play", received=T0 + 111), at=T0 + 120)
-        assert not snap().unit("1").muted
-
-    def test_a_play_received_just_before_the_push_was_stamped_is_ignored(self, w):
-        deliver(w, event("paus", received=T0 + 1))
-        runtime.note_metadata_push(T0 + 100)
-        deliver(w, event("play", received=T0 + 99))
-        assert snap().unit("1").muted
-
-    def test_no_push_ever_made_means_no_guard(self, w):
-        deliver(w, event("paus", received=T0 + 1))
-        deliver(w, event("play", received=T0 + 2))
-        assert not snap().unit("1").muted
-
-    def test_the_window_comes_from_the_setting(self, w):
-        w.box.cfg = OutputsConfig(device_pause_scope="all", play_after_metadata_ignore_seconds=30.0)
-        deliver(w, event("paus", received=T0 + 1))
-        runtime.note_metadata_push(T0 + 100)
-        deliver(w, event("play", received=T0 + 125))
-        assert snap().unit("1").muted
-        deliver(w, event("play", received=T0 + 131))
-        assert not snap().unit("1").muted
 
 
 class TestRefusals:
@@ -297,4 +262,3 @@ class TestReset:
 
     def test_the_suite_reset_leaves_no_entry_behind(self):
         assert get_policy().paused_units() == ()
-        assert runtime.last_metadata_push() is None

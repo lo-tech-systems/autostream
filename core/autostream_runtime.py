@@ -172,31 +172,6 @@ def consume_nowplaying_republish() -> bool:
         return pending
 
 
-# ── Now-playing metadata push time ───────────────────────────────────────────
-# The metadata writer stamps the time a now-playing bundle (title, artwork)
-# has been written to the player; the output policy reads it to tell a Play
-# that answers new artwork from one the user pressed. The lock is a leaf: it
-# guards a float store and nothing is called under it.
-
-_metadata_push_lock = threading.Lock()
-_metadata_push_at: Optional[float] = None
-
-
-def note_metadata_push(at: Optional[float] = None) -> None:
-    """A now-playing bundle (title, artwork) has just been written to the
-    player; *at* defaults to time.monotonic()."""
-    global _metadata_push_at
-    stamp = time.monotonic() if at is None else at
-    with _metadata_push_lock:
-        _metadata_push_at = stamp
-
-
-def last_metadata_push() -> Optional[float]:
-    """When the last now-playing bundle was written, or None."""
-    with _metadata_push_lock:
-        return _metadata_push_at
-
-
 class RecoveryLog:
     """Emits one WARNING when a failing condition clears, so an operator
     reading WARN-level logs sees the recovery, not just the failure stream."""
@@ -258,9 +233,7 @@ def reset_for_tests() -> None:
     playback tracker, no identification service, a free admission gate, no
     republish request and both events clear.  Called by an autouse fixture after every test."""
     global _playback_tracker, _track_id_service, _track_id_request_gate, _republish_pending
-    global _metadata_push_at
     _republish_pending = False
-    _metadata_push_at = None
     with _monitors_lock:
         all_monitors.clear()
     _playback_tracker = None

@@ -14,7 +14,7 @@ do. A scenario is a JSON file in tests/fixtures/policy:
     }
 
 Step keys: "line" (an event channel message, parsed as production does and
-delivered to the authority), "metadata_push", "outputs" (replace the player's rows),
+delivered to the authority), "outputs" (replace the player's rows),
 "user" ([intent name, arguments], submitted as the user), "session" (false
 ends the session), "tick" (a worker step with nothing new). Every step runs a
 worker step at its time and then a read of the player. Times are seconds from
@@ -142,8 +142,6 @@ def replay(name: str, tmp_path, monkeypatch) -> SimpleNamespace:
                 ev = parse_event(step["line"], received=now)
                 assert ev is not None, step
                 authority.on_device_event(ev)
-            if "metadata_push" in step:
-                runtime.note_metadata_push(now)
             if "outputs" in step:
                 fb.replace(step["outputs"])
                 authority.merge_for_tests(fb.rows, now=now)

@@ -11,9 +11,6 @@ no Play, the speakers that Pause muted and that are still muted are turned
 off (deselected; the player is never stopped). A Play, or anything that ends
 a speaker's mute in the meantime, takes that speaker out of it.
 
-A Play that arrives soon after autostream wrote now-playing metadata to the
-player is ignored: an Apple TV answers new artwork with a Play.
-
 The policy owns no lock. Its state is confined to the authority's worker
 thread, where the hooks run, and what it calls takes its own short locks.
 """
@@ -23,7 +20,6 @@ import logging
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-import autostream_runtime as runtime
 from autostream_backend_events import DeviceEvent
 from autostream_config import (
     DEVICE_PAUSE_ALL,
@@ -59,7 +55,6 @@ class EventContext:
     """Intent.context of the receiver rows. Never logged."""
     outputs: OutputsPart
     now: float
-    received: float                  # DeviceEvent.received: the play guard compares this
     member_id: Optional[str]
     speaker_name: Optional[str]
 
@@ -114,7 +109,7 @@ class OutputPolicy:
             )
             return
         self._touched = True
-        ctx = EventContext(outputs, now, ev.received, ev.member_id, ev.speaker_name)
+        ctx = EventContext(outputs, now, ev.member_id, ev.speaker_name)
         submit(Intent(name, {"id": ev.speaker_id}, Origin.DEVICE, _requester(ev.speaker_id), context=ctx))
 
     def on_timer(self, now: float, outputs: OutputsPart) -> None:
@@ -231,12 +226,6 @@ class OutputPolicy:
         if entry is None:
             LOG.info("receiver play from %s: nothing paused", who)
             return Outcome(ok=True, result={"action": "none"})
-        settings = self._settings()
-        last = runtime.last_metadata_push()
-        guard = settings.play_after_metadata_ignore_seconds
-        if last is not None and guard > 0 and ctx.received - last < guard:
-            LOG.info("ignored unsolicited play from %s after a metadata push", who)
-            return Outcome(ok=False, error="ignored_after_metadata")
         if self._stale(entry, ctx.outputs):
             self._entries.pop(uid, None)
             LOG.info("receiver play from %s: that pause is over; nothing to undo", who)
