@@ -1,236 +1,104 @@
 # Changelog
 
-## Unreleased
+## Version 0.8.0-beta.1 - 2026-11-18
 
-This release changes how the Home page, the dials and other appliances stay in
-step with an appliance: they now follow one stream of changes from it, so what
-you change in one place shows in the others at once. Update every appliance and
-every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
-0.8, and one left behind is reported as needing an update.
+Update every appliance and every dial to 0.8 together: a 0.7 dial or appliance
+cannot be used alongside 0.8, and one left behind is shown as needing an
+update. The update rebuilds owntone-mini (now 1.6.0), which takes a long time
+on a Pi Zero 2 W.
 
-### Home page and web pages
+### Highlights
 
-- new: the Home and Equaliser pages follow the appliance's own stream of
-  changes instead of polling. Speakers, volume, mute, repeat, the track and
-  warnings update as they change, with no reload. If the stream is refused or
-  lost, a page falls back to polling and tries the stream again.
-- new: another appliance's Home and Equaliser pages (opened from the appliance
-  selector) are now the same pages as this appliance's own, drawn from that
-  appliance's state. An appliance that needs an update or is not yet set up is
-  listed in the selector without a link.
-- new: a speaker that is wanted but not yet playing reads "Name (Connecting)" on
-  the Home speaker card, and an Auto-Start speaker the player cannot see reads
-  "Name (offline)". Both switches are dimmed, and a connecting speaker can still
-  be switched off.
-- new: a speaker that fails to start is reported as a failed start, not as a
-  request for a PIN, and a wrong PIN has its own message.
-- new: warnings come from one list and appear on every page and dial. The
-  message is a short instruction ("Change now", "Service soon", "Replace soon",
-  "Too hot", "Low voltage seen") and a detail line gives the reason: hours
-  played or left, the date an item was last changed, the temperature, the sample
-  rate, or the microSD percentage and the day it was read. A warning card that
-  links elsewhere shows a chevron, darkens while pressed and shows a focus ring
-  from the keyboard. The Service tab takes the colour of the most serious
-  warning that links to it.
-- new: a warning for a CPU running hot, at two levels, linking to the About
-  page's System panel. It warns at 70 degrees C and is critical at 80 (a Pi 3
-  Model B+ warns at 60). A level clears 5 degrees below where it was raised.
-  This replaces the firmware throttling flags as the temperature warning.
-- changed: the microSD wear warning has one rule and one wording on appliances
-  and dials. Low is below 20 percent life left (cleared above 25) and failing,
-  which is critical, is below 10 percent (cleared above 15). It links to the
-  System panel. A dial now warns at both levels, in the appliance's wording.
-- changed: the Playback card on Setup lists the Auto-Start speakers, each with
-  its level and a Remove button, in place of a single speaker drop-down. The
-  last one cannot be removed. The start volume slider now applies to speakers
-  outside the set.
-- changed: the one-off green message after saving a form is gone, and the
-  sign-in page shows "Incorrect PIN" inside its card.
-- changed: a speaker's offset on the Owntone Setup page is set with -25, -5, +5
-  and +25 ms buttons either side of its value, in place of a slider.
-- changed: Setup's Personalisation panel is three cards, Display, Appliance
-  control and Speaker controls, with each setting's name on the left and its
-  switch or choice on the right.
-
-### Inputs
-
-- new: each Turntable or Line input has a **Start after** setting on its card:
-  how much sound above the Sensitivity level, within one second, starts
-  playback. It runs from 30 to 250 milliseconds in steps of 10 or 100, and
-  Reset returns it to 60, the time used until now. A longer time ignores more
-  clicks and spikes; a shorter one cuts less from the start of a record. It is
-  not shown for a CD input, which starts on its first sound.
-- new: at the Debug log level the audio monitor logs what started each
-  session: the peak, the mean power and how long the sound was above the
-  Sensitivity level. A burst that was not enough is logged as "No start".
+- Support for newer Apple receivers (OS 27, such as HomeView), and for
+  receivers reached over IPv6, such as a Mac.
+- Speaker controls: a speaker's own volume knob, buttons or app are followed
+  (AirPlay 2 and UPnP), and Pause and Play on a HomePod or speaker work (AirPlay
+  2).
+- Apple TV remote: Pause, Play and volume work, including from the TV's
+  now-playing screen.
+- Auto-Start can be a set of speakers, and HomePods behind an Apple TV can play
+  without the TV.
+- Speakers start faster and more reliably, and one that cannot start says why.
+- Turntable and Line inputs have an adjustable "Start after" time.
+- The web pages and dials show changes made anywhere at once.
+- One set of warnings on every page and dial.
 
 ### Speakers
 
-- new: Auto-Start is now a set of speakers. Choose the speakers on Home, or on
-  the HD dial page, and save them with the Auto-Start pin in the master volume
-  card; each starts at the level it was saved with. First boot still chooses
-  one. A member that is missing or refuses is retried after 10, 20 and 30
-  seconds and then every 30 seconds for the rest of the session.
-- new: Pause and Play on a HomePod or an Apple TV remote. An Apple TV or HomePod
-  stops by itself when its own Pause is pressed and its own Play did not start it
-  again, so it stayed silent until its session failed. The appliance now holds a
-  speaker that paused itself, shows it as Paused, and starts it again at the
-  point the music has reached when Play is pressed on it (or when it is switched
-  off and on). This works from the Apple TV's full-screen now-playing view too.
-- new: on a small-screen dial, a tap on a Paused speaker in the speaker list
-  starts it again, as its own Play would. Clients can do the same with the new
-  `outputs.resume` intent.
-- fix: the clock on an Apple TV's now-playing screen did not move. The session
-  now has a length: a replay runs over its recording, live playback being
-  recorded runs over the most the recording can hold, and anything else counts
-  up against 99 minutes. The clock runs for the whole session, not per track.
-- new: Pause settings in Personalisation's Speaker controls card. "Pause all
-  speakers when pause is pressed on a speaker" mutes the other playing speakers
-  too, and Play on the paused speaker brings them all back; with it off (the
-  default) only that speaker pauses. "Stop paused speakers after" (1, 3, 5 or 10
-  minutes, 5 by default) turns off a paused speaker, and any its Pause muted,
-  once the Pause has lasted that long. A stereo pair, or an Apple TV with its
-  HomePods, counts as one speaker. If that leaves no speaker on, repeat is
-  stopped at once.
-- new: repeat stops by itself once no speaker has been on for 5 minutes during
-  a replay, or during a live session with repeat armed, so it no longer plays
-  to nobody for ever. A replay fades out, repeat is disarmed and the recording
-  is kept, so it can be armed again. Arming repeat while nothing is playing is
-  left alone. A speaker that cannot be held is muted instead. Some speakers do not
-  report their own Pause at all (the Edifier MS50A, for example), so the setting
-  does nothing for them. The settings need owntone-mini 1.6 and are greyed out
-  with the reason when the player cannot report these events.
-- fixed: a speaker that dropped out while it was playing showed Connecting for
-  the rest of the session and was never tried again. It is now tried 10 and 30
-  seconds later, and switched off with a notice if it does not come back.
-- new: HomePods behind an Apple TV can play without it. The OwnTone page has
-  "Play on the Apple TV as well as its HomePods" for each Apple TV that has
-  HomePods. With it off they play as a stereo pair and the Apple TV shows
-  nothing. Changing it while they play restarts them. It is on by default.
-- new: a switch in Personalisation's Speaker controls card, "Apply volume
-  changes made at any speaker to all playing speakers". It covers a speaker's own buttons, knob or app
-  and an Apple TV remote. The others move in proportion so they all reach silent
-  together, and muted speakers stay muted. It needs owntone-mini 1.6 and the
-  player's event channel. It is off by default.
-- changed: Mute is now carried out by the player, which keeps each speaker's
-  level, so a muted speaker always comes back at the level it had. Resuming a
-  paused speaker also unmutes it. It needs owntone-mini 1.6.
-- new: a speaker that streams in real time, or an AirPlay 1 speaker, that
-  pauses itself now shows Paused and keeps its level. It keeps receiving audio
-  while it is silent, so it stays in time, and it plays on at once at that
-  level on its own Play or a turn of its volume knob.
-- changed: turning the volume knob of a paused or muted speaker starts or
-  unmutes that speaker alone, and no longer moves the other speakers. With
-  "Apply volume changes made at any speaker to all playing speakers" on, a
-  paused or muted speaker's level still moves with the others, so it comes
-  back in proportion.
-- changed: speakers start and stop together. The player answers at once and
-  reports each speaker's progress as it happens, so the speaker list stays
-  responsive while a speaker is slow or cannot be reached, and one speaker no
-  longer holds up the others.
-- new: a speaker that has been switched off but is still ending its session
-  reads "Name (Stopping)" on the Home page and the HD dial, and "Stopping" in
-  a small-screen dial's speaker list, until it has stopped.
-- new: a speaker that fails to start says why: it could not be reached, it did
-  not answer in time, it is not following the appliance's clock, or it turned
-  the request down. A speaker that is not following the clock is tried twice
-  more before the notice.
-- changed: a wrong PIN for an Apple TV now brings up a new PIN on the TV, and
-  the dialog says so: "That PIN was not accepted. A new PIN is showing on the
-  TV." The right PIN pairs the speaker and switches it on without another tap,
-  on the Home page and the HD dial. While someone is entering a speaker's PIN,
-  switching it on elsewhere is refused, so the PIN on the screen is not
-  replaced. A PIN sent while the speaker is still busy finishing something
-  else keeps the dialog or keypad open with "The speaker is busy. Try the PIN
-  again in a moment."
-- fixed: an Auto-Start speaker that has not been paired yet, such as an Apple
-  TV, was never switched on when playback started, so its PIN never appeared.
-  It is now switched on once each session, which brings up its PIN on the TV
-  and the PIN dialog on the Home page. A PIN that was not given within
-  2 minutes is no longer asked for when the Home page is opened later.
-- changed: a stereo pair pauses and resumes as one from the Home app.
-- fixed: when autostream stopped or restarted during a repeat replay, the
-  replay ended but its speakers were left switched on, with the master volume
-  greyed out. They are now switched off, as they are for live playback.
+- new: Auto-Start is a set of speakers, saved with the pin in the master volume
+  card, each starting at the level it was saved with. A member that is missing
+  is retried for the rest of the session.
+- new: Pause and Play on a HomePod, on a speaker's own buttons or on an Apple TV
+  remote. The speaker shows as Paused and plays on from where the music has got
+  to when Play is pressed on it, when it is switched off and on, or when it is
+  tapped in a small-screen dial's speaker list.
+- new: Speaker controls in Setup > Personalisation: "Pause all speakers when
+  pause is pressed on a speaker", "Stop paused speakers after" (1, 3, 5 or 10
+  minutes) and "Apply volume changes made at any speaker to all playing
+  speakers".
+- new: a speaker's own volume changes are followed, over AirPlay 2 and, for
+  speakers such as the Edifier MS50A and Arylic amplifiers, UPnP. Turning the
+  knob of a paused or muted speaker brings it back.
+- new: HomePods behind an Apple TV can play without the TV ("Play on the Apple
+  TV as well as its HomePods" on the OwnTone page).
+- new: repeat stops by itself once no speaker has been on for 5 minutes, and
+  keeps the recording so it can be armed again.
+- changed: speakers start and stop together, and a slow or missing speaker no
+  longer holds up the others or the speaker list. Speakers show Connecting,
+  Stopping, offline or Paused as they go.
+- changed: a speaker that fails to start says why (it could not be reached, did
+  not answer, is not following the clock, or refused), and one that drops out
+  while playing is tried again, then switched off with a notice.
+- changed: mute keeps each speaker's level, so it comes back where it was.
+- changed: Apple TV PINs: a wrong PIN brings up a new one on the TV, the right
+  one pairs the speaker and switches it on, and an unpaired Auto-Start Apple TV
+  now asks for its PIN when playback starts.
+- changed: a stereo pair pauses and resumes as one from the Home app, and the
+  clock on an Apple TV's now-playing screen moves.
+- changed: a speaker's offset is set with -25, -5, +5 and +25 ms buttons.
 
-### Dials
+### Inputs
 
-- new: dials follow the appliance's stream like the web pages do. Speakers,
-  volume, mute, repeat, the track and warnings show at once instead of on the
-  next poll, and every change a dial makes goes through the same route as the
-  web pages.
-- new: warnings show as a bell on the dial. On the small screen it sits in the
-  top band, in the compact view's corner and on resting artwork, with the count
-  in it, and a tap opens a card that pages through the warnings, with Close on
-  the left and Next on the right. On the small screen the card fills the panel. Close only puts the card away; the bell still counts the warning.
-  Warnings no longer open by themselves, and there is no snooze.
-- new: a warning card names who it is about in a blue band with a bell and a
-  severity rule (amber, red or blue), shows the detail line where it fits, and
-  on the HD page starts with the level, for example "Warning: Turntable stylus".
-  The dial's own warnings carry the dial's name, or "This Dial".
-- new: a dial and an appliance on different software versions say so instead
-  of half working. The appliance is listed as needing an update and cannot be
-  chosen until both match; the dial warns "Update <appliance>" when the
-  appliance is older, and "Update this dial" when the dial is.
-- new: the HD page has volume minus and plus buttons and the Auto-Start pin, and
-  shows Connecting and offline on its speaker rows.
-- new: a dial's settings in the Dials panel stay unlocked until you leave the
-  panel, instead of locking as soon as focus moves. They lock again when the
-  panel is closed with Back or the page is hidden, and the padlock still locks
-  one by hand.
-- fixed: a small dial with an FT6206 or FT6236 capacitive touch panel could
-  not open it. The driver now uses Adafruit's FocalTech library, which the dial
-  update installs.
-- changed: the HD artwork frame matches the logo's background, so the idle logo
-  no longer shows as a lighter box.
+- new: "Start after" on Turntable and Line inputs (30 to 250 ms, 60 by
+  default): how much sound above the Sensitivity level starts playback. A longer
+  time ignores more clicks and spikes. At the Debug log level the audio monitor
+  logs what started each session.
+
+### Web pages and dials
+
+- new: the Home and Equaliser pages and the dials follow the appliance's changes
+  as they happen instead of polling.
+- new: warnings come from one list and show on every page and dial, as a short
+  instruction with the reason. There is a new CPU temperature warning, and
+  dials show a bell instead of pop-ups.
+- new: another appliance's pages, opened from the appliance selector, are the
+  same as this appliance's own. A dial and an appliance on different versions
+  say so.
+- new: the HD dial has volume buttons, the Auto-Start pin, and Connecting and
+  offline on its speaker rows.
+- changed: on Setup, the Playback card lists the Auto-Start speakers,
+  Personalisation is three cards, and a dial's settings stay unlocked until you
+  leave the Dials panel.
+- fixed: a small dial with an FT6206 or FT6236 touch panel could not use it.
 
 ### System
 
-- new: the audio monitor counts every way it can lose or queue audio on its way
-  to the player, logs one summary line when an output stream ends (a warning
-  only if something was lost) and publishes its output health in the
-  appliance's state for diagnostics. Nothing new appears on the pages.
-- fixed: a stale FIFO defect. A stream that ended while the player was not
-  reading could keep a stall open through the idle period, restart the player at
-  the start of the next session and play old audio first. The FIFO is now ended
-  once the output has gone idle.
-- changed: the monitor's repeating log lines (a missing or broken FIFO,
-  resampler errors, the input watchdog's restarts, rate detection) are written
-  at most once per window, with a count of those held back. An input that dies
-  straight after a restart is retried after a short wait rather than ten times
-  a second.
-- changed: faster boot. The monitor no longer waits for every device to
-  settle, and Wi-Fi profiles are written only when a setting differs, which
-  avoids several seconds of network configuration on small boards at each boot
-  and reconnect.
-- changed: the appliance no longer announces a "playing" record on the network.
-  A flag file marks a session in use, so an automatic update still waits for
-  playback to end, and an update removes the old record.
-- changed: the appliance and dial protocol number is 4, advertised in each
-  one's network record. Everything must be on 0.8.
-- changed: an update removes files a previous release left behind.
-- changed: [gap: owntone-mini 1.6.0 pin: appliances rebuild owntone-mini
-  during the update, which takes a long time on a Pi Zero 2 W]
-- changed: the web server, the core and the dial are split into smaller modules,
-  with one state store and one path for every request to change state. Nothing
-  else about it is visible.
+- changed: owntone-mini 1.6.0.
+- changed: faster boot on small boards.
+- changed: the audio monitor repeats itself less in the logs, and reports when
+  audio was lost on the way to the player.
+- fixed: a stream that ended while the player was not reading could play old
+  audio at the start of the next session.
+- fixed: stopping or restarting autostream during a repeat replay left its
+  speakers switched on.
+- changed: refactored the web server, the core and the dial to improve
+  maintainability.
 
-### API and integrations
+### API
 
-- removed: `GET /api/status`, `/api/owntone/outputs`,
-  `/api/owntone/outputs_state`, `/api/inputs/levels` and
-  `/api/output_eq/status`, and the POST routes `/api/output`, `/api/repeat`,
-  `/api/output_eq/config`, `/api/output_eq/reset`, `/api/input_eq` and
-  `/api/input_gain`, and the old form posts to `/setup` and `/owntone-setup`.
-  Read `GET /api/v1/state` and the change stream `GET /api/v1/events`, and make
-  changes with `POST /api/v1/intents/<name>`. These routes are marked unstable.
-- removed: the dial routes an appliance served, the gateway and federation
-  routes, `/api/audio/status`, the output usage poller and its interval
-  setting, the bearer route scheme, and the federation and `ui` keys in the
-  network record. The stylus, belt and bearing banner texts and the
-  dial-update banner are gone; wording comes from the warnings list.
-- changed: a change event carries `{boot, version, resync, data}`, and the
-  names list is gone.
+- changed: the old status and control routes are replaced by `GET
+  /api/v1/state`, the change stream `GET /api/v1/events` and `POST
+  /api/v1/intents/<name>`. These are marked unstable.
 
 ## Version 0.7.0 - 2026-10-19
 
