@@ -75,11 +75,12 @@ def test_script_never_builds_markup_from_text():
         assert sink not in source, sink
 
 
-def test_script_posts_actions_through_one_helper():
+def test_script_posts_through_one_helper():
     source = page_source()
-    assert source.count("fetch(") == 2          # the state check and post()
+    assert source.count("fetch(") == 1          # one helper for every request
     assert source.count('"X-Requested-With": "autostream-hd"') == 1
     assert source.count("/api/v1/actions/") == 1
+    assert source.count("/api/v1/intents/") == 1
 
 
 def test_stylesheets_load_nothing_else():
@@ -97,31 +98,33 @@ def test_every_request_the_script_makes_names_a_real_route():
     for path in (REPO_ROOT / "dial", REPO_ROOT / "core"):
         if str(path) not in sys.path:
             sys.path.insert(0, str(path))
-    from dial_hd_actions import ACTIONS
+    from dial_hd_actions import ACTIONS, HD_INTENTS
 
     source = page_source()
-    sent = (
+    posted = (
         set(re.findall(r'post\("([a-z_]+)"', source))
-        | set(re.findall(r'sendDrag\([^,]+, "([a-z_]+)"', source))
-        | set(re.findall(r'action: "([a-z_]+)"', source))
+        | set(re.findall(r'sendDrag\([^,]+, [a-z]+, post, "([a-z_]+)"', source))
+    )
+    submitted = (
+        set(re.findall(r'submit\("([a-z._]+)"', source))
+        | set(re.findall(r'sendDrag\([^,]+, [a-z]+, submit, "([a-z._]+)"', source))
+        | set(re.findall(r'intent: "([a-z._]+)"', source))
     )
     served = set(ACTIONS) | {"settings", "panel_wake", "panel_sleep", "panel_activity"}
-    assert sent and sent <= served, sent - served
-    # Every action the dial has a use for in the page is one the page can send.
-    assert {"replay_start", "replay_restart", "replay_stop", "repeat_arm", "eq", "eq_reset",
-            "warning_dismiss", "dial_restart", "presence"} <= sent
+    assert posted and posted <= served, posted - served
+    assert submitted and submitted <= set(HD_INTENTS), submitted - set(HD_INTENTS)
+    # Every appliance intent the dial takes from the page is one the page sends.
+    assert submitted == set(HD_INTENTS)
+    assert {"warning_dismiss", "dial_restart", "presence", "focus", "volume_set", "mute_toggle"} <= posted
 
     routes = {"/api/v1/settings", "/api/v1/info", "/api/v1/state", "/api/v1/events",
               "/api/v1/panel/wake", "/api/v1/panel/sleep", "/api/v1/panel/activity",
-              "/api/v1/actions/", "/api/v1/artwork/", "/api/v1/logo/backdrop"}
-    assert set(re.findall(r'"(/api/v1/[a-z/_]*)"', source)) <= routes
+              "/api/v1/actions/", "/api/v1/intents/", "/api/v1/artwork/", "/api/v1/logo/backdrop", "/api/v1"}
+    assert set(re.findall(r'"(/api/v1[a-z/_]*)"', source)) <= routes
 
 
 def test_script_draws_the_response_curve_from_the_appliances_filters():
     source = page_source()
-    # The bass and treble sliders of a two-band appliance move these bands.
-    assert re.search(r'bass: \[\["peq1", 1\], \["peq2", 1\]\]', source)
-    assert re.search(r'treble: \[\["peq6", 1\], \["peq5", 0\.5\]\]', source)
     for kind in ("low_shelf", "high_shelf", "peak"):
         assert f'"{kind}"' in source
 

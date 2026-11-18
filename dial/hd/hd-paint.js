@@ -70,7 +70,7 @@ function createSpeakerCard() {
     const head = node.appendChild(make("div", "output-card-head"));
     const meta = head.appendChild(make("div", "output-card-meta"));
     const name = meta.appendChild(make("div", "output-card-name"));
-    const badge = meta.appendChild(make("span", "output-card-default", "Default"));
+    const badge = meta.appendChild(make("span", "output-card-default"));
     const chip = meta.appendChild(make("span", "output-state-chip"));
     const toggle = head.appendChild(make("label", "output-toggle"));
     const box = toggle.appendChild(make("input"));
@@ -94,7 +94,8 @@ function createSpeakerCard() {
         node.classList.toggle("output-card-off", !item.on || item.inUse);
         node.classList.toggle("output-card-in-use", item.inUse);
         setText(name, item.name);
-        badge.hidden = !item.isDefault;
+        setText(badge, item.pill);
+        badge.hidden = !item.autoStart;
         setText(chip, item.chip.text);
         chip.className = "output-state-chip " + item.chip.tone;
         box.setAttribute("aria-label", item.name);
@@ -257,7 +258,6 @@ function paintEq(vm) {
     paintNote(els.eqNote, eq.note);
     els.eqReset.disabled = !eq.enabled;
     syncList(els.eqBands, eq.bands.map((b) => Object.assign({ enabled: eq.enabled }, b)), createBand);
-    els.eqBands.classList.toggle("two", eq.bands.length === 2);
     if (!eq.open) {
         graph.key = "";
         return;
@@ -427,6 +427,9 @@ export function paint(vm) {
     syncList(els.appliances, vm.appliances, createApplianceRow);
     paintNote(els.appliancesNote, vm.appliancesNote);
     setText(els.speakersLabel, vm.speakersLabel);
+    els.autostart.hidden = !vm.autoStart.shown;
+    els.autostart.classList.toggle("is-set", vm.autoStart.set);
+    els.autostart.setAttribute("aria-pressed", vm.autoStart.set ? "true" : "false");
     syncList(els.speakers, vm.speakers, createSpeakerCard);
     paintNote(els.speakersNote, vm.speakersNote);
     followFocus(vm.focusId);

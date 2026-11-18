@@ -2,6 +2,12 @@
 descriptors, panel view, recovery tuple and clock readings that go with it)
 for each state the page has to draw.
 
+Each snapshot carries the focused appliance's PeerSnapshot, as the core folds
+it into a publish. Unless a scenario gives its own, it is made from the
+snapshot's speaker rows, equaliser, now playing, volume readout and repeat
+record (and the scenario's mute flag), so a test that changes one of those
+changes what the appliance reports with it.
+
 Every other HD test layer reads from here, so a change to the snapshot types
 breaks this module first. The snapshots are built straight from the frozen
 dataclasses, so the corpus imports no display and no imaging library, and
@@ -11,7 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 import sys
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -20,6 +26,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from autostream_peer_client import PeerSnapshot
 from dial_core_state import AUTH_AUTHORIZED, AUTH_UNAUTHORIZED
 from dial_core_state import (
     ApplianceState, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqBand, EqState,
@@ -58,6 +65,10 @@ DIAL = DialInfo(
     name="Lounge dial", version="0.8.0", uuid="11111111-2222-3333-4444-555555555555",
     ip="192.0.2.10", port=7842, inputs=("touch:hd",), volume_scope="current", mute_scope="current",
 )
+
+# The focused appliance's boot id and store version, as its snapshot reports them.
+PEER_BOOT = "peer-boot-1"
+PEER_VERSION = 4810
 
 PANEL_AWAKE = {"asleep": False, "brightness": 80, "sleep_after_s": 300, "backlight": "sysfs"}
 SETTINGS = {"brightness": 80, "sleep_after_s": 300}
@@ -196,6 +207,73 @@ def _replay_snapshot(state, **repeat_kwargs) -> CoreSnapshot:
     )
 
 
+def _repeat_part(record) -> dict:
+    replaying = record.state in ("replaying", "fading_out")
+    return {"block": {
+        "enabled": True, "armed": record.armed,
+        "recording": {"active": record.state == "recording", "seconds": record.recording_seconds,
+                      "bytes": 1000 if record.recording_seconds else 0, "origin_input": 1},
+        "replay": {"active": replaying, "fading_out": record.state == "fading_out",
+                   "position_seconds": record.position_seconds, "duration_seconds": record.duration_seconds},
+    }}
+
+
+def _units(held) -> list:
+    return [{
+        "id": row.id, "name": row.name, "selected": row.selected, "volume": row.volume,
+        "availability": "ok", "auto_start": row.is_default,
+        **({"in_use_by": row.remote_owner or "another appliance", "in_use_id": KITCHEN}
+           if row.remote_in_use else {}),
+    } for row in held.rows]
+
+
+def focused_peer(snapshot: CoreSnapshot, muted=None, *, boot=PEER_BOOT, version=PEER_VERSION, **parts):
+    """The focused appliance's PeerSnapshot for *snapshot*, made from the same
+    readings the snapshot holds; None with no focus. *parts* replace or add
+    whole parts."""
+    appliance_id = snapshot.focused_id()
+    a = snapshot.appliance(appliance_id)
+    if a is None:
+        return None
+    reachable = a.status_error in (None, "unauthorized", "protocol")
+    protocol_ok = a.status_error != "protocol"
+    access = "playback" if a.auth == AUTH_AUTHORIZED and reachable and protocol_ok else "none"
+    held: dict = {}
+    if protocol_ok:
+        replaying = a.repeat is not None and a.repeat.state in ("replaying", "fading_out")
+        playing = snapshot.now_playing if snapshot.focus.reporting_id == appliance_id else None
+        active = bool(a.playing) and (playing is None or playing.playing)
+        held["session"] = {"active": active, "source": "replay" if replaying else "input1" if active else ""}
+        if playing is not None and playing.title:
+            held["track"] = {"entries": {"1": {"enabled": True, "state": "identified", "title": playing.title,
+                                               "artist": playing.artist, "album": playing.album}}}
+        outputs = snapshot.outputs
+        if outputs is not None and outputs.appliance_id == appliance_id:
+            units = _units(outputs)
+            on = {u["id"] for u in units if u["selected"]}
+            saved = {u["id"] for u in units if u["auto_start"]}
+            level = snapshot.volume_readout[1] if snapshot.volume_readout[1] is not None else a.master_volume
+            held["outputs"] = {
+                "connected": True, "master_volume": level, "muted_all": bool(muted if muted is not None else a.muted),
+                "units": units, "default_matches": bool(on) and on == saved,
+            }
+        eq = snapshot.eq
+        if eq is not None and eq.appliance_id == appliance_id and eq.capability_version >= 2:
+            gains = {band.id: band.gain_db for band in eq.bands}
+            held["eq"] = {"output_bands": [gains.get(f"peq{n}", 0) for n in range(1, 7)]}
+        if a.repeat is not None:
+            held["repeat"] = _repeat_part(a.repeat)
+    held.update(parts)
+    return PeerSnapshot(
+        peer_id=appliance_id, boot=boot, version=version, part_versions=MappingProxyType({}),
+        parts=MappingProxyType(held), reachable=reachable, access=access, access_reason=None,
+        protocol=4 if protocol_ok else 3, protocol_ok=protocol_ok, configured=True, heard_at=NOW - 1, seq=1)
+
+
+# A Scenario's peer when it gives none: made from its snapshot.
+DERIVED = "derived"
+
+
 @dataclass(frozen=True)
 class Scenario:
     name: str
@@ -207,6 +285,12 @@ class Scenario:
     muted: bool | None = False
     now: float = NOW
     wall_now: float = WALL_NOW
+    # The focused appliance's PeerSnapshot (or None), else DERIVED.
+    peer: object = DERIVED
+
+    def __post_init__(self) -> None:
+        peer = focused_peer(self.snapshot, self.muted) if self.peer == DERIVED else self.peer
+        object.__setattr__(self, "snapshot", dataclasses.replace(self.snapshot, focused_peer=peer))
 
     def state(self, hub_seq: int = 4821) -> dict:
         """This scenario's state body, as the dial would build it."""
@@ -217,8 +301,27 @@ class Scenario:
             muted=self.muted,
         )
 
+    def parts(self) -> dict:
+        """This scenario's two parts, as the dial would build them."""
+        from dial_hd_state import build_parts
+        return build_parts(
+            self.snapshot, descriptors=self.descriptors, panel=self.panel, settings=self.settings,
+            recovery=self.recovery, now=self.now, wall_now=self.wall_now,
+        )
+
     def with_snapshot(self, **overrides) -> "Scenario":
-        return dataclasses.replace(self, snapshot=dataclasses.replace(self.snapshot, **overrides))
+        """This scenario with snapshot fields replaced; the peer is made again
+        from them unless *focused_peer* is one of them."""
+        peer = overrides.pop("focused_peer", self.peer)
+        return dataclasses.replace(self, snapshot=dataclasses.replace(self.snapshot, **overrides), peer=peer)
+
+    def with_peer(self, **changes) -> "Scenario":
+        """This scenario with its derived peer changed: *changes* are
+        focused_peer's keywords (boot, version, whole parts) or PeerSnapshot
+        fields."""
+        fields = {k: changes.pop(k) for k in list(changes) if k in PeerSnapshot.__dataclass_fields__ and k not in ("boot", "version")}
+        peer = focused_peer(self.snapshot, self.muted, **changes)
+        return dataclasses.replace(self, peer=dataclasses.replace(peer, **fields))
 
 
 def replay_scenario(name: str, state: str, **repeat_kwargs) -> Scenario:
@@ -331,8 +434,10 @@ def _build() -> dict:
     add(_appliance_warning_scenario("appliance_warning", _stylus_warning()))
     add(_appliance_warning_scenario(
         "appliance_warning_notice", _stylus_warning(dismissal="none", severity="info")))
-    add(_appliance_warning_scenario(
-        "appliance_needs_update", _update_warning(), proto=2, supplies=False))
+    needs_update = _appliance_warning_scenario(
+        "appliance_needs_update", _update_warning(), proto=2, supplies=False)
+    add(needs_update.with_snapshot(appliances=tuple(
+        dataclasses.replace(a, status_error="protocol") for a in needs_update.snapshot.appliances)))
     add(Scenario("pin_required", _pin_snapshot(pin_request("rejected", "pin_required"))))
     add(Scenario("pin_invalid", _pin_snapshot(pin_request("rejected", "pin_invalid", "output_pin"))))
     add(Scenario("pin_busy", _pin_snapshot(pin_request("pending", None, "output_pin"))))

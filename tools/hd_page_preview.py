@@ -6,8 +6,8 @@ It starts the dial's real HD server over a fake core (the same set-up the
 browser tests use) and puts it into one of the scenarios of tests/hd_scenarios.py.
 Open the printed address in a browser. One scenario is current at a time: the
 one named on the command line, or each step of a script in turn. Pressing
-replay in the page moves to the replaying scenario, and stop back to the
-playing one; sleep and the pull-down settings work, and settings changed in
+play or back to the start in the page moves to the replaying scenario, and
+stop back to the playing one; sleep and the pull-down settings work, and settings changed in
 the page stick until the preview stops (nothing is written to disk).
 
     python3 tools/hd_page_preview.py [--port 8080] [--scenario replaying]
@@ -39,12 +39,11 @@ from hd_preview import DEFAULT_SCENARIO, HdPreview  # noqa: E402
 
 DEFAULT_PORT = 8080
 
-# The core call behind an action that leads somewhere, and the scenario the
-# page is taken to when it is made.
-ACTION_LEADS = {
-    "start_replay": "replaying",
-    "restart_replay": "replaying",
-    "stop_replay": "playing_artwork",
+# An appliance intent that leads somewhere, and the scenario the page is taken
+# to when it is sent.
+INTENT_LEADS = {
+    "repeat.seek": "replaying",
+    "repeat.transport": "playing_artwork",
 }
 
 
@@ -70,14 +69,19 @@ def load_script(path) -> list:
     return out
 
 
-def action_hook(preview, log, leads=ACTION_LEADS):
-    """The fake core's on_call: log each accepted action (never its PIN) and
-    take the page to the scenario the action leads to."""
+def action_hook(preview, log, leads=INTENT_LEADS):
+    """The fake core's on_call: log each action and intent (never a PIN) and
+    take the page to the scenario an intent leads to."""
     def on_call(method, args, kwargs) -> None:
+        if method == "submit_intent":
+            _appliance_id, name, intent_args = args
+            shown = {key: value for key, value in intent_args.items() if key != "pin"}
+            log(f"intent {name} {shown!r}")
+            if name in leads:
+                show(preview, leads[name], log)
+            return
         shown = {key: value for key, value in kwargs.items() if key != "pin"}
         log(f"action {method} {args!r} {shown!r}")
-        if method in leads:
-            show(preview, leads[method], log)
     return on_call
 
 

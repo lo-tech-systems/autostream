@@ -1,7 +1,8 @@
 """A stand-in for DialCore that the HD server, hub and page tests drive: it
 holds a snapshot, publishes new ones the way the core does (a sequence, a
 condition to wait on, subscriber callbacks), records every action call and
-answers each with a configured ActionResult."""
+answers each with a configured ActionResult, and records every appliance
+intent and answers it with a configured PeerReply."""
 from __future__ import annotations
 
 import dataclasses
@@ -14,6 +15,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+from autostream_peer_client import PeerReply
 from dial_core_state import ActionResult
 from dial_warning_text import WARNING_DESCRIPTORS
 from dial_warnings import WarningManager, WarningStore
@@ -38,6 +40,10 @@ class FakeCore:
         self.calls: list = []                 # (method, args, kwargs), in order
         self.results: dict = dict(results or {})   # method -> ActionResult
         self.default_result = ActionResult(True)
+        # What submit_intent answers: a PeerReply, or a function of (name,
+        # args) giving one; None accepts it as the focused appliance would, its
+        # version one past the one it has reported.
+        self.intent_reply = None
         self.reboot_result = reboot_result
         self.shutdown_result = shutdown_result
         self.watches: list = []               # (kind, appliance_id, watcher, on)
@@ -96,6 +102,7 @@ class FakeCore:
         self.calls.clear()
         self.results.clear()
         self.default_result = ActionResult(True)
+        self.intent_reply = None
         self.reboot_result = self.shutdown_result = True
         self.on_call = None
         self.watches.clear()
@@ -120,6 +127,20 @@ class FakeCore:
             return self.results.get(method, self.default_result)
         call.__name__ = method
         return call
+
+    def submit_intent(self, appliance_id, name, args, *, pin_entry=False) -> PeerReply:
+        self._record("submit_intent", (appliance_id, name, args), {"pin_entry": pin_entry})
+        reply = self.intent_reply
+        if callable(reply):
+            return reply(name, args)
+        if reply is not None:
+            return reply
+        peer = self._snapshot.focused_peer
+        return PeerReply(True, None, peer.version + 1 if peer else None, peer.boot if peer else None, {}, None)
+
+    def intents(self) -> list:
+        """The (appliance_id, name, args) of each intent sent."""
+        return [a for m, a, _k in self.calls if m == "submit_intent"]
 
     def request_dial_reboot(self) -> bool:
         self._record("request_dial_reboot", (), {})

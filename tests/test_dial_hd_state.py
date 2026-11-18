@@ -1,10 +1,9 @@
 """Tests for the HD dial's state body (dial_hd_state.build_state), the
 scenario corpus it is built from and the FakeCore the later layers drive.
 
-Each scenario has a golden JSON file in tests/golden/hd_state/. To
-regenerate them after a deliberate change, run with HD_GOLDEN_UPDATE=1: the
-new output must still carry every key the committed file has (the body only
-ever grows), and the files are then rewritten.
+Each scenario has a golden JSON file in tests/golden/hd_state/: the `dial`
+part the page is sent for it. To regenerate them after a deliberate change,
+run with HD_GOLDEN_UPDATE=1 and review the difference.
 """
 from __future__ import annotations
 
@@ -30,19 +29,6 @@ from dial_hd_state import STATE_VERSION, STRING_MAX, build_state, dumps
 
 GOLDEN_DIR = Path(__file__).parent / "golden" / "hd_state"
 UPDATE = bool(os.environ.get("HD_GOLDEN_UPDATE"))
-
-
-def _paths(value, prefix=""):
-    """Every key path in a JSON value; list items are walked as '[]'."""
-    out = set()
-    if isinstance(value, dict):
-        for k, v in value.items():
-            out.add(f"{prefix}.{k}")
-            out |= _paths(v, f"{prefix}.{k}")
-    elif isinstance(value, list):
-        for v in value:
-            out |= _paths(v, f"{prefix}[]")
-    return out
 
 
 def _strings(value):
@@ -91,13 +77,9 @@ class TestCorpus:
 class TestGolden:
     @pytest.mark.parametrize("name", hs.SCENARIO_NAMES)
     def test_matches_the_committed_json(self, name):
-        state = hs.SCENARIOS[name].state()
+        state = hs.SCENARIOS[name].parts()["dial"]
         path = GOLDEN_DIR / f"{name}.json"
         if UPDATE:
-            if path.exists():
-                old = json.loads(path.read_text(encoding="utf-8"))
-                missing = _paths(old) - _paths(state)
-                assert not missing, f"{name}: keys removed: {sorted(missing)}"
             GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
             path.write_text(
                 json.dumps(state, indent=2, ensure_ascii=False, sort_keys=False) + "\n",
@@ -106,11 +88,6 @@ class TestGolden:
             pytest.skip("golden regenerated")
         assert path.exists(), f"{path} is missing; run with HD_GOLDEN_UPDATE=1 to create it"
         assert state == json.loads(path.read_text(encoding="utf-8"))
-
-    def test_the_additive_check_catches_a_removed_key(self):
-        old = {"a": {"b": 1}, "c": [{"d": 1}]}
-        assert _paths(old) - _paths({"a": {}, "c": [{"d": 1}]}) == {".a.b"}
-        assert not _paths(old) - _paths({"a": {"b": 1, "x": 2}, "c": [{"d": 1, "e": 2}], "z": 1})
 
     def test_every_golden_file_has_a_scenario(self):
         files = {p.stem for p in GOLDEN_DIR.glob("*.json")}
@@ -642,9 +619,11 @@ class TestNothingLeaks:
 class TestPure:
     def test_building_does_not_change_the_snapshot(self):
         scenario = hs.SCENARIOS["playing_artwork"]
-        before = dataclasses.asdict(scenario.snapshot)
+        plain = lambda: dataclasses.asdict(dataclasses.replace(scenario.snapshot, focused_peer=None))
+        before, peer = plain(), dict(scenario.snapshot.focused_peer.parts)
         scenario.state()
-        assert dataclasses.asdict(scenario.snapshot) == before
+        scenario.parts()
+        assert plain() == before and dict(scenario.snapshot.focused_peer.parts) == peer
 
     def test_the_body_shares_nothing_with_the_snapshot(self):
         scenario = hs.SCENARIOS["playing_artwork"]

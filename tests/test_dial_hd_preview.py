@@ -14,7 +14,6 @@ for _p in ("tests", "tools", "dial", "core"):
 
 import hd_page_preview as preview_tool
 import hd_scenarios
-from dial_hd_actions import ACTIONS, Context
 from hd_fake_core import FakeCore
 
 LOUNGE = hd_scenarios.LOUNGE
@@ -61,15 +60,15 @@ class TestLoadScript:
 
 
 class TestActionHook:
-    @pytest.mark.parametrize("action,scenario", [
-        ("replay_start", "replaying"), ("replay_restart", "replaying"),
-        ("replay_stop", "playing_artwork"),
+    @pytest.mark.parametrize("intent,args,scenario", [
+        ("repeat.seek", {"position": 0}, "replaying"),
+        ("repeat.transport", {"action": "stop"}, "playing_artwork"),
     ])
-    def test_an_action_that_leads_somewhere_shows_that_scenario(self, action, scenario):
+    def test_an_intent_that_leads_somewhere_shows_that_scenario(self, intent, args, scenario):
         spy, core = Spy(), FakeCore(hd_scenarios.SCENARIOS["playing_artwork"].snapshot)
         core.on_call = preview_tool.action_hook(spy, lambda text: None)
-        result = ACTIONS[action][1](Context(core), {"appliance_id": LOUNGE})
-        assert result.accepted and spy.shown == [scenario]
+        assert core.submit_intent(LOUNGE, intent, args, pin_entry=True).ok
+        assert spy.shown == [scenario]
 
     def test_an_action_that_leads_nowhere_changes_nothing(self):
         spy, core = Spy(), FakeCore(hd_scenarios.SCENARIOS["playing_artwork"].snapshot)
@@ -82,4 +81,11 @@ class TestActionHook:
         hook = preview_tool.action_hook(Spy(), lines.append)
         hook("set_output", (LOUNGE, "o1"), {"selected": True, "pin": "4821", "pin_entry": True})
         assert len(lines) == 1 and "set_output" in lines[0] and "o1" in lines[0]
+        assert "4821" not in lines[0] and "'pin'" not in lines[0]
+
+    def test_the_log_never_carries_a_pin_sent_as_an_intent(self):
+        lines: list = []
+        hook = preview_tool.action_hook(Spy(), lines.append)
+        hook("submit_intent", (LOUNGE, "output.pin.submit", {"id": "o2", "pin": "4821"}), {"pin_entry": True})
+        assert len(lines) == 1 and "output.pin.submit" in lines[0] and "o2" in lines[0]
         assert "4821" not in lines[0] and "'pin'" not in lines[0]

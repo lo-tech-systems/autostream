@@ -4,11 +4,15 @@ One hub thread turns the core's change signals into a sequence number.
 Anything can ask for a change by calling publish() (the core's subscriber
 callback does, as do the config listener and the panel): it only records the
 request and wakes the hub thread, so a publisher is never delayed, and several
-requests before the hub thread runs become one step. The state body for a
-sequence is built lazily by the first client that asks and cached, so any
-number of clients cost one serialisation per change (a body that has sat
-for more than a second is built again when next asked for, under the same
-sequence, so its clock readings are current).
+requests before the hub thread runs become one step. At each step the hub
+thread calls its step builder once with the new sequence and holds what it
+returns until the next step, so any number of clients cost one build per
+change.
+
+The page's state is two parts, `dial` and `focused`. A step builds both and
+says which changed since the step before; a change event carries only those.
+The hub keeps no history: a client that missed a step is told to fetch the
+state again.
 
 The event stream gives each client its own handler thread. A client holds only
 its own socket (under a short write timeout) and the hub's condition while it
@@ -20,6 +24,7 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import select
 import socket
@@ -27,6 +32,7 @@ import threading
 import time
 from dataclasses import dataclass
 from typing import Callable
+from urllib.parse import parse_qs, urlsplit
 
 SSE_MAX_CLIENTS = 4
 SSE_HEARTBEAT_S = 15.0
@@ -42,18 +48,10 @@ SSE_SEND_BUFFER_BYTES = 32 * 1024
 # its wake is lost.
 HUB_POLL_S = 1.0
 
-# A cached body older than this when it is served is built again (same
-# sequence), so the clock readings in it are current when they are sent.
-BODY_MAX_AGE_S = 1.0
-
 
 class ChangeHub:
-    def __init__(
-        self, core, *, builder: "Callable[[int], bytes] | None" = None,
-        clock: "Callable[[], float]" = time.monotonic,
-    ) -> None:
+    def __init__(self, core, *, builder: "Callable[[int], object] | None" = None) -> None:
         self._core = core
-        self._clock = clock
         self._builder = builder
 
         self._event = threading.Event()
@@ -61,18 +59,17 @@ class ChangeHub:
         self._dirty = False
         self._cond = threading.Condition()
         self._seq = 1
+        self._latest: "tuple[int, object]" = (1, None)   # (sequence, what its step built)
         self._stopped = False
-        self._build_lock = threading.Lock()
-        self._cache: tuple[int, bytes, float] | None = None   # (sequence, body, built at)
         self._thread: threading.Thread | None = None
         self._handle = None
 
     # ---- wiring ------------------------------------------------------------
 
-    def set_builder(self, builder: "Callable[[int], bytes]") -> None:
-        """The function that turns a sequence into the state body."""
+    def set_builder(self, builder: "Callable[[int], object]") -> None:
+        """The function each step calls, on the hub thread, with the new
+        sequence; what it returns is held by latest() until the next step."""
         self._builder = builder
-
 
     # ---- lifecycle ---------------------------------------------------------
 
@@ -114,6 +111,12 @@ class ChangeHub:
     def seq(self) -> int:
         return self._seq
 
+    def latest(self) -> "tuple[int, object]":
+        """(sequence, what the step builder made of it): None for the first
+        sequence, for a step with no builder and for a build that failed."""
+        with self._cond:
+            return self._latest
+
     def wait_for_change(self, seen_seq: int, timeout: float) -> "int | None":
         """The sequence once it is past *seen_seq*, None on timeout or stop."""
         with self._cond:
@@ -122,24 +125,16 @@ class ChangeHub:
                 return None
             return self._seq
 
-    def state(self) -> tuple[int, bytes]:
-        """(sequence, state body) for the current sequence. The body is built
-        once per sequence and served again while it is younger than
-        BODY_MAX_AGE_S; an older one is built again under the same sequence,
-        which wakes nobody. Builds are serialised by the build lock, which
-        only this method takes, so concurrent callers share one build."""
-        seq = self._seq
-        with self._build_lock:
-            cached = self._cache
-            if cached is not None and cached[0] == seq and self._clock() - cached[2] < BODY_MAX_AGE_S:
-                return cached[0], cached[1]
-            if self._builder is None:
-                raise RuntimeError("no state builder")
-            built_at = self._clock()
-            self._cache = (seq, self._builder(seq), built_at)
-            return self._cache[0], self._cache[1]
-
     # ---- the hub thread ----------------------------------------------------
+
+    def _build(self, seq: int) -> object:
+        if self._builder is None:
+            return None
+        try:
+            return self._builder(seq)
+        except Exception:
+            logging.debug("hd events: step build failed", exc_info=True)
+            return None
 
     def _run(self) -> None:
         while not self._stopped:
@@ -150,27 +145,28 @@ class ChangeHub:
             with self._flag_lock:
                 dirty, self._dirty = self._dirty, False
             if dirty:
+                # Built before the step is announced, so a waiter woken for a
+                # sequence always finds that sequence's build.
+                seq = self._seq + 1
+                built = self._build(seq)
                 with self._cond:
-                    self._seq += 1
+                    self._seq = seq
+                    self._latest = (seq, built)
                     self._cond.notify_all()
 
-def _parse_event_id(value: "str | None") -> "int | None":
-    try:
-        return int(value) if value is not None else None
-    except ValueError:
-        return None
 
-
-def serve_events(handler, hub: ChangeHub, clients) -> None:
+def serve_events(handler, hub: ChangeHub, clients, boot: str, clock: "Callable[[], float]") -> None:
     """Run one event-stream client on *handler*'s thread until it goes away.
 
     *clients* counts and caps the connected clients (enter() / exit()) and
-    says when the server is stopping."""
+    says when the server is stopping. *boot* is the dial's boot id, which
+    every event id starts with, and *clock* the core's clock, for the time a
+    resync event carries. The hub's builds are (PartStep or None, time)."""
     if not clients.enter():
         handler.send_json(503, {"ok": False, "error": "too_many_clients"})
         return
     try:
-        _stream(handler, hub, clients)
+        _stream(handler, hub, clients, boot, clock)
     except (socket.timeout, OSError):
         pass
     finally:
@@ -180,10 +176,6 @@ def serve_events(handler, hub: ChangeHub, clients) -> None:
 def _write(handler, payload: bytes) -> None:
     handler.wfile.write(payload)
     handler.wfile.flush()
-
-
-def _event_bytes(seq: int, body: bytes) -> bytes:
-    return b"id: %d\nevent: state\ndata: %s\n\n" % (seq, body)
 
 
 def _peer_closed(sock) -> bool:
@@ -213,7 +205,22 @@ def _wait(handler, hub: ChangeHub, clients, seen: int) -> "int | None":
             return None
 
 
-def _stream(handler, hub: ChangeHub, clients) -> None:
+def _since(path: str) -> "str | None":
+    values = parse_qs(urlsplit(path).query).get("since")
+    return values[0] if values else None
+
+
+def _next_event(boot: str, seen: int, seq: int, built, clock) -> "bytes | None":
+    """What a client at *seen* is sent for sequence *seq*: the parts that
+    changed when *seq* is the very next step and it built them, nothing when
+    none changed, else a resync."""
+    if seq == seen + 1 and built is not None and built[0] is not None:
+        step, now = built
+        return change_bytes(boot, seq, now, step.changed) if step.changed else None
+    return change_bytes(boot, seq, round(clock(), 3), {}, resync=True)
+
+
+def _stream(handler, hub: ChangeHub, clients, boot: str, clock) -> None:
     try:
         handler.connection.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SSE_SEND_BUFFER_BYTES)
     except OSError:
@@ -227,14 +234,11 @@ def _stream(handler, hub: ChangeHub, clients) -> None:
     handler.close_connection = True
     handler.wfile.flush()
 
-    last = _parse_event_id(handler.headers.get("Last-Event-ID"))
-    seen = last if last is not None else 0
-    # A client that is current waits for the next change; any other (new,
-    # behind, or ahead of a restarted hub) is sent the state now.
-    if last is None or last != hub.seq():
-        seq, body = hub.state()
-        _write(handler, _event_bytes(seq, body))
-        seen = seq
+    # A client at this boot and the current sequence waits for the next
+    # change; any other (new, behind, or from another boot) fetches the state.
+    seen = hub.seq()
+    if must_resync(parse_since(_since(handler.path)), boot, seen):
+        _write(handler, change_bytes(boot, seen, round(clock(), 3), {}, resync=True))
     while not clients.stopping and not hub.stopped:
         changed = _wait(handler, hub, clients, seen)
         if clients.stopping or hub.stopped:
@@ -242,8 +246,10 @@ def _stream(handler, hub: ChangeHub, clients) -> None:
         if changed is None:
             _write(handler, b": ping\n\n")
             continue
-        seq, body = hub.state()
-        _write(handler, _event_bytes(seq, body))
+        seq, built = hub.latest()
+        payload = _next_event(boot, seen, seq, built, clock)
+        if payload is not None:
+            _write(handler, payload)
         seen = seq
 
 

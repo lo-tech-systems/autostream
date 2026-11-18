@@ -141,7 +141,11 @@ def _repeat_block(record, now: float, extrapolate: bool = True) -> dict | None:
             position = min(position, record.duration_seconds)
     # What the listener hears trails the reported position by the
     # appliance's audio start buffer; the page's timer follows this figure.
-    heard = max(0.0, position - record.latency_seconds)
+    # A replay's position left unextrapolated can be below zero, so whoever
+    # carries it on to a later time stops it at zero only then.
+    heard = position - record.latency_seconds
+    if extrapolate or record.state != "replaying":
+        heard = max(0.0, heard)
     return {
         "available": record.available,
         "state": record.state,

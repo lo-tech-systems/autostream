@@ -21,7 +21,7 @@ from test_hd_dial import (  # noqa: E402,F401  (fixtures shared with the page sm
     _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_server,
 )
 from test_hd_page_main import (  # noqa: E402,F401
-    SIZES, hd, open_page, scenario, watch_actions,
+    SIZES, hd, open_page, rows, scenario, watch_actions,
 )
 from test_hd_page_extras import (  # noqa: E402,F401
     PLAY, REWIND, STOP, modal_card, open_sheet, replay_button, replay_timer, watch_posts,
@@ -42,9 +42,10 @@ def size_id(size) -> str:
     return f"{size[0]}x{size[1]}"
 
 
-def answer(page, name, body=None, status=200) -> list:
-    """Answer the page's *name* action itself (so neither backend moves on to
-    another state), and return the bodies it was sent."""
+def answer(page, name, body=None, status=200, prefix="actions") -> list:
+    """Answer the page's *name* action (or, with prefix "intents", intent)
+    itself, so neither backend moves on to another state, and return the
+    bodies it was sent."""
     seen: list = []
 
     def handler(route):
@@ -52,37 +53,32 @@ def answer(page, name, body=None, status=200) -> list:
         route.fulfill(status=status, content_type="application/json",
                       body=json.dumps(body if body is not None else {"ok": True}))
 
-    page.route(f"**/api/v1/actions/{name}", handler)
+    page.route(f"**/api/v1/{prefix}/{name}", handler)
     return seen
+
+
+SEEK = "repeat.seek"
+SEEK_BODY = {"appliance_id": LOUNGE, "args": {"position": 0}}
 
 
 # ---------------------------------------------------------------------------
 # The title while an appliance plays and has not named the track
 # ---------------------------------------------------------------------------
 
-def untitled(artist="", album=""):
-    """The Lounge playing with no title yet, and what else it said."""
-    return hs.SCENARIOS["playing_untitled"].with_snapshot(
-        now_playing=NowPlaying("Lounge", artist, "", 42, album=album))
+UNTITLED = "Input 1 \u00b7 Line Level"
 
 
 class TestUntitledTrack:
-    def test_a_playing_appliance_with_no_title_reads_playing(self, page, hd):
+    def test_a_playing_appliance_with_no_title_reads_its_input(self, page, hd):
         hd.show(hs.SCENARIOS["playing_untitled"])
         open_page(page, hd)
-        expect(page.locator("#title")).to_have_text("Playing")
-        expect(page.locator("#sub")).to_have_text("")
-
-    def test_a_playing_appliance_that_named_its_input_reads_the_input(self, page, hd):
-        hd.show(hs.SCENARIOS["playing_untitled_input"])
-        open_page(page, hd)
-        expect(page.locator("#title")).to_have_text("CD")
+        expect(page.locator("#title")).to_have_text(UNTITLED)
         expect(page.locator("#sub")).to_have_text("")
 
     def test_the_input_name_gives_way_to_a_real_title(self, page, hd):
-        hd.show(hs.SCENARIOS["playing_untitled_input"])
+        hd.show(hs.SCENARIOS["playing_untitled"])
         open_page(page, hd)
-        expect(page.locator("#title")).to_have_text("CD")
+        expect(page.locator("#title")).to_have_text(UNTITLED)
         hd.show(hs.SCENARIOS["playing_artwork"])
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
 
@@ -103,21 +99,15 @@ class TestUntitledTrack:
         open_page(page, hd)
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
         hd.show(hs.SCENARIOS["playing_untitled"])
-        expect(page.locator("#title")).to_have_text("Playing")
+        expect(page.locator("#title")).to_have_text(UNTITLED)
         hd.show(hs.SCENARIOS["playing_artwork"])
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
-
-    def test_what_the_appliance_did_say_stays_under_it(self, page, hd):
-        hd.show(untitled(artist="Dire Straits", album="Making Movies"))
-        open_page(page, hd)
-        expect(page.locator("#title")).to_have_text("Playing")
-        expect(page.locator("#sub")).to_have_text("Dire Straits · Making Movies")
 
     def test_a_real_title_is_never_replaced(self, page, hd):
         hd.show(hs.SCENARIOS["playing_no_artwork"])
         open_page(page, hd)
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
-        expect(page.locator("#sub")).to_have_text("Dire Straits · Making Movies")
+        expect(page.locator("#sub")).to_have_text("Dire Straits")
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +123,8 @@ def seek(state, *, requested=NOW + 1, changed=None, error=None, kind="seek"):
 def replay_state(title, *, transport, observed=NOW - 1.0, state="replaying", **repeat):
     """The Lounge's replay row in *state*, its record last reported at
     *observed* and the dial's latest request *transport*, under a title the
-    test can wait for."""
+    test can wait for (the appliance's name carries it too, since a held
+    recording shows no title)."""
     repeat = {"position": 40.0, "duration": 1100.0, "latency": 0.0, **repeat}
     if state == "hold":
         repeat = {"recording": 1122.0}
@@ -141,7 +132,7 @@ def replay_state(title, *, transport, observed=NOW - 1.0, state="replaying", **r
     appliance = base.snapshot.appliances[0]
     record = dataclasses.replace(appliance.repeat, observed_at=observed)
     return base.with_snapshot(
-        appliances=(dataclasses.replace(appliance, repeat=record),),
+        appliances=(dataclasses.replace(appliance, repeat=record, name="Lounge " + title),),
         transport=transport,
         now_playing=NowPlaying("Lounge", "Dire Straits", title, 42, playing=state != "hold"),
     )
@@ -153,10 +144,18 @@ EARLIER = hs.SCENARIOS["replaying"].snapshot.transport
 BUSY = "aria-busy"
 
 
+def drawn(page, title):
+    """Wait until the page has drawn the replay_state under *title*."""
+    expect(rows(page).first.locator(".name")).to_have_text("Lounge " + title)
+
+
 def shown(page, hd, title, scenario):
     """Show *scenario* and wait until the page has drawn it."""
     hd.show(scenario)
-    expect(page.locator("#title")).to_have_text(title)
+    if scenario.snapshot.appliances[0].name == "Lounge " + title:
+        drawn(page, title)
+    else:
+        expect(page.locator("#title")).to_have_text(title)
 
 
 # Counts the replies the page has finished with. The reply and the state
@@ -188,10 +187,10 @@ def start_held(page, hd, *, answer_with=None, status=200):
     """Open the page on a running replay (the Lounge) and press Back to the
     start, the appliance's answer to the press itself held back."""
     count_replies(page)
-    seen = answer(page, "replay_restart", answer_with, status)
+    seen = answer(page, SEEK, answer_with, status, prefix="intents")
     hd.show(replay_state("T0", transport=EARLIER))
     open_page(page, hd)
-    expect(page.locator("#title")).to_have_text("T0")
+    drawn(page, "T0")
     expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
     replay_button(page, REWIND).click()
     return seen
@@ -204,7 +203,7 @@ class TestStartButtonHeld:
         rewind = replay_button(page, REWIND)
         # At once: nothing has come back yet.
         expect(rewind).to_have_attribute(BUSY, "true")
-        assert seen == [{"appliance_id": LOUNGE}]
+        assert seen == [SEEK_BODY]
         # The dial has the request in hand.
         shown(page, hd, "T1", replay_state("T1", transport=seek("pending")))
         expect(rewind).to_have_attribute(BUSY, "true")
@@ -217,37 +216,17 @@ class TestStartButtonHeld:
         expect(rewind).to_have_attribute(BUSY, "false")
         expect(rewind).to_be_enabled()
 
-    def test_it_follows_the_token_the_reply_carries(self, page, hd):
-        seen = start_held(page, hd, answer_with={"ok": True, "token": NOW + 1})
-        rewind = replay_button(page, REWIND)
-        replied(page)
-        assert seen == [{"appliance_id": LOUNGE}]
-        shown(page, hd, "T1", replay_state("T1", transport=seek("pending")))
-        expect(rewind).to_have_attribute(BUSY, "true")
-        shown(page, hd, "T2", replay_state("T2", transport=seek("accepted", changed=NOW + 2)))
-        expect(rewind).to_have_attribute(BUSY, "true")
-        shown(page, hd, "T3", replay_state(
-            "T3", transport=seek("accepted", changed=NOW + 2), observed=NOW + 2.5, position=0.0))
-        expect(rewind).to_have_attribute(BUSY, "false")
-
     def test_a_redraw_that_shows_nothing_new_does_not_let_it_go(self, page, hd):
-        start_held(page, hd, answer_with={"ok": True, "token": NOW + 1})
+        start_held(page, hd)
         replied(page)
-        # The reply has named the request but the state has not shown it, and
-        # the timer is redrawn as it steps on: the button stays down.
+        # The reply is in but the state has not shown the request, and the
+        # timer is redrawn as it steps on: the button stays down.
         timer = replay_timer(page)
         before = timer.inner_text()
         expect(timer).not_to_have_text(before)
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
         shown(page, hd, "T1", replay_state("T1", transport=seek("pending")))
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
-
-    def test_a_newer_request_is_not_taken_for_the_one_the_reply_named(self, page, hd):
-        start_held(page, hd, answer_with={"ok": True, "token": NOW + 1})
-        replied(page)
-        # The first state the page sees shows another seek: not this press's.
-        shown(page, hd, "T1", replay_state("T1", transport=seek("pending", requested=NOW + 5)))
-        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
 
     def test_it_stays_held_through_states_that_say_nothing_new(self, page, hd):
         start_held(page, hd)
@@ -310,16 +289,16 @@ class TestStartButtonHeld:
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
 
     def test_it_is_let_go_when_the_reply_is_lost(self, page, hd):
-        page.route("**/api/v1/actions/replay_restart", lambda route: route.abort())
+        page.route("**/api/v1/intents/repeat.seek", lambda route: route.abort())
         hd.show(replay_state("T0", transport=EARLIER))
         open_page(page, hd)
-        expect(page.locator("#title")).to_have_text("T0")
+        drawn(page, "T0")
         replay_button(page, REWIND).click()
         expect(page.locator("#toast")).to_have_text("No connection to the dial.")
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
 
     def test_pressing_stop_lets_it_go(self, page, hd):
-        answer(page, "replay_stop")
+        answer(page, "repeat.transport", prefix="intents")
         start_held(page, hd)
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
         replay_button(page, STOP).click()
@@ -334,44 +313,22 @@ class TestStartButtonHeld:
         shown(page, hd, "T2", replay_state("T2", transport=seek("pending", requested=NOW + 5)))
         expect(rewind).to_have_attribute(BUSY, "false")
 
-    def test_a_token_that_arrives_after_a_state_has_the_last_word(self, page, hd):
-        held: list = []
-        count_replies(page)
-        page.route("**/api/v1/actions/replay_restart", lambda route: held.append(route))
-        hd.show(replay_state("T0", transport=EARLIER))
-        open_page(page, hd)
-        expect(page.locator("#title")).to_have_text("T0")
-        with page.expect_request("**/api/v1/actions/replay_restart"):
-            replay_button(page, REWIND).click()
-        # A state shows a request before the reply says which one is the press's.
-        shown(page, hd, "T1", replay_state("T1", transport=seek("pending", requested=NOW + 5)))
-        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
-        assert len(held) == 1
-        held[0].fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True, "token": NOW + 1}))
-        # The state that follows must not get to the page ahead of the reply.
-        replied(page)
-        shown(page, hd, "T2", replay_state("T2", transport=seek("pending")))
-        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
-        shown(page, hd, "T3", replay_state(
-            "T3", transport=seek("accepted", changed=NOW + 2), observed=NOW + 2.5, position=0.0))
-        expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
-
     def test_stop_pressed_during_a_held_start_lets_the_start_go_and_sends_stop(self, page, hd):
-        seen_stop = answer(page, "replay_stop")
+        seen_stop = answer(page, "repeat.transport", prefix="intents")
         start_held(page, hd)
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "true")
         replay_button(page, STOP).click()
         expect(replay_button(page, REWIND)).to_have_attribute(BUSY, "false")
-        assert seen_stop == [{"appliance_id": LOUNGE}]
+        assert seen_stop == [{"appliance_id": LOUNGE, "args": {"action": "stop"}}]
 
     def test_play_from_a_held_recording_is_held_too(self, page, hd):
-        seen = answer(page, "replay_start")
+        seen = answer(page, SEEK, prefix="intents")
         hd.show(replay_state("T0", transport=EARLIER, state="hold"))
         open_page(page, hd)
-        expect(page.locator("#title")).to_have_text("T0")
+        drawn(page, "T0")
         replay_button(page, PLAY).click()
         expect(replay_button(page, PLAY)).to_have_attribute(BUSY, "true")
-        assert seen == [{"appliance_id": LOUNGE}]
+        assert seen == [SEEK_BODY]
         shown(page, hd, "T1", replay_state("T1", transport=seek("pending"), state="hold"))
         expect(replay_button(page, PLAY)).to_have_attribute(BUSY, "true")
         shown(page, hd, "T2", replay_state(

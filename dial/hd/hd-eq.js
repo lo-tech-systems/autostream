@@ -1,12 +1,9 @@
-// hd-eq.js: the HD page's equaliser: the response maths (the biquad and its
-// magnitude, which the graph alone calls), the filters a set of sliders adds
-// up to, the band labels, and the canvas graph drawn from them.
+// hd-eq.js: the HD page's equaliser: the response maths, the filters the six
+// sliders add up to, the band labels, and the canvas graph drawn from them.
 
-import { EQ_FILTERS, EQ_TWO_BAND, EQ_LABELS, EQ_GRAPH, signed } from "./hd-tables.js";
+import { EQ_FILTERS, EQ_GRAPH, signed } from "./hd-tables.js";
 import { els } from "./hd-dom.js";
 import { ui } from "./hd-state.js";
-
-// ---- The equaliser's response maths ----------------------------------
 
 // RBJ audio EQ cookbook biquad, normalised, as the appliance's monitor
 // configures its filters.
@@ -51,55 +48,32 @@ function magnitudeDb(c, f, fs) {
 
 // The filters a set of sliders adds up to: [{ type, hz, q, gain }].
 export function responseFilters(bands) {
-    const out = [];
-    const add = (id, hz, gain) => {
-        const shape = EQ_FILTERS[id];
-        if (shape) { out.push({ type: shape.type, hz: hz || shape.hz, q: shape.q, gain: gain }); }
-    };
-    bands.forEach((band) => {
-        const parts = EQ_TWO_BAND[band.id];
-        if (parts) {
-            parts.forEach(([id, share]) => add(id, 0, band.gain * share));
-        } else {
-            add(band.id, band.hz, band.gain);
-        }
-    });
-    return out;
+    return bands.map((band) => Object.assign({ gain: band.gain }, EQ_FILTERS[band.id]));
 }
 
-export function eqLabel(band) {
-    if (EQ_LABELS[band.id]) { return EQ_LABELS[band.id]; }
-    if (!band.frequency_hz) { return band.id; }
-    return band.frequency_hz >= 1000 ? band.frequency_hz / 1000 + "kHz" : band.frequency_hz + "Hz";
+export function eqLabel(hz) {
+    return hz >= 1000 ? hz / 1000 + "kHz" : hz + "Hz";
 }
-
-// ---- The equaliser's response graph ------------------------------------
 
 export const graph = { key: "", frame: 0 };
 
 export function scheduleGraph() {
     if (graph.frame) { return; }
-    graph.frame = requestAnimationFrame(() => {
-        graph.frame = 0;
-        drawGraph();
-    });
+    graph.frame = requestAnimationFrame(() => { graph.frame = 0; drawGraph(); });
 }
 
 function drawGraph() {
     const canvas = els.eqGraph;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
     if (!w || !h || !ui.vm) { return; }
     const G = EQ_GRAPH;
     const dpr = Math.min(window.devicePixelRatio || 1, G.maxDpr);
-    canvas.width = Math.round(w * dpr);
-    canvas.height = Math.round(h * dpr);
+    [canvas.width, canvas.height] = [Math.round(w * dpr), Math.round(h * dpr)];
     const g = canvas.getContext("2d");
     g.scale(dpr, dpr);
     const css = getComputedStyle(els.app);
     const color = (name) => css.getPropertyValue(name).trim();
-    const pw = w - G.padLeft - G.padRight;
-    const ph = h - G.padTop - G.padBottom;
+    const pw = w - G.padLeft - G.padRight, ph = h - G.padTop - G.padBottom;
     const fx = (f) => G.padLeft + pw * Math.log(f / G.fMin) / Math.log(G.fMax / G.fMin);
     const dy = (db) => G.padTop + ph * (G.range - Math.max(-G.range, Math.min(G.range, db))) / (2 * G.range);
 
@@ -156,10 +130,8 @@ function drawGraph() {
     g.lineWidth = 2.4;
     g.stroke();
     ui.vm.eq.bands.forEach((band) => {
-        const f = band.hz || (EQ_TWO_BAND[band.id] ? EQ_FILTERS[EQ_TWO_BAND[band.id][0][0]].hz : 0);
-        if (!f) { return; }
         g.beginPath();
-        g.arc(fx(f), dy(total(f)), 4.5, 0, Math.PI * 2);
+        g.arc(fx(band.hz), dy(total(band.hz)), 4.5, 0, Math.PI * 2);
         g.fillStyle = "#fff";
         g.fill();
     });

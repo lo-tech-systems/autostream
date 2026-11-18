@@ -144,9 +144,12 @@ class TestPageLoads:
         first = page.evaluate(
             "() => new Promise((resolve, reject) => {"
             " const es = new EventSource('/api/v1/events');"
-            " es.addEventListener('state', e => { es.close(); resolve(e.data); });"
+            " es.addEventListener('change', e => { es.close(); resolve(e.data); });"
             " es.onerror = () => { es.close(); reject('stream error'); };"
             " setTimeout(() => { es.close(); reject('timeout'); }, 5000); })"
         )
         event = json.loads(first)
-        assert set(state) == set(event)
+        assert set(state) == {"boot", "version", "time", "part_versions", "parts"}
+        assert set(state["parts"]) == {"dial", "focused"}
+        # A page that names no position is told to fetch the state.
+        assert event["resync"] is True and event["boot"] == state["boot"]

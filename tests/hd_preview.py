@@ -72,11 +72,10 @@ class FakePanel:
 
 class HdPreview:
     """The server, bound to a free port unless *port* is given. Attributes:
-    core, server, hub, panel, management, muted and dial_clock (one-item
-    lists the server reads) and url."""
+    core, server, hub, panel, management, dial_clock (a one-item list the
+    server reads) and url."""
 
     def __init__(self, port: int = 0, *, pin: str = "", dev_port: "int | None" = None, static_root=None) -> None:
-        self.muted = [False]
         # The dial's clock reading for the next state; show() sets it from the scenario.
         self.dial_clock = [hd_scenarios.NOW]
         self.core = FakeCore(hd_scenarios.SCENARIOS[DEFAULT_SCENARIO].snapshot)
@@ -88,7 +87,6 @@ class HdPreview:
             SimpleNamespace(), self.core, http_server=self.management, hub=self.hub, port=port,
             panel=self.panel, info_fn=lambda: FakePanel.INFO_ROWS, dev_port=dev_port,
             **({} if static_root is None else {"static_root": static_root}),
-            muted_fn=lambda service: self.muted[0],
             # The scenarios carry fixed readings, so the server reads fixed clocks.
             clock=lambda: self.dial_clock[0], wall_clock=lambda: hd_scenarios.WALL_NOW,
         )
@@ -133,7 +131,7 @@ class HdPreview:
         one server and may change anything: the development listener and its
         sessions, the info cache, the event-stream clients, the management
         server's config, listeners, recovery window and replaced methods, the
-        clock and mute reading, then what reset() puts back."""
+        clock reading, then what reset() puts back."""
         server = self.server
         server.set_dev_access(False)
         server._last_pin = None
@@ -144,12 +142,10 @@ class HdPreview:
         assert server.client_count() == 0, "an event stream from the last test is still open"
         restore_management(self.management, self._first_management)
         self.dial_clock[0] = self._first_clock
-        self.muted[0] = False
         self.reset()
 
     def show(self, scenario) -> None:
         """Make *scenario* the state the dial reports now."""
-        self.muted[0] = scenario.muted
         self.dial_clock[0] = scenario.now
         for descriptor in scenario.descriptors:
             self.core.warnings.register(descriptor)

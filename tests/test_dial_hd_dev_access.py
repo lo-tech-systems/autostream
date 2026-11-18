@@ -105,7 +105,7 @@ def own_server(core, management, tmp_path):
     """A server of this test's own, for one that is stopped inside the test."""
     server = hds.HdServer(
         SimpleNamespace(), core, http_server=management, port=0, dev_port=0,
-        static_root=write_static(tmp_path / "own"), muted_fn=lambda s: False,
+        static_root=write_static(tmp_path / "own"),
     )
     server.start()
     yield server
@@ -517,7 +517,7 @@ class TestLogin:
         assert api(dev, "/api/v1/artwork/%s/backdrop" % key, cookie)[0].status in (200, 404)
         assert api(dev, "/api/v1/logo/backdrop", cookie)[0].status in (200, 404)
         state = json.loads(api(dev, "/api/v1/state", cookie)[1])
-        assert state["v"] == 1
+        assert set(state["parts"]) == {"dial", "focused"}
         assert api(dev, "/api/v1/settings", cookie)[0].status == 200
         response, _ = api(dev, "/api/v1/actions/mute_toggle", cookie, "POST", {"appliance_id": L})
         assert response.status == 200
@@ -527,7 +527,7 @@ class TestLogin:
         cookie = signed_in(dev)
         via_dev = api(dev, "/api/v1/state", cookie)[1]
         via_loopback = request(server.port, "GET", "/api/v1/state")[1]
-        assert json.loads(via_dev)["now_playing"] == json.loads(via_loopback)["now_playing"]
+        assert json.loads(via_dev)["parts"] == json.loads(via_loopback)["parts"]
         assert api(dev, "/", cookie)[1] == request(server.port, "GET", "/")[1]
 
     def test_the_wrong_pin_is_403_and_issues_nothing(self, dev):
@@ -768,7 +768,7 @@ class TestStreams:
         cookie = signed_in(dev)
         client = Sse(dev.dev_port, cookie)
         try:
-            assert client.read_until(b"event: state")
+            assert client.read_until(b"event: change")
             assert b"200 OK" in client.buf
         finally:
             client.close()
@@ -784,7 +784,7 @@ class TestStreams:
     def test_switching_access_off_ends_the_stream(self, dev):
         client = Sse(dev.dev_port, signed_in(dev))
         try:
-            assert client.read_until(b"event: state")
+            assert client.read_until(b"event: change")
             dev.set_dev_access(False)
             assert client.closed_by_server()
         finally:
@@ -793,7 +793,7 @@ class TestStreams:
     def test_clearing_the_pin_ends_the_stream(self, dev):
         client = Sse(dev.dev_port, signed_in(dev))
         try:
-            assert client.read_until(b"event: state")
+            assert client.read_until(b"event: change")
             dev.on_config(SimpleNamespace(hd_dev_access=True, pin=""))
             assert client.closed_by_server()
         finally:
@@ -802,7 +802,7 @@ class TestStreams:
     def test_changing_the_pin_ends_the_stream(self, dev, stack):
         client = Sse(dev.dev_port, signed_in(dev))
         try:
-            assert client.read_until(b"event: state")
+            assert client.read_until(b"event: change")
             stack.management._cfg.pin = "1357"
             dev.on_config(SimpleNamespace(hd_dev_access=True, pin="1357"))
             assert client.closed_by_server()
@@ -813,7 +813,7 @@ class TestStreams:
         cookie = signed_in(dev)
         client = Sse(dev.dev_port, cookie)
         try:
-            assert client.read_until(b"event: state")
+            assert client.read_until(b"event: change")
             api(dev, "/logout", cookie, "POST", {})
             assert client.closed_by_server()
         finally:
@@ -822,7 +822,7 @@ class TestStreams:
     def test_expiry_ends_the_stream(self, dev, stack):
         client = Sse(dev.dev_port, signed_in(dev))
         try:
-            assert client.read_until(b"event: state")
+            assert client.read_until(b"event: change")
             stack.clock.now += hds.SESSION_TTL_S + 1
             assert client.closed_by_server()
         finally:
@@ -830,7 +830,7 @@ class TestStreams:
 
     def test_the_stream_slot_is_released(self, dev, server):
         client = Sse(dev.dev_port, signed_in(dev))
-        assert client.read_until(b"event: state")
+        assert client.read_until(b"event: change")
         assert server.client_count() == 1
         dev.set_dev_access(False)
         client.close()
@@ -841,7 +841,7 @@ class TestStreams:
         loop.sendall(f"GET /api/v1/events HTTP/1.1\r\nHost: 127.0.0.1:{server.port}\r\n\r\n".encode())
         loop.settimeout(5)
         buf = b""
-        while b"event: state" not in buf:
+        while b"event: change" not in buf:
             buf += loop.recv(65536)
         dev.set_dev_access(False)
         loop.settimeout(1.0)

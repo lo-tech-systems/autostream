@@ -65,7 +65,7 @@ def test_eq_band_sliders_stand_upright(wpe):
 
 def test_use_raises_no_script_errors(wpe, hd):
     wpe.js(ERROR_HOOK)
-    for name in ("replaying", "nothing_playing", "eq_two", "playing_artwork"):
+    for name in ("replaying", "nothing_playing", "eq_none", "playing_artwork"):
         hd.show(hs.SCENARIOS[name])
     wpe.click("#eq-open")
     wpe.wait_for("return document.querySelectorAll('.hd-band-slider').length")

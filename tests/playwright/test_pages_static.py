@@ -562,3 +562,29 @@ CEILINGS = {
 def test_a_module_stays_within_its_line_ceiling(rel: str):
     lines = len((STATIC / rel).read_text(encoding="utf-8").splitlines())
     assert lines <= CEILINGS[rel], f"{rel} has {lines} lines; its ceiling is {CEILINGS[rel]}"
+
+
+HD = stub.REPO_ROOT / "dial" / "hd"
+
+# The HD page's modules -> the most non-blank lines each may have.
+HD_CEILINGS = {
+    "hd.js": 90,
+    "hd-tables.js": 190,
+    "hd-dom.js": 75,
+    "hd-state.js": 150,
+    "hd-eq.js": 135,
+    "hd-derive.js": 300,
+    "hd-requests.js": 130,
+    "hd-actions.js": 315,
+    "hd-paint.js": 425,
+}
+
+
+@pytest.mark.parametrize("name", sorted(HD_CEILINGS))
+def test_an_hd_page_module_stays_within_its_line_ceiling(name: str):
+    lines = [line for line in (HD / name).read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert len(lines) <= HD_CEILINGS[name], f"{name} has {len(lines)} lines; its ceiling is {HD_CEILINGS[name]}"
+
+
+def test_every_hd_page_module_has_a_ceiling():
+    assert {p.name for p in HD.glob("hd*.js")} == set(HD_CEILINGS)

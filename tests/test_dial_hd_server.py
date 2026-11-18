@@ -24,7 +24,7 @@ from hd_fake_core import FakeCore
 from dial_config import DialDisplayConfig
 from dial_core_state import Artwork, artwork_key
 from dial_hd_backdrop import BackdropStore
-from dial_hd_state import build_state
+from dial_hd_state import build_parts
 
 PAGE = b"<!doctype html><title>t</title>"
 CSS = b"body{}"
@@ -69,7 +69,6 @@ def make_server(core, static_root):
     def make(**kwargs):
         kwargs.setdefault("http_server", _Http())
         kwargs.setdefault("static_root", static_root)
-        kwargs.setdefault("muted_fn", lambda service: True)
         kwargs.setdefault("port", 0)
         server = hds.HdServer(SimpleNamespace(), core, **kwargs)
         server.start()
@@ -454,58 +453,56 @@ class TestFailures:
 
 
 class TestState:
-    def test_the_state_body_is_the_serialised_snapshot(self, server, core):
+    def test_the_state_body_is_the_two_parts_of_the_snapshot(self, server, core):
         response, data = request(server, "GET", "/api/v1/state")
         assert response.status == 200
         assert response.getheader("Content-Type") == "application/json"
         assert response.getheader("Cache-Control") == "no-store"
         assert response.getheader("X-Content-Type-Options") == "nosniff"
         body = json.loads(data)
-        assert body["v"] == 1
-        assert body["core_seq"] == core.snapshot().seq
-        assert body["now_playing"]["title"] == "Tunnel of Love"
-        assert body["artwork"]["url"] == "/api/v1/artwork/" + core.snapshot().artwork.key
+        assert set(body) == {"boot", "version", "time", "part_versions", "parts"}
+        assert body["boot"] == server.boot and re.fullmatch(r"[0-9a-f]{16}", body["boot"])
+        assert body["version"] == core.snapshot().seq
+        assert set(body["parts"]) == {"dial", "focused"}
+        assert body["parts"]["dial"]["artwork"]["url"] == "/api/v1/artwork/" + core.snapshot().artwork.key
+        assert body["parts"]["focused"]["id"] == hs.LOUNGE
+        assert body["part_versions"] == {"dial": body["version"], "focused": hs.PEER_VERSION}
 
     def test_the_impure_reads_are_folded_in(self, make_server, core):
-        http_server = _Http()
-        seen = []
-
-        def muted(service):
-            seen.append(service)
-            return True
-
-        server = make_server(http_server=http_server, muted_fn=muted, panel=SimpleNamespace(
+        server = make_server(http_server=_Http(), clock=lambda: 1234.5678, panel=SimpleNamespace(
             view=lambda: {"asleep": True, "backlight": "sysfs"}))
         body = json.loads(request(server, "GET", "/api/v1/state")[1])
-        assert seen == ["Lounge"]
-        assert body["volume"]["muted"] is True
-        assert body["panel"]["asleep"] is True
-        assert body["panel"]["brightness"] == 60
-        assert body["panel"]["sleep_after_s"] == 900
-        assert body["recovery"] == {"active": True, "confirmed": False}
+        dial = body["parts"]["dial"]
+        assert body["time"] == 1234.568
+        assert dial["panel"]["asleep"] is True
+        assert dial["panel"]["brightness"] == 60
+        assert dial["panel"]["sleep_after_s"] == 900
+        assert dial["recovery"] == {"active": True, "confirmed": False}
 
-    def test_the_body_matches_build_state_for_the_same_inputs(self, make_server, core):
+    def test_the_parts_match_build_parts_for_the_same_inputs(self, make_server, core):
         scenario = hs.SCENARIOS["playing_artwork"]
         server = make_server(
-            muted_fn=lambda service: False, clock=lambda: hs.NOW, wall_clock=lambda: hs.WALL_NOW,
+            clock=lambda: hs.NOW, wall_clock=lambda: hs.WALL_NOW,
             panel=SimpleNamespace(view=lambda: dict(hs.PANEL_AWAKE)),
         )
         server._http_server.display_config = DialDisplayConfig(brightness=80, sleep_after_s=300)
         server._http_server.status = {"recovery_active": False, "volume_confirmed": False}
         body = json.loads(request(server, "GET", "/api/v1/state")[1])
-        expected = build_state(
+        expected = build_parts(
             scenario.snapshot, descriptors=core.warnings.descriptors(), panel=hs.PANEL_AWAKE,
             settings={"brightness": 80, "sleep_after_s": 300},
-            recovery=(False, False), hub_seq=scenario.snapshot.seq, now=hs.NOW,
-            wall_now=hs.WALL_NOW, muted=False)
-        assert body == json.loads(json.dumps(expected))
+            recovery=(False, False), now=hs.NOW, wall_now=hs.WALL_NOW)
+        assert body["parts"] == json.loads(json.dumps(expected))
 
     def test_a_newly_published_snapshot_is_served(self, server, core):
-        before = json.loads(request(server, "GET", "/api/v1/state")[1])["core_seq"]
+        before = json.loads(request(server, "GET", "/api/v1/state")[1])["version"]
         core.publish(polling=False)
         body = json.loads(request(server, "GET", "/api/v1/state")[1])
-        assert body["core_seq"] == before + 1
-        assert body["polling"] is False
+        assert body["version"] == before + 1
+        assert body["parts"]["dial"]["polling"] is False
+
+    def test_the_boot_is_this_servers_own(self, make_server):
+        assert make_server().boot != make_server().boot
 
     def test_no_appliance_address_or_service_name_reaches_the_body(self, server):
         data = request(server, "GET", "/api/v1/state")[1].decode()
@@ -515,7 +512,7 @@ class TestState:
     def test_the_server_works_with_no_management_server(self, make_server):
         server = make_server(http_server=None)
         body = json.loads(request(server, "GET", "/api/v1/state")[1])
-        assert body["recovery"] == {"active": False, "confirmed": False}
+        assert body["parts"]["dial"]["recovery"] == {"active": False, "confirmed": False}
 
     def test_every_scenario_serialises_over_the_wire(self, make_server, core):
         server = make_server()
@@ -523,7 +520,7 @@ class TestState:
             core.publish(scenario.snapshot)
             response, data = request(server, "GET", "/api/v1/state")
             assert response.status == 200, name
-            assert json.loads(data)["v"] == 1
+            assert json.loads(data)["parts"]["dial"]["v"] == 2
 
 
 # ---- artwork ---------------------------------------------------------------
@@ -1042,7 +1039,7 @@ class TestIntentsTrackRequests:
             "Lounge", playing=True, units=[pool_unit("u1", "Kitchen", volume=40)], bands=[0] * 6,
             repeat=replay_block("replaying"), version=1))
         rig.fold()
-        server = hds.HdServer(SimpleNamespace(), rig.core, static_root=root, port=0, muted_fn=lambda s: False)
+        server = hds.HdServer(SimpleNamespace(), rig.core, static_root=root, port=0)
         server.start()
         yield rig, client, server
         server.stop()

@@ -65,6 +65,7 @@ export const els = {
     app: $("app"), appliances: $("appliances"), appliancesNote: $("appliances-note"),
     appliancesList: $("appliances-list"), speakersList: $("speakers-list"),
     speakers: $("speakers"), speakersNote: $("speakers-note"), speakersLabel: $("speakers-label"),
+    autostart: $("autostart-pin"),
     replay: $("replay-row"),
     art: $("art"), artPrev: $("art-prev"), backdrop: $("backdrop"), backdropPrev: $("backdrop-prev"),
     artZone: $("art-zone"), title: $("title"), sub: $("sub"), eq: $("eq-open"), mute: $("mute"),

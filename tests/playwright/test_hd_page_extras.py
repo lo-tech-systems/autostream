@@ -22,7 +22,7 @@ from test_hd_dial import (  # noqa: E402,F401  (fixtures shared with the page sm
     _PLAYWRIGHT_INSTALLED, Watcher, browser_context_args, hd_server,
 )
 from test_hd_page_main import (  # noqa: E402,F401
-    SIZES, card, cards, drag_input, hd, open_page, rows, scenario, wait_for_state, watch_actions,
+    SIZES, card, cards, drag_input, hd, open_page, rows, scenario, watch_actions, watch_intents,
 )
 
 pytestmark = pytest.mark.skipif(not _PLAYWRIGHT_INSTALLED, reason="playwright not installed")
@@ -175,12 +175,12 @@ class TestReplayRow:
 
     def test_arm_toggle_sends_and_follows_the_state(self, page, hd):
         hd.show(hs.replay_scenario("r", "recording", armed=False))
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         box = page.locator("#replay-row .repeat-arm input")
         page.locator("#replay-row .repeat-arm").click()
         expect(box).to_be_checked()
-        assert sent == [("repeat_arm", {"appliance_id": LOUNGE, "armed": True})]
+        assert sent == [("repeat.arm", {"armed": True})]
         hd.show(hs.replay_scenario("r", "recording", armed=True))
         expect(box).to_be_checked()
 
@@ -190,12 +190,12 @@ class TestReplayRow:
         open_page(page, hd)
         page.locator("#replay-row .repeat-arm").click()
         expect(page.locator("#replay-row .repeat-arm input")).to_be_checked()
-        page.clock.run_for(2500)
+        page.clock.run_for(8500)
         expect(page.locator("#replay-row .repeat-arm input")).not_to_be_checked()
 
     def test_a_held_recording_offers_play_with_its_length(self, page, hd):
         hd.show(hs.SCENARIOS["replay_hold"])
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         expect(replay_timer(page)).to_have_text("0:00 / 18:42")
         expect(replay_timer(page)).not_to_have_class(re.compile("frozen"))
@@ -205,7 +205,7 @@ class TestReplayRow:
         tap(page, f'#replay-row button[aria-label="{STOP}"]')
         replay_button(page, PLAY).click()
         page.wait_for_timeout(150)
-        assert sent == [("replay_start", {"appliance_id": LOUNGE})]
+        assert sent == [("repeat.seek", {"position": 0})]
 
     def test_play_starts_the_replay_and_the_row_becomes_the_running_one(self, page, hd):
         hd.show(hs.SCENARIOS["replay_hold"])
@@ -234,7 +234,7 @@ class TestReplayRow:
 
     def test_replaying_shows_rewind_stop_and_the_timer_in_that_order(self, page, hd):
         hd.show(hs.SCENARIOS["replaying"])
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         expect(replay_timer(page)).to_have_text(re.compile(r"^(1:59|2:0[0-9]) / 18:20$"))
         layout = row_layout(page)
@@ -247,10 +247,10 @@ class TestReplayRow:
         replay_button(page, REWIND).click()
         page.wait_for_timeout(150)
         expect(page.locator("#modal")).to_be_hidden()      # no confirmation
-        assert sent == [("replay_restart", {"appliance_id": LOUNGE})]
+        assert sent == [("repeat.seek", {"position": 0})]
         replay_button(page, STOP).click()
         page.wait_for_timeout(150)
-        assert sent[-1] == ("replay_stop", {"appliance_id": LOUNGE})
+        assert sent[-1] == ("repeat.transport", {"action": "stop"})
 
     @pytest.mark.parametrize("name", ["replay_hold", "replaying"])
     def test_the_transport_buttons_are_icons_with_labels(self, page, hd, name):
@@ -456,16 +456,6 @@ class TestReplayRow:
         open_page(page, hd)
         expect(replay_timer(page)).to_have_text("0:00 / 18:20")
 
-    def test_an_appliance_without_repeat_has_no_row(self, page, hd):
-        base = hs.SCENARIOS["replaying"]
-        appliances = tuple(dataclasses.replace(a, repeat_capable=False) for a in base.snapshot.appliances)
-        hd.show(base.with_snapshot(appliances=appliances))
-        open_page(page, hd)
-        assert replay_row(page).locator("*").count() == 0
-        expect(replay_row(page)).to_be_hidden()
-        hd.show(hs.SCENARIOS["replaying"])
-        expect(replay_row(page)).to_be_visible()
-
     @pytest.mark.parametrize("state", ["idle", "hold", "replaying"])
     def test_repeat_turned_off_on_the_appliance_has_no_row(self, page, hd, state):
         base = hs.replay_scenario("off", state)
@@ -526,7 +516,8 @@ class TestReplayRow:
         expect(page.locator("#replay-row .repeat-arm input")).to_be_disabled()
 
 
-STOP_URL = "**/api/v1/actions/replay_stop"
+STOP_URL = "**/api/v1/intents/repeat.transport"
+STOP_BODY = {"appliance_id": LOUNGE, "args": {"action": "stop"}}
 
 
 def answer_stop(page, body=None, status=200) -> list:
@@ -566,7 +557,7 @@ class TestStop:
         assert timer_seconds(page) == shown
         page.clock.run_for(1500)
         assert timer_seconds(page) == shown
-        assert seen == [{"appliance_id": LOUNGE}]
+        assert seen == [STOP_BODY]
 
     def test_it_stays_frozen_as_later_states_still_say_replaying(self, page, hd):
         answer_stop(page)
@@ -674,18 +665,17 @@ class TestStop:
 
     def test_a_stop_pressed_during_a_held_start_takes_its_place(self, page, hd):
         held: list = []
-        page.route("**/api/v1/actions/replay_restart", lambda route: held.append(route))
+        page.route("**/api/v1/intents/repeat.seek", lambda route: held.append(route))
         seen = answer_stop(page)
         running_at_five_minutes(page, hd)
         replay_button(page, REWIND).click()
         expect(replay_button(page, REWIND)).to_have_attribute("aria-busy", "true")
         replay_button(page, STOP).click(force=True)
         expect(replay_button(page, REWIND)).to_have_attribute("aria-busy", "false")
-        assert seen == [{"appliance_id": LOUNGE}]
-        # The start's late reply must not bind the Stop to its token.
+        assert seen == [STOP_BODY]
+        # The start's late reply must not let the Stop go.
         assert len(held) == 1
-        held[0].fulfill(status=200, content_type="application/json",
-                        body=json.dumps({"ok": True, "token": hs.NOW + 5}))
+        held[0].fulfill(status=200, content_type="application/json", body=json.dumps({"ok": True}))
         page.clock.run_for(300)
         pending = TransportRequest(LOUNGE, "stop", hs.NOW + 50, "pending", hs.NOW + 50, None)
         hd.show(replaying_at(303.5, "T1").with_snapshot(transport=pending))
@@ -700,16 +690,10 @@ class TestStop:
 def eq_scenario(version=2, gains=None):
     """An equaliser state for the Lounge with the given band gains (by id)."""
     gains = gains or {}
-    if version == 2:
-        bands = tuple(
-            EqBand(b.id, b.frequency_hz, gains.get(b.id, 0), b.min_db, b.max_db) for b in hs.SIX_BANDS
-        ) + hs.DERIVED_BANDS
-    else:
-        bands = tuple(
-            EqBand(b.id, None, gains.get(b.id, 0), b.min_db, b.max_db) for b in hs.DERIVED_BANDS
-        )
-    base = hs.SCENARIOS["eq_six"] if version == 2 else hs.SCENARIOS["eq_two"]
-    return base.with_snapshot(eq=EqState(LOUNGE, version, bands, True, (), 0.0))
+    bands = tuple(
+        EqBand(b.id, b.frequency_hz, gains.get(b.id, 0), b.min_db, b.max_db) for b in hs.SIX_BANDS
+    )
+    return hs.SCENARIOS["eq_six"].with_snapshot(eq=EqState(LOUNGE, version, bands, True, (), 0.0))
 
 
 def open_eq(page):
@@ -783,16 +767,6 @@ class TestEqPage:
         assert sliders_box["x"] + sliders_box["width"] < box["x"]
         assert sliders_box["height"] > 150
 
-    def test_two_bands_for_a_bass_and_treble_appliance(self, page, hd):
-        hd.show(hs.SCENARIOS["eq_two"])
-        open_page(page, hd)
-        open_eq(page)
-        assert page.locator("#eq-bands .eq-band-freq").all_text_contents() == ["Bass", "Treble"]
-        assert page.locator("#eq-bands .eq-band-val").all_text_contents() == ["+4 dB", "+1 dB"]
-        slider = page.locator("#eq-bands input").first
-        assert (slider.get_attribute("min"), slider.get_attribute("max")) == ("-6", "6")
-        expect(page.locator("#eq-graph")).to_be_visible()
-
     def test_no_capability_no_icon_and_no_page(self, page, hd):
         hd.show(hs.SCENARIOS["eq_none"])
         open_page(page, hd)
@@ -816,19 +790,19 @@ class TestEqPage:
         expect(page.locator("#eq")).to_be_hidden()          # it does not reopen by itself
 
     def test_dragging_a_band_sends_its_gain_and_follows_the_thumb(self, page, hd):
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         open_eq(page)
         drag_input(page, "#eq-bands .eq-band:nth-child(4) input", [3, 4, 5], final=6)
         expect(band(page, 3).locator(".eq-band-val")).to_have_text("+6 dB")
         page.wait_for_timeout(300)
-        eq_sent = only(sent, "eq")
-        assert eq_sent[0] == ("eq", {"appliance_id": LOUNGE, "gains": {"peq4": 3}})
-        assert eq_sent[-1] == ("eq", {"appliance_id": LOUNGE, "gains": {"peq4": 6}})
+        eq_sent = only(sent, "output.eq.set")
+        assert eq_sent[0] == ("output.eq.set", {"fields": [["peq4_db", 3]]})
+        assert eq_sent[-1] == ("output.eq.set", {"fields": [["peq4_db", 6]]})
         assert len(eq_sent) <= 4
 
     def test_a_finger_drag_on_a_slider(self, page, hd):
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         open_eq(page)
         slider = band(page, 3).locator("input")
@@ -839,7 +813,7 @@ class TestEqPage:
         page.mouse.move(x, box["y"] + 4, steps=6)
         page.mouse.up()
         page.wait_for_timeout(300)
-        final = only(sent, "eq")[-1][1]["gains"]["peq4"]
+        final = only(sent, "output.eq.set")[-1][1]["fields"][0][1]
         assert final >= 10
         expect(band(page, 3).locator(".eq-band-val")).to_have_text(f"+{final} dB")
 
@@ -858,7 +832,7 @@ class TestEqPage:
         assert style == ["horizontal-tb", "ltr"]
 
     def test_dragging_up_raises_a_band_and_posts_its_gain(self, page, hd):
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         open_eq(page)
         box = band(page, 1).locator("input").bounding_box()      # starts at 0 dB
@@ -868,21 +842,20 @@ class TestEqPage:
         page.mouse.move(x, y - box["height"] / 4, steps=6)
         page.mouse.up()
         page.wait_for_timeout(300)
-        final = only(sent, "eq")[-1][1]["gains"]["peq2"]
+        final = only(sent, "output.eq.set")[-1][1]["fields"][0][1]
         assert 3 <= final <= 9
         expect(band(page, 1).locator(".eq-band-val")).to_have_text(f"+{final} dB")
         assert page.evaluate("document.querySelector('#eq-bands .eq-band:nth-child(2) input').style.getPropertyValue('--lo')") \
             == "50%"
 
-    @pytest.mark.parametrize("scenario_name", ["eq_six", "eq_two"])
     @pytest.mark.parametrize("size", SIZES, ids=lambda s: f"{s[0]}x{s[1]}")
-    def test_bands_labels_and_graph_never_overlap(self, page, hd, size, scenario_name):
-        hd.show(hs.SCENARIOS[scenario_name])
+    def test_bands_labels_and_graph_never_overlap(self, page, hd, size):
+        hd.show(hs.SCENARIOS["eq_six"])
         open_page(page, hd, size)
         open_eq(page)
         graph = page.locator("#eq-graph").bounding_box()
         count = page.locator("#eq-bands .eq-band").count()
-        assert count == (6 if scenario_name == "eq_six" else 2)
+        assert count == 6
         previous_right = 0
         for n in range(count):
             freq = band(page, n).locator(".eq-band-freq").bounding_box()
@@ -922,32 +895,21 @@ class TestEqPage:
         drag_input(page, "#eq-bands .eq-band:nth-child(6) input", [], final=12)
         assert curve_y(page, 18000) <= zero_y(page) - 80 and abs(curve_y(page, 20) - zero_y(page)) <= 4
 
-    def test_the_two_slider_curve_uses_the_bands_the_appliance_moves(self, page, hd):
-        hd.show(eq_scenario(1, {"bass": 6}))
-        open_page(page, hd)
-        open_eq(page)
-        assert curve_y(page, 20) < zero_y(page) - 10          # bass lifts the low end
-        assert abs(curve_y(page, 7000) - zero_y(page)) <= 4
-        hd.show(eq_scenario(1, {"treble": 6}))
-        expect(band(page, 1).locator(".eq-band-val")).to_have_text("+6 dB")
-        assert curve_y(page, 18000) < zero_y(page) - 6        # treble lifts the top
-        assert abs(curve_y(page, 20) - zero_y(page)) <= 4
-
     def test_reset_sends_one_request_and_flattens_at_once(self, page, hd):
         hd.show(eq_scenario(2))
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         open_eq(page)
         drag_input(page, "#eq-bands .eq-band:nth-child(2) input", [], final=9)
         page.locator("#eq-reset").click()
         values = page.locator("#eq-bands .eq-band-val").all_text_contents()
         assert values == ["0 dB"] * 6
-        assert only(sent, "eq_reset") == [("eq_reset", {"appliance_id": LOUNGE})]
+        assert only(sent, "output.eq.reset") == [("output.eq.reset", {})]
         assert abs(curve_y(page, 1300) - zero_y(page)) <= 3
 
     def test_reset_then_the_same_drag_is_sent_again(self, page, hd):
         hd.show(eq_scenario(2))
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         open_eq(page)
         slider = "#eq-bands .eq-band:nth-child(2) input"
@@ -955,7 +917,7 @@ class TestEqPage:
         page.locator("#eq-reset").click()
         drag_input(page, slider, [], final=5)
         page.wait_for_timeout(150)
-        assert [b["gains"] for n, b in sent if n == "eq"] == [{"peq2": 5}, {"peq2": 5}]
+        assert [b["fields"] for n, b in sent if n == "output.eq.set"] == [[["peq2_db", 5]], [["peq2_db", 5]]]
 
     def test_an_unconfirmed_drag_rolls_back(self, page, hd):
         hd.show(eq_scenario(2))
@@ -964,7 +926,7 @@ class TestEqPage:
         open_eq(page)
         drag_input(page, "#eq-bands .eq-band:nth-child(2) input", [], final=7)
         expect(band(page, 1).locator(".eq-band-val")).to_have_text("+7 dB")
-        page.clock.run_for(2500)
+        page.clock.run_for(8500)
         expect(band(page, 1).locator(".eq-band-val")).to_have_text("0 dB")
 
     def test_a_new_state_moves_the_sliders(self, page, hd):
@@ -1022,7 +984,7 @@ class TestPullDown:
         expect(page.locator("#sheet")).to_be_hidden()
         open_sheet(page)
         expect(page.locator("#sheet")).to_be_visible()
-        panel = current_state(page)["panel"]
+        panel = current_state(page)["parts"]["dial"]["panel"]
         expect(page.locator("#brightness")).to_have_value(str(panel["brightness"]))
         expect(page.locator("#brightness-num")).to_have_text(str(panel["brightness"]))
         pressed = page.locator("#sleep-after button[aria-pressed=true]")
@@ -1156,7 +1118,7 @@ class TestPullDown:
         posts = only(sent, "settings")
         assert posts[0] == ("settings", {"brightness": 60})
         assert posts[-1] == ("settings", {"brightness": 75})
-        wait_for_state(page, "s.panel.brightness === 75")
+        page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.dial.panel.brightness === 75)")
         page.wait_for_timeout(300)
         expect(page.locator("#brightness-num")).to_have_text("75")
 
@@ -1178,10 +1140,7 @@ class TestPullDown:
         page.route("**/api/v1/settings", handler)
         drag_input(page, "#brightness", [60, 65, 70], final=75)
         expect(page.locator("#brightness-num")).to_have_text("75")
-        wait_for_state(page, "s.panel.brightness === 75")
-        # A handler still holding a request when the page closes fails the
-        # next test's setup, so let every one finish before checking.
-        page.unroute_all(behavior="wait")
+        page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.dial.panel.brightness === 75)")
         assert most[0] == 1
         assert order[0] == 60 and order[-1] == 75
 
@@ -1194,7 +1153,7 @@ class TestPullDown:
         page.locator("#sleep-after button", has_text="Never").click()
         page.wait_for_timeout(200)
         assert only(sent, "settings") == [("settings", {"sleep_after_s": 900}), ("settings", {"sleep_after_s": 0})]
-        wait_for_state(page, "s.panel.sleep_after_s === 0")
+        page.wait_for_function("() => fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.dial.panel.sleep_after_s === 0)")
         expect(page.locator("#sleep-after button[aria-pressed=true]")).to_have_text("Never")
 
     def test_a_refused_setting_snaps_back(self, page, hd):
@@ -1650,20 +1609,6 @@ class TestApplianceWarnings:
             "Its software is older than this dial's. Update it from its web UI.")
         assert page.locator("#card-buttons button").all_text_contents() == ["Dismiss"]
 
-    def test_the_dials_controls_stay_usable_for_an_appliance_that_needs_an_update(self, page, hd):
-        hd.show(hs.SCENARIOS["appliance_needs_update"].with_snapshot(
-            outputs=hs.SCENARIOS["playing_artwork"].snapshot.outputs))
-        sent = watch_actions(page)
-        open_page(page, hd)
-        page.locator("#card-buttons button", has_text="Dismiss").click()
-        page.wait_for_timeout(150)
-        hd.show(hs._appliance_warning_scenario(
-            "x", hs._update_warning(), snoozed=True, proto=2, supplies=False))
-        expect(modal_card(page)).to_be_hidden()
-        card(page, "Patio").locator(".output-toggle").click()
-        page.wait_for_timeout(150)
-        assert [name for name, _ in sent] == ["warning_dismiss", "output"]
-
     def test_the_card_shows_when_the_warning_appliance_becomes_the_focus(self, page, hd):
         hd.show(lounge_warning_while_on_kitchen())
         open_page(page, hd)
@@ -1680,7 +1625,7 @@ class TestNoticeAndPresence:
         expect(modal_card(page)).to_be_hidden()
         rows(page).filter(has_text="Kitchen").click()
         expect(modal_card(page)).to_be_visible()
-        expect(page.locator("#card-title")).to_have_text("Not authorised")
+        expect(page.locator("#card-title")).to_have_text("Not allowed")
         expect(page.locator("#card-message")).to_have_text("Allow this dial in Kitchen's web UI (Setup, Dials)")
         expect(page.locator("#card-source")).to_have_text("http://192.0.2.20:80/")
         assert page.locator("#card-buttons button").all_text_contents() == ["OK"]
@@ -1737,7 +1682,7 @@ class TestNoticeAndPresence:
         hd.show(hs.SCENARIOS["unauthorized"])
         open_page(page, hd)
         rows(page).filter(has_text="Kitchen").click()
-        expect(page.locator("#card-title")).to_have_text("Not authorised")
+        expect(page.locator("#card-title")).to_have_text("Not allowed")
         hd.show(with_recovery(hs.SCENARIOS["unauthorized"]))
         expect(page.locator("#card-title")).to_have_text("Confirm you are at the dial")
 
@@ -2099,20 +2044,19 @@ class TestSpeakerPin:
 
     def test_ok_posts_the_pin_once_and_shows_busy(self, page, hd):
         hd.show(hs.SCENARIOS["pin_required"])
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         tap_keys(page, "4096")
         tap_keys(page, ["ok", "ok"])
         page.wait_for_timeout(200)
-        assert sent == [("output", {
-            "appliance_id": LOUNGE, "output_id": "o2", "selected": True, "pin": "4096"})]
+        assert sent == [("output.pin.submit", {"id": "o2", "pin": "4096"})]
         assert shown_boxes(page) == ["", "", "", ""]
         hd.show(hs.SCENARIOS["pin_busy"])
         expect(page.locator("#card-message")).to_have_text("Pairing...")
         disabled = keys_disabled(page)
         assert all(disabled[k] for k in ("1", "5", "0", "ok", "del"))
         expect(page.locator("#card-buttons button")).to_be_enabled()
-        assert [name for name, _ in sent] == ["output"]
+        assert [name for name, _ in sent] == ["output.pin.submit"]
 
     def test_the_pin_is_not_kept_in_the_page_once_it_is_sent(self, page, hd):
         hd.show(hs.SCENARIOS["pin_required"])
@@ -2156,7 +2100,7 @@ class TestSpeakerPin:
     def test_a_rate_limited_outcome_counts_down_with_the_keypad_disabled(self, page, hd):
         hd.show(hs.SCENARIOS["pin_rate_limited"])
         page.clock.install()
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         freeze_clock(page)
         error = page.locator("#card-pin-error")
@@ -2168,12 +2112,11 @@ class TestSpeakerPin:
         assert shown_boxes(page) == ["", "", "", ""]
         page.clock.run_for(1000)
         expect(error).to_have_text(f"Wait {left - 1} seconds before retry")
-        # the same outcome arriving again, a second later on the dial's clock, does not restart the count
+        # A publish that changes nothing the page is sent does not restart the count.
         hd.show(dataclasses.replace(hs.SCENARIOS["pin_rate_limited"], now=hs.NOW + 1.0))
-        expect(error).to_have_text("Wait 5 seconds before retry")
         page.clock.run_for(100)
-        expect(error).to_have_text("Wait 5 seconds before retry")
-        page.clock.run_for(4900)
+        expect(error).to_have_text(f"Wait {left - 1} seconds before retry")
+        page.clock.run_for((left - 1) * 1000)
         expect(error).to_have_text("")
         disabled = keys_disabled(page)
         assert not any(disabled[str(d)] for d in range(10))
@@ -2182,23 +2125,8 @@ class TestSpeakerPin:
         expect(pin_key(page, "ok")).to_be_enabled()
         tap_keys(page, ["ok"])
         page.wait_for_timeout(100)
-        assert [name for name, _ in sent] == ["output"]
+        assert [name for name, _ in sent] == ["output.pin.submit"]
         assert sent[0][1]["pin"] == "1234"
-
-    def test_the_wait_is_not_restarted_by_a_repeated_state(self, page, hd):
-        limited = hs.SCENARIOS["pin_rate_limited"]
-        hd.show(limited)
-        page.clock.install()
-        open_page(page, hd)
-        freeze_clock(page)
-        error = page.locator("#card-pin-error")
-        expect(error).to_have_text(WAIT_LINE)
-        # Each repeat names the same end of the wait; the dial's clock has moved on, so the
-        # count carries on from where it is instead of from the full wait.
-        for dial_seconds, shown in ((2, 4), (3, 3), (4, 2)):
-            hd.show(dataclasses.replace(limited, now=hs.NOW + dial_seconds))
-            expect(error).to_have_text(f"Wait {shown} seconds before retry")
-            page.clock.run_for(1000)
 
     @pytest.mark.parametrize("dial_clock", [5.0, hs.NOW, 3.0e6])
     def test_the_dials_clock_reading_does_not_matter_to_the_page(self, page, hd, dial_clock):
@@ -2226,35 +2154,6 @@ class TestSpeakerPin:
         page.clock.run_for(1100)
         expect(modal_card(page)).to_be_hidden()
         assert "12" not in "".join(page.locator("#card-pin-boxes .pin-box").all_text_contents())
-
-    def test_the_pair_in_autostream_card_closes_with_its_window(self, page, hd):
-        shown = hs.SCENARIOS["pin_required_v1"]
-        hd.show(shown.with_snapshot(outputs_request=hs.pin_request(
-            "rejected", "pin_required", at=hs.NOW - PIN_WINDOW_S + 3)))
-        page.clock.install()
-        open_page(page, hd)
-        expect(page.locator("#card-title")).to_have_text("Pair in Autostream")
-        page.clock.run_for(3100)
-        expect(modal_card(page)).to_be_hidden()
-
-    def test_a_state_without_the_dials_clock_falls_back_to_the_awaited_flag(self, page, hd):
-        page.add_init_script(
-            "(() => { const parse = JSON.parse; JSON.parse = (text) => { const v = parse(text);"
-            " if (v && v.v === 1 && v.outputs_request) { delete v.now;"
-            " delete v.outputs_request.retry_until; delete v.outputs_request.awaiting_until; } return v; }; })()")
-        hd.show(pin_scenario(hs.pin_request("rejected", "pin_required", at=hs.NOW - PIN_WINDOW_S + 3)))
-        page.clock.install()
-        open_page(page, hd)
-        freeze_clock(page)
-        expect(page.locator(PIN_CARD)).to_be_visible()
-        page.clock.run_for(int(PIN_WINDOW_S * 1000 * 2))
-        expect(page.locator(PIN_CARD)).to_be_visible()
-        hd.show(hs.SCENARIOS["pin_expired"])
-        expect(modal_card(page)).to_be_hidden()
-        hd.show(hs.SCENARIOS["pin_rate_limited"])
-        expect(page.locator(PIN_CARD)).to_be_visible()
-        expect(page.locator("#card-pin-error")).to_have_text("")
-        assert not any(keys_disabled(page)[str(d)] for d in range(10))
 
     def test_a_paired_outcome_closes_the_card_and_toasts(self, page, hd):
         hd.show(hs.SCENARIOS["pin_busy"])
@@ -2305,49 +2204,6 @@ class TestSpeakerPin:
             focus=FocusState(None, KITCHEN, None, KITCHEN, "Kitchen", None, False)))
         expect(modal_card(page)).to_be_hidden()
 
-    def test_a_version_one_appliance_shows_the_pair_in_autostream_card(self, page, hd):
-        hd.show(hs.SCENARIOS["pin_required_v1"])
-        sent = watch_actions(page)
-        open_page(page, hd)
-        expect(modal_card(page)).to_be_visible()
-        expect(page.locator("#card-title")).to_have_text("Pair in Autostream")
-        expect(page.locator("#card-message")).to_have_text("Enter the PIN in Lounge's web UI")
-        expect(page.locator("#card-pin-pad")).to_be_hidden()
-        expect(page.locator("#card-pin-boxes")).to_be_hidden()
-        assert page.locator("#card-buttons button").all_text_contents() == ["OK"]
-        page.locator("#card-buttons button").click()
-        expect(modal_card(page)).to_be_hidden()
-        hd.show(hs.SCENARIOS["pin_required_v1"])
-        page.wait_for_timeout(300)
-        expect(modal_card(page)).to_be_hidden()
-        assert sent == []
-
-    STRIP_PIN_ACCEPTED = (
-        "(() => { const parse = JSON.parse; JSON.parse = (text) => { const v = parse(text);"
-        " if (v && v.v === 1 && v.outputs_request) { delete v.outputs_request.pin_accepted; } return v; }; })()")
-
-    def test_a_state_without_pin_accepted_falls_back_to_the_version_for_a_version_two_appliance(self, page, hd):
-        page.add_init_script(self.STRIP_PIN_ACCEPTED)
-        hd.show(hs.SCENARIOS["pin_required"])
-        open_page(page, hd)
-        expect(page.locator(PIN_CARD)).to_be_visible()
-        expect(page.locator("#card-title")).to_have_text("Enter PIN for Patio")
-
-    def test_a_state_without_pin_accepted_falls_back_to_the_version_for_a_version_one_appliance(self, page, hd):
-        page.add_init_script(self.STRIP_PIN_ACCEPTED)
-        hd.show(hs.SCENARIOS["pin_required_v1"])
-        open_page(page, hd)
-        expect(page.locator("#card-title")).to_have_text("Pair in Autostream")
-        expect(page.locator("#card-pin-pad")).to_be_hidden()
-
-    def test_the_key_decides_over_the_capability_version(self, page, hd):
-        hd.show(pin_scenario(hs.pin_request("rejected", "pin_required"), outputs_version=1))
-        page.add_init_script(
-            "(() => { const parse = JSON.parse; JSON.parse = (text) => { const v = parse(text);"
-            " if (v && v.v === 1 && v.outputs_request) { v.outputs_request.pin_accepted = true; } return v; }; })()")
-        open_page(page, hd)
-        expect(page.locator(PIN_CARD)).to_be_visible()
-
     def test_the_presence_card_outranks_the_keypad_and_the_keypad_outranks_a_warning(self, page, hd):
         hd.show(with_recovery(hs.SCENARIOS["pin_required"]))
         open_page(page, hd)
@@ -2369,13 +2225,13 @@ class TestSpeakerPin:
             dataclasses.replace(a, dial_outputs_version=2) for a in base.snapshot.appliances)
         hd.show(base.with_snapshot(
             appliances=appliances, outputs=OutputsState(LOUNGE, rows_, True, hs.NOW - 1)))
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         patio = card(page, "Patio")
         assert "Off" in patio.inner_text()
         patio.locator(".output-toggle").click()
         page.wait_for_timeout(150)
-        assert sent == [("output", {"appliance_id": LOUNGE, "output_id": "o2", "selected": True})]
+        assert sent == [("outputs.set", {"id": "o2", "selected": True})]
 
     @pytest.mark.parametrize("error,text", [
         ("unreachable", "The appliance did not answer."),

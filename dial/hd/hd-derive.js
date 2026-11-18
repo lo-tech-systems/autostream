@@ -1,68 +1,62 @@
-// hd-derive.js: the HD page's view model: everything the DOM shows, worked out
-// from the dial's state and the page's own facts (the optimistic values, the
-// press, the open sheet, the PIN being typed). It builds the model and
-// paints nothing; its one outside read is settle, for the optimistic values.
+// hd-derive.js: the HD page's view model: everything the DOM shows, from the
+// state's two parts (the dial's own, and the focused appliance's as it reported
+// them) and the page's own facts. It paints nothing; its one outside read is
+// the held optimistic values.
 
 import {
-    CONFIG,
-    STATUS_RULES,
-    PIN_TEXT,
-    PIN_LINE_RULES,
-    PAIR_ELSEWHERE,
-    START_FAILURE_TEXT,
-    START_FAILURE_FALLBACK,
-    ARTWORK_PREFIX,
-    REPLAY_ROWS,
-    NO_TIME,
-    POWER_CARDS,
-    POWER_RULES,
-    DIM_FLOOR,
-    BRIGHTNESS_MAX,
-    SEVERITY_ORDER,
-    formatLength
+    CONFIG, STATUS_RULES, PIN_TEXT, PIN_LINE_RULES, ARTWORK_PREFIX, REPLAY_ROWS, NO_TIME, POWER_CARDS,
+    POWER_RULES, AUTO_START_CARD, DIM_FLOOR, BRIGHTNESS_MAX, SEVERITY_ORDER, EQ_FILTERS, EQ_GRAPH, formatLength
 } from "./hd-tables.js";
 import { responseFilters, eqLabel } from "./hd-eq.js";
-import { settle, clockRate, clockPosition } from "./hd-state.js";
+import { pending, clockRate, clockPosition, reportedPosition } from "./hd-state.js";
+import { speakerRows, masterVolume, nowPlaying, playing } from "/static/shared/state_view.js";
+import { CHIP, START_FAILURE, AUTO_START_PILL, AUTO_START_CONFIRM } from "/static/shared/texts.js";
 
-// ---- The view model: everything the DOM shows, from the state ---------
+const held = (key, live) => pending.value(key, live);
 
 function applianceStatus(a) {
     const rule = STATUS_RULES.find((r) => r[0](a));
     return { label: rule[1], bad: rule[2] };
 }
 
-function replayBadge(a) {
-    const r = a.repeat;
-    if (!r || r.state !== "hold") { return ""; }
-    return "Replay " + formatLength(r.duration_s || r.recording_s);
+const replayBadge = (a) => (
+    a.repeat && a.repeat.state === "hold" ? "Replay " + formatLength(a.repeat.duration_s || a.repeat.recording_s) : "");
+
+function nowPlayingText(dial, p, focus) {
+    if (!dial.started) { return { title: "Starting...", sub: "" }; }
+    if (!p || !playing(p)) { return { title: "Nothing playing", sub: focus ? focus.name : "" }; }
+    const np = nowPlaying(p, {});
+    return { title: np.title, sub: np.subtitle };
 }
 
-function nowPlayingText(s, focus) {
-    const np = s.now_playing;
-    if (!s.started) { return { title: "Starting...", sub: "" }; }
-    const head = np ? np.title || np.title_fallback : "";
-    if (head || (np && np.artist)) {
-        const rest = head ? [np.artist, np.album] : [np.album];
-        return { title: head || np.artist, sub: rest.filter(Boolean).join(" · ") };
-    }
-    return { title: "Nothing playing", sub: focus ? focus.name : "" };
+// The speaker rows as the browser draws them. A PIN being entered for a
+// speaker elsewhere leaves its switch alone here.
+function deriveSpeakers(dial, p, usable) {
+    const own = "dial:" + dial.dial.uuid;
+    return (p ? speakerRows(p, { includeOffline: true }) : []).map((row) => {
+        const on = held("out:" + row.id + ":selected", row.on);
+        const inUse = row.chip === "in-use";
+        const elsewhere = !!row.pinClaim && row.pinClaim !== own;
+        const connecting = row.connecting && on;
+        const tone = inUse ? "in-use" : connecting ? "connecting" : row.offline ? "offline" : on ? "on" : "off";
+        return {
+            id: row.id, on: on, inUse: inUse, autoStart: row.autoStart, pill: AUTO_START_PILL,
+            name: row.name + (connecting ? CHIP.connecting : row.offline ? CHIP.offline : ""),
+            chip: { text: inUse ? CHIP.inUse(row.inUseBy) : on ? CHIP.on : CHIP.off, tone: tone },
+            level: held("out:" + row.id + ":volume", row.volume),
+            enabled: usable && !row.disabled && !elsewhere
+        };
+    });
 }
 
-function speakerNote(focus, outputs, rows) {
-    if (!focus) { return ""; }
-    if (outputs && outputs.appliance_id === focus.id && outputs.loaded) {
-        return rows.length ? "" : "No speakers on this appliance.";
-    }
-    return focus.capabilities.outputs ? "Loading speakers..." : "This appliance has no speaker controls.";
+function speakerNote(focus, focused, rows) {
+    if (!focus || rows.length) { return ""; }
+    return focused && focused.reachable ? "No speakers on this appliance." : "Loading speakers...";
 }
 
-// The appliance's warnings that have a card to show and are not snoozed.
-function shownWarnings(a, cardsById) {
-    return a.warnings.filter((w) => !w.snoozed && cardsById.has(w.key));
-}
-
+// The badge for the appliance's warnings that have a card and are not snoozed.
 function warnBadge(a, cardsById) {
-    const list = shownWarnings(a, cardsById);
+    const list = a.warnings.filter((w) => !w.snoozed && cardsById.has(w.key));
     if (!list.length) { return null; }
     const worst = list.reduce((top, w) => (
         SEVERITY_ORDER.indexOf(w.severity) > SEVERITY_ORDER.indexOf(top) ? w.severity : top
@@ -80,22 +74,22 @@ const REPLAY_TIMES = {
 
 const timeText = (seconds) => (seconds === null ? NO_TIME : formatLength(seconds));
 
+// The core's clock as this page estimates it: the reading the state came
+// with plus the time on this page's clock since the state arrived.
+const dialNow = (local) => local.time + (local.now - local.stateAt) / 1000;
+
 // The appliance's record and its replay row, or null when the focus has
 // no replay row to show.
 export function replayOf(focus) {
-    const r = focus && focus.capabilities.repeat ? focus.repeat : null;
+    const r = focus ? focus.repeat : null;
     const row = r && r.available ? REPLAY_ROWS[r.state] : null;
     return row ? { r: r, row: row } : null;
 }
 
-// The replay row's controls for the focused appliance, from its record.
-// The position counts whole seconds gone, so it is cut, not rounded,
-// until the replay is at its end.
-//
-// A Stop that has been pressed holds the timer where it was and greys
-// the controls until the appliance stops replaying, the request is
-// refused or rejected, or another request takes its place; the timer
-// then goes by the state again.
+// The replay row's controls for the focused appliance, from its record. The
+// position counts whole seconds gone (cut, not rounded) until the end. A
+// pressed Stop holds the timer and greys the controls until the press is let
+// go; the timer then goes by the state again.
 function deriveReplay(focus, usable, local) {
     const replay = replayOf(focus);
     if (!replay) { return { items: [], ticking: false, nextMs: 0 }; }
@@ -105,13 +99,13 @@ function deriveReplay(focus, usable, local) {
     const stopping = pressed && local.press.target === "stop";
     const clock = local.replayClock && local.replayClock.id === focus.id ? local.replayClock : null;
     const length = r.duration_s > 0 ? r.duration_s : Infinity;
-    const at = stopping ? local.press.base : clock ? clockPosition(clock, local.now) : r.position_s;
+    const at = stopping ? local.press.base : clock ? clockPosition(clock, local.now) : reportedPosition(r, dialNow(local));
     const ended = at >= length;
     const position = ended ? length : Math.floor(at);
     const ticking = !!clock && clock.running && !ended && !stopping;
     const can = (id) => usable && !stopping && row.usable.indexOf(id) >= 0;
     const items = row.controls.map((id) => {
-        if (id === "arm") { return { id: id, on: settle("arm", r.armed), enabled: can(id) }; }
+        if (id === "arm") { return { id: id, on: held("arm", r.armed), enabled: can(id) }; }
         if (id === "counter") {
             const times = REPLAY_TIMES[row.time](r, position);
             return { id: id, text: timeText(times[0]) + " / " + timeText(times[1]), frozen: row.dim || stopping };
@@ -127,22 +121,22 @@ function deriveReplay(focus, usable, local) {
     };
 }
 
-function deriveEq(s, focus, usable, local) {
-    const block = s.eq;
-    const ready = !!focus && !!block && block.appliance_id === focus.id && block.loaded;
-    const bands = (ready ? block.bands : []).map((b) => ({
-        id: b.id, frequency_hz: b.frequency_hz, hz: b.frequency_hz, label: eqLabel(b),
-        min: b.min_db, max: b.max_db, gain: settle("eq:" + b.id, b.gain_db)
-    }));
-    const available = !!focus && focus.capabilities.eq > 0;
+// The six bands of the focused appliance's equaliser, when it reports six.
+function deriveEq(p, focus, usable, local) {
+    const gains = p && p.eq && Array.isArray(p.eq.output_bands) && p.eq.output_bands.length === 6 ? p.eq.output_bands : [];
+    const bands = Object.keys(EQ_FILTERS).slice(0, gains.length).map((id, i) => {
+        const hz = EQ_FILTERS[id].hz;
+        return { id: id, hz: hz, label: eqLabel(hz), min: -EQ_GRAPH.range, max: EQ_GRAPH.range, gain: held("eq:" + id, gains[i]) };
+    });
+    const available = !!focus && bands.length > 0;
     return {
         available: available,
         open: available && local.eqOpen && focus.id === local.eqFor,
         name: focus ? focus.name : "",
-        note: ready ? "" : "Loading equaliser...",
+        note: "",
         bands: bands,
         filters: responseFilters(bands),
-        enabled: usable && ready
+        enabled: usable
     };
 }
 
@@ -155,43 +149,22 @@ function cardFrom(card, owner) {
     };
 }
 
-// The dial's clock as this page estimates it: the reading the state came
-// with plus the time on this page's clock since the state arrived. The
-// page's own clock only ever measures that elapsed time.
-function dialNow(s, local) {
-    return s.now + (local.now - local.stateAt) / 1000;
-}
-
-// The keypad card (or, for an appliance that cannot take a PIN from a
-// dial, the card saying where to enter it) while a speaker's PIN is
-// wanted on the focused appliance and the person has not turned it away.
-// A state without deadlines (an older dial) shows it while the dial says
-// a PIN is awaited.
-function derivePinCard(s, focus, local) {
-    const r = s.outputs_request;
+// The keypad card while a speaker's PIN is wanted on the focused appliance
+// and the person has not turned it away.
+function derivePinCard(dial, p, focus, local) {
+    const r = dial.outputs_request;
     if (!r || !focus || r.appliance_id !== focus.id || !r.awaiting_pin) { return null; }
     const timed = r.state === "rejected" && typeof r.awaiting_until === "number";
-    if (timed && dialNow(s, local) >= r.awaiting_until) { return null; }
+    if (timed && dialNow(local) >= r.awaiting_until) { return null; }
     if (local.pin.dismissedAt === r.requested_at) { return null; }
-    // A dial that predates pin_accepted reports only versions; read them
-    // until the state version next changes.
-    const accepts = r.pin_accepted !== undefined ? r.pin_accepted : focus.capabilities.outputs >= 2;
-    if (!accepts) {
-        return {
-            kind: "notice", key: "pair", source: focus.webui, title: PAIR_ELSEWHERE.title,
-            message: PAIR_ELSEWHERE.message(focus.name), severity: "info", progress: null,
-            closable: false, buttons: [{ id: "ok", label: "OK", act: "pin_cancel" }],
-            requestedAt: r.requested_at, timed: timed
-        };
-    }
-    const row = s.outputs && s.outputs.rows.find((x) => x.id === r.output_id);
-    const name = row ? row.name : "this speaker";
+    const unit = p && p.outputs ? (p.outputs.units || []).find((u) => u.id === r.output_id) : null;
+    const name = unit ? unit.name : "this speaker";
     const key = r.requested_at + ":" + r.state + ":" + (r.error || "");
     const digits = local.pin.forKey === key ? local.pin.digits : "";
     const busy = r.state === "pending";
     const limited = r.state === "rejected" && r.error === "rate_limited";
     const waitLeft = limited && typeof r.retry_until === "number"
-        ? Math.max(0, Math.ceil(r.retry_until - dialNow(s, local))) : 0;
+        ? Math.max(0, Math.ceil(r.retry_until - dialNow(local))) : 0;
     const line = PIN_LINE_RULES.find((rule) => rule[0](r, waitLeft));
     return {
         kind: "pin", key: "pin", source: "", severity: "info", progress: null, closable: false, timed: timed,
@@ -207,60 +180,55 @@ function derivePinCard(s, focus, local) {
 }
 
 // The "could not start" card for the focused appliance, until it is answered.
-function deriveStartFailure(s, focus, local) {
-    const f = s.start_failure;
+function deriveStartFailure(dial, focus, local) {
+    const f = dial.start_failure;
     if (!f || !focus || f.appliance_id !== focus.id || local.startFailureAnswered === f.key) { return null; }
     return {
-        kind: "notice", key: "start_failure", source: "", severity: "warning", progress: null,
-        closable: false, timed: false,
-        title: "Could not start " + f.name,
-        message: START_FAILURE_TEXT[f.reason] || START_FAILURE_FALLBACK,
-        buttons: [{ id: "ok", label: "OK", act: "start_failure_ok" }],
-        failureKey: f.key
+        kind: "notice", key: "start_failure", source: "", severity: "warning", progress: null, closable: false,
+        timed: false, title: "Could not start " + f.name, message: START_FAILURE[f.reason] || START_FAILURE.other,
+        buttons: [{ id: "ok", label: "OK", act: "start_failure_ok" }], failureKey: f.key
     };
 }
 
 // The shut-down card to show, if any: its key in POWER_CARDS.
-function derivePower(s, local) {
-    const rule = POWER_RULES.find((r) => r[0](s.power, local.power));
+function derivePower(dial, local) {
+    const rule = POWER_RULES.find((r) => r[0](dial.power, local.power));
     return rule ? rule[1] : null;
 }
 
 // The one modal card to show, if any: the shut-down card first (the person
-// has just asked for it), then the PIN recovery confirmation,
-// then a speaker's PIN, a speaker that could not start, the not-authorised
-// notice, an appliance warning opened from its badge, then the warning the dial says is due.
-function deriveModal(s, focus, local) {
-    const cardsById = new Map(s.warnings.cards.map((c) => [c.id, c]));
+// has just asked for it), then the Auto-Start question (asked for too),
+// then the PIN recovery confirmation, a speaker's PIN, a speaker that could
+// not start, the not-allowed notice, an appliance warning opened from its
+// badge, then the warning the dial says is due.
+function deriveModal(dial, p, focus, local) {
+    const cardsById = new Map(dial.warnings.cards.map((c) => [c.id, c]));
     const owners = new Map();
-    s.appliances.forEach((a) => a.warnings.forEach((w) => owners.set(w.key, a.id)));
-    const due = cardsById.get(s.warnings.due);
+    dial.appliances.forEach((a) => a.warnings.forEach((w) => owners.set(w.key, a.id)));
+    const due = cardsById.get(dial.warnings.due);
 
-    const power = derivePower(s, local);
+    const power = derivePower(dial, local);
     if (power) {
         return Object.assign({ key: "power", source: "", severity: "warning", progress: null, kind: "notice" }, POWER_CARDS[power]);
     }
-    if (s.recovery.active && !s.recovery.confirmed) {
+    if (local.autoStartAsked) { return Object.assign({ message: AUTO_START_CONFIRM }, AUTO_START_CARD); }
+    if (dial.recovery.active && !dial.recovery.confirmed) {
         return {
-            key: "presence", source: "", title: "Confirm you are at the dial",
+            key: "presence", source: "", title: "Confirm you are at the dial", severity: "warning", progress: null,
             message: "The PIN is being recovered from the web UI. Confirm only if that is you.",
-            severity: "warning", progress: null, closable: false,
-            kind: "notice",
-            buttons: [{ id: "presence", label: "Confirm", act: "presence" }]
+            closable: false, kind: "notice", buttons: [{ id: "presence", label: "Confirm", act: "presence" }]
         };
     }
-    const pinCard = derivePinCard(s, focus, local);
+    const pinCard = derivePinCard(dial, p, focus, local);
     if (pinCard) { return pinCard; }
-    const failureCard = deriveStartFailure(s, focus, local);
+    const failureCard = deriveStartFailure(dial, focus, local);
     if (failureCard) { return failureCard; }
-    const unauthorised = s.appliances.find((a) => a.id === local.notice && a.auth !== "authorized");
-    if (unauthorised) {
+    const refused = dial.appliances.find((a) => a.id === local.notice && a.auth !== "authorized");
+    if (refused) {
         return {
-            key: "notice", source: unauthorised.webui, title: "Not authorised",
-            message: "Allow this dial in " + unauthorised.name + "'s web UI (Setup, Dials)",
-            severity: "info", progress: null, closable: true,
-            kind: "notice",
-            buttons: [{ id: "ok", label: "OK", act: "close" }]
+            key: "notice", source: refused.webui, title: "Not allowed", severity: "info", progress: null,
+            message: "Allow this dial in " + refused.name + "'s web UI (Setup, Dials)",
+            closable: true, kind: "notice", buttons: [{ id: "ok", label: "OK", act: "close" }]
         };
     }
     // The due warning is shown when it belongs to the dial or to the
@@ -282,16 +250,16 @@ export function isLoopbackHost(host) {
     return host === "127.0.0.1" || host === "localhost" || host === "[::1]";
 }
 
-export function derive(s, local) {
+export function derive(dial, focused, local) {
     const offline = local.offline;
-    const byId = new Map(s.appliances.map((a) => [a.id, a]));
-    const cardsById = new Map(s.warnings.cards.map((c) => [c.id, c]));
-    const focusId = s.focus.appliance_id;
-    const focus = byId.get(focusId) || null;
-    const shownFocus = settle("focus", focusId);
-    const usable = !offline && !!focus && focus.auth === "authorized" && focus.reachable;
+    const cardsById = new Map(dial.warnings.cards.map((c) => [c.id, c]));
+    const focusId = dial.focus.appliance_id;
+    const focus = dial.appliances.find((a) => a.id === focusId) || null;
+    const p = focused ? focused.parts : null;
+    const shownFocus = held("focus", focusId);
+    const usable = !offline && !!focused && focused.reachable && focused.access === "playback";
 
-    const appliances = s.appliances.map((a) => {
+    const appliances = dial.appliances.map((a) => {
         const status = applianceStatus(a);
         return {
             id: a.id, name: a.name, label: status.label, bad: status.bad,
@@ -301,64 +269,53 @@ export function derive(s, local) {
         };
     });
 
-    const outputs = s.outputs;
-    const live = !!focus && !!outputs && outputs.appliance_id === focus.id && outputs.loaded;
-    const speakers = (live ? outputs.rows : []).map((row) => {
-        const on = settle("out:" + row.id + ":selected", !!row.selected);
-        const chip = row.in_use
-            ? { text: row.owner ? "In Use by " + row.owner : "In Use", tone: "in-use" }
-            : { text: on ? "On" : "Off", tone: on ? "on" : "off" };
-        return {
-            id: row.id, name: row.name, on: on, chip: chip, inUse: !!row.in_use,
-            isDefault: !!row.default,
-            level: settle("out:" + row.id + ":volume", row.volume),
-            enabled: usable && !row.in_use
-        };
-    });
+    const speakers = deriveSpeakers(dial, p, usable);
+    // Master volume and mute act on the dial's volume target: usable only
+    // while that is the focused appliance.
+    const mine = !!focused && focused.id === dial.focus.reporting_id;
+    const level = mine ? masterVolume(p) : null;
+    const known = typeof level === "number";
+    const art = dial.artwork && typeof dial.artwork.url === "string" && dial.artwork.url.indexOf(ARTWORK_PREFIX) === 0
+        ? dial.artwork.url : "";
+    const backdrop = art && typeof dial.artwork.backdrop_url === "string"
+        && dial.artwork.backdrop_url.indexOf(ARTWORK_PREFIX) === 0 ? dial.artwork.backdrop_url : "";
+    const text = nowPlayingText(dial, p, focus);
 
-    const volume = s.volume;
-    const mine = !!focus && volume.appliance_id === focus.id;
-    const known = mine && typeof volume.level === "number";
-    const art = s.artwork && typeof s.artwork.url === "string" && s.artwork.url.indexOf(ARTWORK_PREFIX) === 0
-        ? s.artwork.url : "";
-    const backdrop = art && typeof s.artwork.backdrop_url === "string"
-        && s.artwork.backdrop_url.indexOf(ARTWORK_PREFIX) === 0 ? s.artwork.backdrop_url : "";
-    const text = nowPlayingText(s, focus);
-
-    const panel = s.panel;
+    const panel = dial.panel;
     const settings = {
-        brightness: settle("brightness", panel.brightness),
-        sleepAfter: settle("sleep_after_s", panel.sleep_after_s),
+        brightness: held("brightness", panel.brightness),
+        sleepAfter: held("sleep_after_s", panel.sleep_after_s),
         // Any real backlight kind (sysfs or ddc) does the dimming itself.
         dim: panel.backlight === "none"
-            ? DIM_FLOOR + (1 - DIM_FLOOR) * settle("brightness", panel.brightness) / BRIGHTNESS_MAX : null
+            ? DIM_FLOOR + (1 - DIM_FLOOR) * held("brightness", panel.brightness) / BRIGHTNESS_MAX : null
     };
 
     const replay = deriveReplay(focus, usable, local);
-    const eq = deriveEq(s, focus, usable, local);
-    const modal = deriveModal(s, focus, local);
+    const eq = deriveEq(p, focus, usable, local);
+    const modal = deriveModal(dial, p, focus, local);
 
     return {
         offline: offline,
         asleep: !!panel.asleep,
         appliances: appliances,
         focusId: shownFocus,
-        appliancesNote: s.started && !appliances.length ? "No appliances found." : "",
+        appliancesNote: dial.started && !appliances.length ? "No appliances found." : "",
         speakersLabel: focus ? "Speakers on " + focus.name : "Speakers",
         speakers: speakers,
-        speakersNote: speakerNote(focus, outputs, speakers),
+        speakersNote: speakerNote(focus, focused, speakers),
+        autoStart: { shown: usable && !!p && playing(p), set: !!(p && p.outputs && p.outputs.default_matches) },
         title: text.title, sub: text.sub, art: art, backdrop: backdrop,
         eqVisible: eq.available,
         volume: {
             enabled: usable && known,
-            level: known ? settle("master", volume.level) : null,
-            muted: mine && settle("mute", !!volume.muted)
+            level: known ? held("master", level) : null,
+            muted: mine && !!held("mute", !!(p && p.outputs && p.outputs.muted_all))
         },
         replay: replay,
         eq: eq,
         settings: settings,
         hidePointer: !!panel.kiosk && isLoopbackHost(local.host),
-        sheet: { open: local.sheetOpen, info: deriveInfo(local.info), canPower: !offline && !derivePower(s, local) },
+        sheet: { open: local.sheetOpen, info: deriveInfo(local.info), canPower: !offline && !derivePower(dial, local) },
         modal: modal,
         // Something on the page changes with the clock.
         live: replay.ticking || !!(modal && modal.timed)
@@ -367,7 +324,5 @@ export function derive(s, local) {
 
 function deriveInfo(info) {
     const rows = info ? info.rows.map((row, i) => ({ id: i + ":" + row[0], label: row[0], value: row[1] })) : [];
-    let note = "";
-    if (!info) { note = "Loading..."; } else if (info.failed && !rows.length) { note = "Details are not available."; }
-    return { rows: rows, note: note };
+    return { rows: rows, note: !info ? "Loading..." : info.failed && !rows.length ? "Details are not available." : "" };
 }

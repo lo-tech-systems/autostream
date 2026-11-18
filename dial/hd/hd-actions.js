@@ -4,25 +4,27 @@
 
 import { CONFIG, INFO_URL, REPLAY_BUTTONS } from "./hd-tables.js";
 import { els } from "./hd-dom.js";
-import { ui, PIN_IDLE, pending, press, setPending, clockPosition, hooks } from "./hd-state.js";
-import { post, sendDrag, get, followPointer, forgetLane, trackDrag } from "./hd-requests.js";
+import { ui, PIN_IDLE, pending, press, hold, clockPosition, reportedPosition, hooks } from "./hd-state.js";
+import { post, submit, sendDrag, get, followPointer, forgetLane, trackDrag } from "./hd-requests.js";
 
 // ---- Actions from the page ------------------------------------------
 
-const focusId = () => (ui.state ? ui.state.focus.appliance_id : null);
-const canAct = () => !!ui.state && !ui.offline;
+const focusId = () => (ui.dial ? ui.dial.focus.appliance_id : null);
+const canAct = () => !!ui.dial && !ui.offline;
+// An appliance's value is held until its answer is in, then by its version.
+const holdForReply = (key, value) => hold(key, value, null, CONFIG.requestTimeoutMs);
 
 export function onAppliance(id) {
     if (!canAct()) { return; }
-    const a = ui.state.appliances.find((item) => item.id === id);
+    const a = ui.dial.appliances.find((item) => item.id === id);
     if (!a) { return; }
     if (a.auth !== "authorized") {
         ui.notice = id;
         hooks.render();
         return;
     }
-    if (id === focusId() && !pending.focus) { return; }
-    setPending("focus", id);
+    if (id === focusId() && pending.value("focus") === undefined) { return; }
+    hold("focus", id);
     hooks.render();
     post("focus", { appliance_id: id }, ["focus"]);
 }
@@ -34,71 +36,66 @@ export function onWarnBadge(key) {
 
 export function onOutputToggle(id, selected) {
     const key = "out:" + id + ":selected";
-    setPending(key, selected);
+    holdForReply(key, selected);
     hooks.render();
-    post("output", { appliance_id: focusId(), output_id: id, selected: selected }, [key]);
+    submit("outputs.set", { id: id, selected: selected }, [key]);
 }
 
 export function onOutputLevel(id, level, final) {
     const key = "out:" + id + ":volume";
-    setPending(key, level);
+    holdForReply(key, level);
     hooks.render();
-    sendDrag(key, "output", { appliance_id: focusId(), output_id: id, volume: level }, final, [key]);
+    sendDrag(key, final, submit, "outputs.set", { id: id, volume: level }, [key]);
 }
 
 function onMasterLevel(level, final) {
-    setPending("master", level);
+    hold("master", level);
     hooks.render();
-    sendDrag("master", "volume_set", { appliance_id: focusId(), level: level }, final, ["master"]);
+    sendDrag("master", final, post, "volume_set", { appliance_id: focusId(), level: level }, ["master"]);
 }
 
 function onMute() {
     if (!ui.vm || !ui.vm.volume.enabled) { return; }
-    setPending("mute", !ui.vm.volume.muted);
+    hold("mute", !ui.vm.volume.muted);
     hooks.render();
     post("mute_toggle", { appliance_id: focusId() }, ["mute"]);
 }
 
 export function onArm(armed) {
-    setPending("arm", armed);
+    holdForReply("arm", armed);
     hooks.render();
-    post("repeat_arm", { appliance_id: focusId(), armed: armed }, ["arm"]);
+    submit("repeat.arm", { armed: armed }, ["arm"]);
 }
 
 // The transport buttons are held down from the press (see
 // PRESS_RELEASES) and let go at once if the request does not go through.
 export function onPress(id) {
-    const appliance = ui.state && ui.state.appliances.find((item) => item.id === focusId());
+    const appliance = ui.dial && ui.dial.appliances.find((item) => item.id === focusId());
     if (!appliance || !appliance.repeat || !canAct()) { return; }
     const clock = ui.replayClock && ui.replayClock.id === appliance.id ? ui.replayClock : null;
-    const position = clock ? clockPosition(clock, Date.now()) : appliance.repeat.position_s;
-    const serial = press.start(id, appliance, position, ui.state.transport ? ui.state.transport.requested_at : null);
+    const position = clock ? clockPosition(clock, Date.now()) : reportedPosition(appliance.repeat, ui.time);
+    const serial = press.start(id, appliance, position, ui.dial.transport ? ui.dial.transport.requested_at : null);
     if (!serial) { return; }
     hooks.render();
-    post(REPLAY_BUTTONS[id].action, { appliance_id: appliance.id }).then((reply) => {
+    submit(REPLAY_BUTTONS[id].intent, REPLAY_BUTTONS[id].args).then((reply) => {
         press.sent(serial, reply);
-        // A token alone is not news to draw: the state has yet to show
-        // the request it names.
         if (!press.current()) { hooks.render(); }
     });
 }
 
 export function onEqGain(id, gain, final) {
     const key = "eq:" + id;
-    setPending(key, gain);
+    holdForReply(key, gain);
     hooks.render();
-    sendDrag(key, "eq", { appliance_id: focusId(), gains: { [id]: gain } }, final, [key]);
+    sendDrag(key, final, submit, "output.eq.set", { fields: [[id + "_db", gain]] }, [key]);
 }
 
 function onEqReset() {
     if (!ui.vm) { return; }
     const keys = ui.vm.eq.bands.map((b) => "eq:" + b.id);
-    keys.forEach((key) => {
-        setPending(key, 0);
-        forgetLane(key);
-    });
+    keys.forEach((key) => { holdForReply(key, 0); forgetLane(key); });
     hooks.render();
-    post("eq_reset", { appliance_id: focusId() }, keys);
+    submit("output.eq.reset", {}, keys);
 }
 
 function setEqOpen(open) {
@@ -108,13 +105,13 @@ function setEqOpen(open) {
 }
 
 function onBrightness(value, final) {
-    setPending("brightness", value);
+    hold("brightness", value);
     hooks.render();
-    sendDrag("brightness", "settings", { brightness: value }, final, ["brightness"]);
+    sendDrag("brightness", final, post, "settings", { brightness: value }, ["brightness"]);
 }
 
 export function onSleepAfter(seconds) {
-    setPending("sleep_after_s", seconds);
+    hold("sleep_after_s", seconds);
     hooks.render();
     post("settings", { sleep_after_s: seconds }, ["sleep_after_s"]);
 }
@@ -162,13 +159,19 @@ export const CARD_ACTIONS = {
         });
     },
     power_ack: () => {
-        ui.power = Object.assign({}, ui.power, { dismissedAt: ui.state.power.changed_at });
+        ui.power = Object.assign({}, ui.power, { dismissedAt: ui.dial.power.changed_at });
         hooks.render();
     },
     presence: () => post("presence", {}),
+    auto_start_yes: () => {
+        ui.autoStartAsked = false;
+        submit("outputs.save_default", {});
+        hooks.render();
+    },
     close: () => {
         ui.notice = null;
         ui.viewing = null;
+        ui.autoStartAsked = false;
         ui.power = Object.assign({}, ui.power, { asked: false });
         hooks.render();
     },
@@ -178,8 +181,7 @@ export const CARD_ACTIONS = {
         hooks.render();
     },
     pin_cancel: (card) => {
-        const at = card.kind === "pin" ? card.pin.requestedAt : card.requestedAt;
-        ui.pin = Object.assign({}, ui.pin, PIN_IDLE, { dismissedAt: at });
+        ui.pin = Object.assign({}, ui.pin, PIN_IDLE, { dismissedAt: card.pin.requestedAt });
         hooks.render();
     }
 };
@@ -190,6 +192,10 @@ trackDrag(els.master, () => "master");
 els.mute.addEventListener("click", onMute);
 
 els.eq.addEventListener("click", () => setEqOpen(true));
+els.autostart.addEventListener("click", () => {
+    ui.autoStartAsked = true;
+    hooks.render();
+});
 els.eqClose.addEventListener("click", () => setEqOpen(false));
 els.eqReset.addEventListener("click", onEqReset);
 
@@ -210,9 +216,7 @@ els.modal.addEventListener("click", (event) => {
 });
 
 // The keypad edits the buffer; OK sends it once and empties it.
-const PIN_EDITS = {
-    del: (digits) => digits.slice(0, -1)
-};
+const PIN_EDITS = { del: (digits) => digits.slice(0, -1) };
 
 function onPinKey(key) {
     const card = ui.vm && ui.vm.modal;
@@ -221,7 +225,7 @@ function onPinKey(key) {
     let digits = p.digits;
     if (key === "ok") {
         if (!p.canSubmit) { return; }
-        post("output", { appliance_id: focusId(), output_id: p.outputId, selected: true, pin: digits });
+        submit("output.pin.submit", { id: p.outputId, pin: digits });
         digits = "";
     } else if (PIN_EDITS[key]) {
         digits = PIN_EDITS[key](digits);

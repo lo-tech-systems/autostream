@@ -35,8 +35,7 @@ def parts_of(scenario, **overrides):
 
 def with_peer(name, **kwargs):
     base = hs.SCENARIOS[name]
-    snapshot = dataclasses.replace(base.snapshot, focused_peer=peer("Lounge", **kwargs))
-    return dataclasses.replace(base, snapshot=snapshot)
+    return base.with_snapshot(focused_peer=peer("Lounge", **kwargs))
 
 
 class TestDialPart:

@@ -2,6 +2,7 @@
 then real clients on a real HdServer over 127.0.0.1 with a FakeCore."""
 from __future__ import annotations
 
+import dataclasses
 import http.client
 import json
 import os
@@ -20,7 +21,7 @@ import dial_hd_events as hde
 import dial_hd_server as hds
 import hd_scenarios as hs
 from hd_fake_core import FakeCore
-from dial_hd_events import ChangeHub, SSE_MAX_CLIENTS
+from dial_hd_events import ChangeHub, PartDiffer, SSE_MAX_CLIENTS
 
 
 def wait_until(predicate, timeout=3.0, step=0.01):
@@ -39,70 +40,23 @@ def core():
 
 @pytest.fixture
 def hub(core):
-    hub = ChangeHub(core, builder=lambda seq: json.dumps({"seq": seq}).encode())
+    hub = ChangeHub(core, builder=lambda seq: ("built", seq))
     yield hub
     hub.stop()
+
+
+def rename(core, n):
+    """Publish a change to the dial part alone: the dial's name."""
+    core.publish(dial=dataclasses.replace(core.snapshot().dial, name=f"Dial {n}"))
 
 
 # ---- the hub on its own ----------------------------------------------------
 
 
-class TestBodyAge:
-    def _hub(self, core, now):
-        builds = []
-
-        def build(seq):
-            builds.append(now[0])
-            return json.dumps({"seq": seq, "now": now[0]}).encode()
-
-        return ChangeHub(core, builder=build, clock=lambda: now[0]), builds
-
-    def test_a_body_asked_for_promptly_is_the_cached_one(self, core):
-        now = [100.0]
-        hub, builds = self._hub(core, now)
-        first = hub.state()
-        now[0] += hde.BODY_MAX_AGE_S - 0.1
-        assert hub.state() == first
-        assert builds == [100.0]
-
-    def test_an_old_body_is_built_again_under_the_same_sequence(self, core):
-        now = [100.0]
-        hub, builds = self._hub(core, now)
-        seq, _ = hub.state()
-        now[0] += 60.0
-        again_seq, body = hub.state()
-        assert again_seq == seq and json.loads(body)["now"] == 160.0
-        assert hub.seq() == seq
-        assert hub.state() == (again_seq, body)
-        assert builds == [100.0, 160.0]
-
-    def test_a_rebuild_wakes_nobody(self, core):
-        now = [100.0]
-        hub, _ = self._hub(core, now)
-        seq, _body = hub.state()
-        now[0] += 60.0
-        hub.state()
-        assert hub.wait_for_change(seq, 0.05) is None
-        assert hub.seq() == seq
-
-    def test_concurrent_askers_of_an_old_body_share_one_build(self, core):
-        now = [100.0]
-        hub, builds = self._hub(core, now)
-        hub.state()
-        now[0] += 60.0
-        results = []
-        threads = [threading.Thread(target=lambda: results.append(hub.state())) for _ in range(8)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join(3)
-        assert len(builds) == 2 and len(set(results)) == 1
-
-
-
 class TestChangeHub:
-    def test_the_sequence_starts_at_one(self, hub):
+    def test_the_sequence_starts_at_one_with_nothing_built(self, hub):
         assert hub.seq() == 1
+        assert hub.latest() == (1, None)
 
     def test_ten_publishes_before_the_thread_runs_are_one_step(self, hub):
         for _ in range(10):
@@ -132,20 +86,19 @@ class TestChangeHub:
         hub.stop()
         assert core._subscribers == {}
 
-    def test_publish_returns_at_once_even_while_a_state_is_being_built(self, core):
+    def test_publish_returns_at_once_even_while_a_step_is_being_built(self, core):
         building = threading.Event()
         release = threading.Event()
 
         def slow(seq):
             building.set()
             release.wait(3)
-            return b"{}"
+            return None
 
         hub = ChangeHub(core, builder=slow)
         hub.start()
         try:
-            thread = threading.Thread(target=hub.state, daemon=True)
-            thread.start()
+            hub.publish()
             assert building.wait(2)
             started = time.monotonic()
             for _ in range(100):
@@ -153,6 +106,20 @@ class TestChangeHub:
             assert time.monotonic() - started < 0.05
         finally:
             release.set()
+            hub.stop()
+
+    def test_a_waiter_sees_the_build_of_the_step_it_was_woken_for(self, core):
+        def build(seq):
+            time.sleep(0.05)
+            return ("built", seq)
+
+        hub = ChangeHub(core, builder=build)
+        hub.start()
+        try:
+            hub.publish()
+            assert hub.wait_for_change(1, 3) == 2
+            assert hub.latest() == (2, ("built", 2))
+        finally:
             hub.stop()
 
     def test_wait_for_change_returns_the_new_sequence(self, hub):
@@ -189,33 +156,85 @@ class TestChangeHub:
         assert not thread.is_alive()
         assert result == [None]
 
-    def test_the_state_is_built_once_per_sequence(self, core):
+    def test_each_step_is_built_once(self, core):
         calls = []
-
-        def build(seq):
-            calls.append(seq)
-            time.sleep(0.02)
-            return b"x%d" % seq
-
-        hub = ChangeHub(core, builder=build)
-        results = []
-        threads = [threading.Thread(target=lambda: results.append(hub.state())) for _ in range(8)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(3)
-        assert calls == [1]
-        assert results == [(1, b"x1")] * 8
-        hub.publish()
+        hub = ChangeHub(core, builder=lambda seq: calls.append(seq) or seq)
         hub.start()
-        assert wait_until(lambda: hub.seq() == 2)
-        assert hub.state() == (2, b"x2")
-        assert calls == [1, 2]
-        hub.stop()
+        try:
+            hub.publish()
+            assert wait_until(lambda: hub.seq() == 2)
+            hub.publish()
+            assert wait_until(lambda: hub.seq() == 3)
+            assert hub.latest() == (3, 3)
+            assert calls == [2, 3]
+        finally:
+            hub.stop()
 
-    def test_state_without_a_builder_is_an_error(self, core):
-        with pytest.raises(RuntimeError):
-            ChangeHub(core).state()
+    def test_a_step_with_no_builder_or_a_failing_one_holds_none(self, core):
+        hub = ChangeHub(core)
+        hub.start()
+        try:
+            hub.publish()
+            assert wait_until(lambda: hub.seq() == 2)
+            assert hub.latest() == (2, None)
+            hub.set_builder(lambda seq: 1 / 0)
+            hub.publish()
+            assert wait_until(lambda: hub.seq() == 3)
+            assert hub.latest() == (3, None)
+        finally:
+            hub.stop()
+
+
+class TestBuiltOnlyWithAPage:
+    def test_nothing_is_built_without_a_page_and_the_first_step_after_sends_both_parts(self, core):
+        clients = [0]
+        builds = []
+        differ = PartDiffer(lambda: clients[0])
+
+        def build():
+            builds.append(1)
+            return {"dial": {"name": "Lounge dial"}, "focused": None}
+
+        hub = ChangeHub(core, builder=lambda seq: (differ.step(seq, build), 0.0))
+        hub.start()
+        try:
+            for n in range(10):
+                hub.publish()
+                assert wait_until(lambda: hub.seq() == n + 2)
+            assert builds == []
+            clients[0] = 1
+            hub.publish()
+            assert wait_until(lambda: hub.seq() == 12)
+            assert builds == [1]
+            seq, built = hub.latest()
+            assert set(built[0].changed) == {"dial", "focused"}
+            assert hde._next_event("0" * 16, 11, seq, built, lambda: 0.0).startswith(b"id: ")
+            hub.publish()
+            assert wait_until(lambda: hub.seq() == 13)
+            seq, built = hub.latest()
+            assert built[0].changed == {}
+            assert hde._next_event("0" * 16, 12, seq, built, lambda: 0.0) is None
+        finally:
+            hub.stop()
+
+
+class TestNextEvent:
+    BOOT = "0123456789abcdef"
+
+    def test_the_very_next_step_sends_its_parts(self):
+        step = hde.PartStep({"dial": b'{"a":1}'}, {"dial": 5})
+        payload = hde._next_event(self.BOOT, 4, 5, (step, 12.5), lambda: 99.0)
+        assert payload.startswith(b"id: 0123456789abcdef-5\nevent: change\n")
+        data = json.loads(payload.split(b"data: ", 1)[1])
+        assert data == {"boot": self.BOOT, "version": 5, "time": 12.5, "resync": False, "data": {"dial": {"a": 1}}}
+
+    @pytest.mark.parametrize("seen,built", [(3, "step"), (4, None), (4, "none-step")])
+    def test_a_missed_step_or_one_built_without_a_page_is_a_resync(self, seen, built):
+        step = hde.PartStep({"dial": b"{}"}, {})
+        made = {"step": (step, 1.0), "none-step": (None, 1.0), None: None}[built]
+        payload = hde._next_event(self.BOOT, seen, 5, made, lambda: 7.0)
+        data = json.loads(payload.split(b"data: ", 1)[1])
+        assert data["resync"] is True and data["data"] == {} and data["version"] == 5
 
 
 # ---- the stream over a real socket -----------------------------------------
@@ -224,13 +243,13 @@ class TestChangeHub:
 class Sse:
     """A raw event-stream client."""
 
-    def __init__(self, port, headers=None, rcvbuf=None, read_headers=True):
+    def __init__(self, port, headers=None, rcvbuf=None, read_headers=True, path="/api/v1/events"):
         self.sock = socket.socket()
         if rcvbuf:
             self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
         self.sock.settimeout(5)
         self.sock.connect(("127.0.0.1", port))
-        lines = [f"GET /api/v1/events HTTP/1.1", f"Host: 127.0.0.1:{port}"]
+        lines = [f"GET {path} HTTP/1.1", f"Host: 127.0.0.1:{port}"]
         lines += [f"{k}: {v}" for k, v in (headers or {}).items()]
         self.sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
         self.buf = b""
@@ -303,10 +322,7 @@ def stack(monkeypatch, core):
     monkeypatch.setattr(hde, "SSE_HEARTBEAT_S", 0.2)
     monkeypatch.setattr(hds, "CLIENT_WRITE_TIMEOUT_S", 0.3)
     hub = ChangeHub(core)
-    server = hds.HdServer(
-        SimpleNamespace(), core, hub=hub, port=0, muted_fn=lambda s: False,
-        http_server=None,
-    )
+    server = hds.HdServer(SimpleNamespace(), core, hub=hub, port=0, http_server=None)
     hub.start()
     server.start()
     clients = []
@@ -317,10 +333,21 @@ def stack(monkeypatch, core):
     hub.stop()
 
 
-def connect(stack, **kwargs) -> Sse:
-    client = Sse(stack.server.port, **kwargs)
+def connect(stack, since=None, **kwargs) -> Sse:
+    path = "/api/v1/events" + ("" if since is None else "?since=" + since)
+    client = Sse(stack.server.port, path=path, **kwargs)
     stack.clients.append(client)
     return client
+
+
+def event_id(stack, seq=None) -> str:
+    return f"{stack.server.boot}-{stack.hub.seq() if seq is None else seq}"
+
+
+def state_of(stack) -> dict:
+    conn = http.client.HTTPConnection("127.0.0.1", stack.server.port, timeout=5)
+    conn.request("GET", "/api/v1/state")
+    return json.loads(conn.getresponse().read())
 
 
 class TestEventStream:
@@ -333,48 +360,65 @@ class TestEventStream:
         assert "x-accel-buffering: no" in head
         assert "access-control" not in head
 
-    def test_the_first_event_is_the_current_state(self, stack):
+    def test_a_new_page_is_told_to_fetch_the_state(self, stack):
         client = connect(stack)
         event = client.event()
-        assert event["event"] == "state"
-        assert int(event["id"]) == stack.hub.seq()
-        body = event["json"]
-        assert body["seq"] == int(event["id"])
-        assert body["core_seq"] == stack.core.snapshot().seq
-        assert body["now_playing"]["title"] == "Tunnel of Love"
+        assert event["event"] == "change"
+        assert event["id"] == event_id(stack)
+        assert event["json"]["resync"] is True and event["json"]["data"] == {}
+        assert event["json"]["boot"] == stack.server.boot
+        assert len(stack.server.boot) == 16 and int(stack.server.boot, 16) >= 0
 
-    def test_a_change_sends_the_full_state_under_a_new_id(self, stack):
+    def test_the_first_change_sends_both_parts_and_then_only_what_moved(self, stack):
         client = connect(stack)
-        first = client.event()
+        client.event()
         stack.core.publish(polling=False)
+        first = client.event()
+        assert first["id"] == event_id(stack)
+        assert first["json"]["resync"] is False
+        assert set(first["json"]["data"]) == {"dial", "focused"}
+        assert first["json"]["data"]["dial"]["polling"] is False
+        assert first["json"]["data"]["focused"]["id"] == hs.LOUNGE
+        rename(stack.core, 1)
         second = client.event()
-        assert int(second["id"]) > int(first["id"])
-        assert second["json"]["polling"] is False
-        assert second["json"]["core_seq"] == stack.core.snapshot().seq
-        assert second["json"]["now_playing"]["title"] == "Tunnel of Love"   # full state, not a delta
+        assert set(second["json"]["data"]) == {"dial"}
+        assert second["json"]["data"]["dial"]["dial"]["name"] == "Dial 1"
+        assert second["json"]["version"] == first["json"]["version"] + 1
+
+    def test_a_publish_that_changes_nothing_sends_no_event(self, stack):
+        client = connect(stack)
+        client.event()
+        rename(stack.core, 1)
+        client.event()
+        stack.core.publish()
+        assert wait_until(lambda: stack.hub.seq() >= 3)
+        assert client.block(2) == ": ping"
 
     def test_the_state_route_and_the_stream_agree(self, stack):
         client = connect(stack)
+        client.event()
+        rename(stack.core, 2)
         event = client.event()
-        conn = http.client.HTTPConnection("127.0.0.1", stack.server.port, timeout=5)
-        conn.request("GET", "/api/v1/state")
-        body = json.loads(conn.getresponse().read())
-        assert body == event["json"]
+        body = state_of(stack)
+        assert body["boot"] == event["json"]["boot"]
+        assert body["version"] == event["json"]["version"]
+        assert body["parts"]["dial"] == event["json"]["data"]["dial"]
+        assert body["parts"]["focused"] == event["json"]["data"]["focused"]
+        assert body["part_versions"] == {"dial": body["version"], "focused": hs.PEER_VERSION}
 
     def test_a_burst_of_changes_is_coalesced_and_ends_on_the_last(self, stack):
         client = connect(stack)
         client.event()
-        for _ in range(30):
-            stack.core.publish(polling=True)
-        last_core_seq = stack.core.snapshot().seq
+        for n in range(30):
+            rename(stack.core, n)
+        assert wait_until(lambda: state_of(stack)["parts"]["dial"]["dial"]["name"] == "Dial 29")
+        last = event_id(stack)
         events = []
-        while True:
+        while not events or events[-1]["id"] != last:
             events.append(client.event())
-            if events[-1]["json"]["core_seq"] == last_core_seq:
-                break
         assert len(events) < 30
-        ids = [int(e["id"]) for e in events]
-        assert ids == sorted(set(ids))
+        seqs = [int(e["id"].rsplit("-", 1)[1]) for e in events]
+        assert seqs == sorted(set(seqs))
 
     def test_a_heartbeat_is_sent_when_nothing_changes(self, stack):
         client = connect(stack)
@@ -383,25 +427,27 @@ class TestEventStream:
         assert client.block(2) == ": ping"
         assert time.monotonic() - started < 1.0
 
-    def test_last_event_id_behind_gets_the_state_at_once(self, stack):
-        stack.core.publish(polling=False)
+    def test_a_page_that_is_current_gets_only_pings_until_the_next_change(self, stack):
+        rename(stack.core, 1)
         assert wait_until(lambda: stack.hub.seq() == 2)
-        client = connect(stack, headers={"Last-Event-ID": "1"})
-        event = client.event(1)
-        assert int(event["id"]) == 2
-
-    def test_last_event_id_current_gets_only_pings(self, stack):
-        stack.core.publish(polling=False)
-        assert wait_until(lambda: stack.hub.seq() == 2)
-        client = connect(stack, headers={"Last-Event-ID": "2"})
+        client = connect(stack, since=event_id(stack))
         assert client.block(2) == ": ping"
-        stack.core.publish(polling=True)
-        assert int(client.event()["id"]) == 3
+        rename(stack.core, 2)
+        event = client.event()
+        assert event["id"] == event_id(stack, 3)
+        # The first step after the page connected has nothing to compare with.
+        assert event["json"]["resync"] is False and set(event["json"]["data"]) == {"dial", "focused"}
 
-    @pytest.mark.parametrize("value", ["abc", "", "99999", "-4"])
-    def test_an_unusable_or_future_last_event_id_gets_the_state(self, stack, value):
-        client = connect(stack, headers={"Last-Event-ID": value})
-        assert int(client.event(2)["id"]) == stack.hub.seq()
+    @pytest.mark.parametrize("since", ["behind", "other_boot", "abc", "", "future", "0123456789abcdef-x"])
+    def test_any_other_since_is_told_to_fetch_the_state(self, stack, since):
+        rename(stack.core, 1)
+        assert wait_until(lambda: stack.hub.seq() == 2)
+        value = {
+            "behind": event_id(stack, 1), "other_boot": "f" * 16 + "-2", "future": event_id(stack, 99),
+        }.get(since, since)
+        client = connect(stack, since=value)
+        event = client.event(2)
+        assert event["id"] == event_id(stack) and event["json"]["resync"] is True
 
     def test_the_cap_is_four_clients_and_the_next_is_refused(self, stack):
         assert SSE_MAX_CLIENTS == 4
@@ -446,8 +492,8 @@ class TestEventStream:
         client.event()
         time.sleep(0.4)
         assert stack.server.client_count() == 1
-        stack.core.publish()
-        assert client.event()["json"]["seq"]
+        rename(stack.core, 1)
+        assert client.event()["json"]["data"]["dial"]
 
     def test_the_client_count_follows_connections(self, stack):
         assert stack.server.client_count() == 0
@@ -466,7 +512,7 @@ class TestEventStream:
         assert stack.server.client_count() == 0
 
     def test_without_a_hub_the_route_is_not_found(self, core):
-        server = hds.HdServer(SimpleNamespace(), core, port=0, muted_fn=lambda s: False)
+        server = hds.HdServer(SimpleNamespace(), core, port=0)
         server.start()
         try:
             conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
@@ -508,9 +554,11 @@ class TestSlowClients:
         waiter_thread.start()
 
         deadline = time.monotonic() + 8
+        n = 0
         while time.monotonic() < deadline and stack.server.client_count() != 1:
             started = time.monotonic()
-            core.publish(polling=True)
+            n += 1
+            rename(core, n)
             latencies.append(time.monotonic() - started)
             time.sleep(0.003)
 
@@ -520,19 +568,14 @@ class TestSlowClients:
         assert waiter_results and waiter_results[0] is not None
 
         # The healthy client kept up and is still being served.
-        last = core.snapshot().seq
-        core.publish(polling=False)
-        final = core.snapshot().seq
-        assert wait_until(lambda: received and received[-1]["json"]["core_seq"] == final, 3)
-        assert last < final
-        conn = http.client.HTTPConnection("127.0.0.1", stack.server.port, timeout=5)
-        conn.request("GET", "/api/v1/state")
-        assert conn.getresponse().status == 200
+        rename(core, n + 1)
+        assert wait_until(lambda: received and received[-1]["id"] == event_id(stack), 3)
+        assert state_of(stack)["parts"]["dial"]["dial"]["name"] == f"Dial {n + 1}"
 
     def test_a_stalled_client_does_not_delay_the_hub_sequence(self, stack):
         stalled = connect(stack, rcvbuf=2048)
-        for _ in range(50):
-            stack.core.publish(polling=True)
+        for n in range(50):
+            rename(stack.core, n)
             time.sleep(0.002)
         before = stack.hub.seq()
         stack.core.publish(polling=False)
@@ -546,5 +589,3 @@ class TestSlowClients:
         for c in clients:
             assert c.closed_by_server(2.0)
         assert wait_until(lambda: stack.server.client_count() == 0, 2.0)
-
-

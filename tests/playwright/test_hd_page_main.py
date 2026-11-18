@@ -52,16 +52,37 @@ def scenario(name, **snapshot_changes):
     return base.with_snapshot(**snapshot_changes) if snapshot_changes else base
 
 
-def watch_actions(page) -> list:
+def watch_actions(page, prefix="/api/v1/actions/") -> list:
     """Every action the page POSTs from now on, as (name, body)."""
     sent: list = []
 
     def seen(request) -> None:
-        if request.method == "POST" and "/api/v1/actions/" in request.url:
+        if request.method == "POST" and prefix in request.url:
             sent.append((request.url.rsplit("/", 1)[1], request.post_data_json))
 
     page.on("request", seen)
     return sent
+
+
+def watch_intents(page) -> list:
+    """Every appliance intent the page POSTs from now on, as (name, args),
+    each sent for the focused appliance (any other is recorded as such)."""
+    sent: list = []
+
+    def seen(request) -> None:
+        if request.method == "POST" and "/api/v1/intents/" in request.url:
+            body = request.post_data_json
+            name = request.url.rsplit("/", 1)[1]
+            sent.append((name, body["args"]) if body["appliance_id"] == LOUNGE else ("elsewhere", body))
+
+    page.on("request", seen)
+    return sent
+
+
+def fulfil(page, path, body, status=200):
+    """Answer the page's POSTs to *path* itself with *body*."""
+    page.route("**" + path, lambda route: route.fulfill(
+        status=status, content_type="application/json", body=json.dumps(body)))
 
 
 def open_page(page, hd, size=(800, 480)):
@@ -119,7 +140,7 @@ class TestStates:
         watcher = Watcher(page)
         open_page(page, hd)
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
-        expect(page.locator("#sub")).to_have_text("Dire Straits · Making Movies")
+        expect(page.locator("#sub")).to_have_text("Dire Straits")
         art = page.locator("#art")
         expect(art).to_have_attribute("src", re.compile(r"^/api/v1/artwork/[0-9a-f]{16}$"))
         expect(art).not_to_have_class(re.compile("logo"))
@@ -179,9 +200,9 @@ class TestStates:
         sent = watch_actions(page)
         open_page(page, hd)
         row = rows(page).filter(has_text="Kitchen")
-        expect(row.locator(".state")).to_have_text("Not authorised")
+        expect(row.locator(".state")).to_have_text("Not allowed")
         row.click()
-        expect(page.locator("#card-title")).to_have_text("Not authorised")
+        expect(page.locator("#card-title")).to_have_text("Not allowed")
         expect(page.locator("#card-message")).to_have_text("Allow this dial in Kitchen's web UI (Setup, Dials)")
         expect(page.locator("#card-source")).to_have_text("http://192.0.2.20:80/")
         expect(page.locator("#toast")).not_to_have_class(re.compile("show"))
@@ -277,11 +298,11 @@ class TestFocus:
     def test_refused_focus_toasts_and_rolls_back(self, page, hd):
         hd.show(hs.SCENARIOS["replay_elsewhere"])
         page.route("**/api/v1/actions/focus", lambda route: route.fulfill(
-            status=409, content_type="application/json",
-            body=json.dumps({"ok": False, "error": "not_focused"})))
+            status=404, content_type="application/json",
+            body=json.dumps({"ok": False, "error": "unknown_appliance"})))
         open_page(page, hd)
         rows(page).nth(1).click()
-        expect(page.locator("#toast")).to_have_text("Select that appliance first.")
+        expect(page.locator("#toast")).to_have_text("That appliance is no longer there.")
         expect(rows(page).nth(0)).to_have_attribute("aria-current", "true")
 
     def test_state_change_moves_the_highlight(self, page, hd):
@@ -334,7 +355,8 @@ class TestVolume:
         open_page(page, hd)
         drag_input(page, "#master", [], final=77)
         hd.show(scenario("playing_artwork", volume_readout=("Lounge", 77)))
-        wait_for_state(page, "s.volume.level === 77")
+        page.wait_for_function(
+            "fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.focused.parts.outputs.master_volume === 77)")
         page.wait_for_timeout(300)
         page.clock.run_for(2500)
         expect(page.locator("#master-num")).to_have_text("77")
@@ -374,7 +396,8 @@ class TestMute:
         open_page(page, hd)
         page.locator("#mute").click()
         hd.show(dataclasses.replace(hs.SCENARIOS["playing_artwork"], muted=True))
-        wait_for_state(page, "s.volume.muted === true")
+        page.wait_for_function(
+            "fetch('/api/v1/state').then(r => r.json()).then(s => s.parts.focused.parts.outputs.muted_all === true)")
         page.wait_for_timeout(300)
         page.clock.run_for(2500)
         expect(page.locator("#mute")).to_have_attribute("aria-pressed", "true")
@@ -462,11 +485,11 @@ class TestSpeakers:
         expect(patio.locator("input[type=checkbox]")).not_to_be_checked()
         expect(patio.locator(".level-row")).to_be_hidden()
 
-    def test_the_default_speaker_carries_a_default_badge(self, page, hd):
+    def test_an_auto_start_speaker_carries_the_auto_start_pill(self, page, hd):
         open_page(page, hd)
         badge = card(page, "Lounge L + R").locator(".output-card-default")
         expect(badge).to_be_visible()
-        expect(badge).to_have_text("Default")
+        expect(badge).to_have_text("Auto-Start")
         expect(card(page, "Patio").locator(".output-card-default")).to_be_hidden()
         chip = card(page, "Lounge L + R").locator(".output-state-chip")
         assert abs(badge.bounding_box()["y"] - chip.bounding_box()["y"]) < 2
@@ -486,14 +509,14 @@ class TestSpeakers:
         expect(card(page, "Old")).to_be_visible()
         expect(card(page, "Old").locator(".output-card-default")).to_be_hidden()
 
-    def test_toggle_sends_output_and_shows_the_slider(self, page, hd):
-        sent = watch_actions(page)
+    def test_toggle_sends_the_intent_and_shows_the_slider(self, page, hd):
+        sent = watch_intents(page)
         open_page(page, hd)
         patio = card(page, "Patio")
         patio.locator(".output-toggle").click()
         expect(patio.locator(".level-row")).to_be_visible()
         expect(patio.locator(".level-num")).to_have_text("30")
-        assert sent == [("output", {"appliance_id": LOUNGE, "output_id": "o2", "selected": True})]
+        assert sent == [("outputs.set", {"id": "o2", "selected": True})]
 
     def test_toggle_confirmed_by_the_state(self, page, hd):
         page.clock.install()
@@ -511,24 +534,22 @@ class TestSpeakers:
         open_page(page, hd)
         card(page, "Patio").locator(".output-toggle").click()
         expect(card(page, "Patio").locator("input[type=checkbox]")).to_be_checked()
-        page.clock.run_for(2500)
+        page.clock.run_for(8500)
         expect(card(page, "Patio").locator("input[type=checkbox]")).not_to_be_checked()
 
     def test_refused_toggle_rolls_back_at_once(self, page, hd):
-        page.route("**/api/v1/actions/output", lambda route: route.fulfill(
-            status=409, content_type="application/json",
-            body=json.dumps({"ok": False, "error": "wrong_state"})))
+        fulfil(page, "/api/v1/intents/outputs.set", {"ok": False, "error": "wrong_state"})
         open_page(page, hd)
         card(page, "Patio").locator(".output-toggle").click()
         expect(page.locator("#toast")).to_have_text("Not possible right now.")
         expect(card(page, "Patio").locator("input[type=checkbox]")).not_to_be_checked()
 
     def test_level_slider_sends_the_output_volume(self, page, hd):
-        sent = watch_actions(page)
+        sent = watch_intents(page)
         open_page(page, hd)
         drag_input(page, "#speakers .output-card-on input[type=range]", [], final=55)
         expect(card(page, "Lounge L + R").locator(".level-num")).to_have_text("55")
-        assert sent == [("output", {"appliance_id": LOUNGE, "output_id": "o1", "volume": 55})]
+        assert sent == [("outputs.set", {"id": "o1", "volume": 55})]
 
     def test_state_update_leaves_a_dragged_slider_alone(self, page, hd):
         open_page(page, hd)
@@ -556,56 +577,58 @@ class TestStream:
         hd.show(hs.SCENARIOS["playing_artwork"])
         expect(page.locator("#title")).to_have_text("Tunnel of Love")
 
-    def test_reconnects_with_last_event_id(self, page, hd, monkeypatch):
+    def test_a_stream_that_ends_is_opened_again_and_the_page_carries_on(self, page, hd):
         # The server ends a stream only by stopping, so the first stream is
-        # answered here with one state event and then ends; the browser's
-        # reconnect goes to the server, which reports the id it was sent (the
-        # browser adds that header below what the test's routing can see).
-        import dial_hd_server
-
-        answered: list = []
-        reconnects: list = []
-        serve = dial_hd_server.serve_events
+        # answered here with one event and then ends; the browser opens it
+        # again, and that one reaches the server.
+        opened: list = []
 
         def end_first_stream(route):
-            if answered:
+            opened.append(route.request.url)
+            if len(opened) > 1:
                 route.continue_()
                 return
-            state = route.fetch(url=hd.url + "/api/v1/state").text()
-            answered.append(json.loads(state)["seq"])
+            state = json.loads(route.fetch(url=hd.url + "/api/v1/state").text())
+            event = {"boot": state["boot"], "version": state["version"], "time": state["time"],
+                     "resync": True, "data": {}}
             route.fulfill(
                 status=200, content_type="text/event-stream", headers={"Cache-Control": "no-store"},
-                body=f"retry: 100\nid: {answered[0]}\nevent: state\ndata: {state}\n\n")
+                body=f"retry: 100\nid: {state['boot']}-{state['version']}\nevent: change\ndata: {json.dumps(event)}\n\n")
 
-        def serve_noting_the_id(handler, hub, clients):
-            reconnects.append(handler.headers.get("Last-Event-ID"))
-            serve(handler, hub, clients)
-
-        monkeypatch.setattr(dial_hd_server, "serve_events", serve_noting_the_id)
-        page.route("**/api/v1/events", end_first_stream)
+        page.route("**/api/v1/events*", end_first_stream)
         open_page(page, hd)
         for _ in range(80):
-            if reconnects:
+            if len(opened) > 1:
                 break
             page.wait_for_timeout(100)
-        assert reconnects == [str(answered[0])]
+        assert len(opened) > 1
         hd.show(hs.SCENARIOS["nothing_playing"])
         expect(page.locator("#title")).to_have_text("Nothing playing")
         expect(page.locator("#offline")).to_be_hidden()
 
     def test_offline_indicator_and_recovery(self, page, hd):
+        refused: list = []
+
         def refuse(route):
+            refused.append(route.request.url)
             route.abort()
 
-        page.route("**/api/v1/events", refuse)
+        page.route("**/api/v1/events*", refuse)
         page.route("**/api/v1/state", refuse)
         page.clock.install()
         page.goto(hd.url + "/")
+        # The stream's failure reaches the page a moment after the refusal.
+        for _ in range(50):
+            if any("/api/v1/events" in url for url in refused):
+                break
+            page.wait_for_timeout(20)
+        page.wait_for_timeout(300)
         page.clock.run_for(11000)
         expect(page.locator("#offline")).to_be_visible()
         expect(page.locator("#offline")).to_have_text("Reconnecting...")
         expect(page.locator("#master")).to_be_disabled()
         page.unroute("**/api/v1/state", refuse)
+        page.unroute("**/api/v1/events*", refuse)
         page.clock.run_for(6000)
         expect(page.locator("#offline")).to_be_hidden()
         expect(page.locator("#title")).to_have_text("Tunnel of Love")

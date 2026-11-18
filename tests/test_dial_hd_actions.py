@@ -89,7 +89,6 @@ def make_server(core, management, tmp_path):
     def make(**kwargs):
         kwargs.setdefault("http_server", management)
         kwargs.setdefault("static_root", root)
-        kwargs.setdefault("muted_fn", lambda service: False)
         kwargs.setdefault("port", 0)
         server = hds.HdServer(SimpleNamespace(), core, **kwargs)
         server.start()
@@ -871,5 +870,5 @@ class TestPanelRoutes:
         panel.view = lambda: {"asleep": True, "backlight": "sysfs"}
         server = make_server(panel=panel)
         body = json.loads(request(server.port, "GET", "/api/v1/state")[1])
-        assert body["panel"]["asleep"] is True
-        assert body["panel"]["backlight"] == "sysfs"
+        assert body["parts"]["dial"]["panel"]["asleep"] is True
+        assert body["parts"]["dial"]["panel"]["backlight"] == "sysfs"

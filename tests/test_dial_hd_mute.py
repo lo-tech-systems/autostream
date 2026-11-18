@@ -1,6 +1,6 @@
-"""Tests for the mute flag and the volume level the HD page is sent: the real
-core, the real volume worker's stores and the real state builder together,
-with only the appliances' clients stood in for.
+"""Tests for the mute flag and the volume level the dial shows for the
+appliance it reports from: the real core and the real volume worker's stores
+together, with only the appliances' clients stood in for.
 
 Covers: the state following the appliance the dial reports from after a fold
 (its level and its mute flag, whatever the readout last named), a mute toggle
@@ -11,7 +11,6 @@ left unpainted by it.
 from __future__ import annotations
 
 import dataclasses
-import json
 import os
 import queue
 import sys
@@ -23,7 +22,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 import pytest
 
-import dial_hd_server as hds
 import dial_volume as dv
 from autostream_peer_registry import Sighting
 from dial_core import DialCore
@@ -136,9 +134,8 @@ def _clean_stores():
 
 
 class Rig:
-    """A core reading *appliances* through their clients, the worker's
-    callbacks wired to it as the service wires them, and the HD server's
-    state builder."""
+    """A core reading *appliances* through their clients and the worker's
+    callbacks wired to it as the service wires them."""
 
     def __init__(self, appliances: Appliances, mute_scope="current") -> None:
         self.appliances = appliances
@@ -147,8 +144,6 @@ class Rig:
         self.core.attach_pool(appliances, appliances)
         self.core.set_mute_scope(lambda: self.scope)
         self.hub = ChangeHub(self.core)
-        self.server = hds.HdServer(SimpleNamespace(), self.core, hub=self.hub, port=0)
-        self.hub.set_builder(self.server.build_state_bytes)
         self.steps = 0
         self.core.subscribe(self._count)
 
@@ -159,7 +154,11 @@ class Rig:
         self.core.fold_once()
 
     def volume(self) -> dict:
-        return json.loads(self.server.build_state_bytes(1))["volume"]
+        """The level and the shown mute flag of the appliance reported from."""
+        snapshot = self.core.snapshot()
+        service, level = snapshot.volume_readout
+        return {"appliance_id": snapshot.focus.reporting_id, "level": level,
+                "muted": dv.shown_muted(service) if service else None}
 
     def mute_targets(self) -> list:
         if self.scope == "all":
@@ -309,7 +308,7 @@ class TestMuteToggleReachesTheState:
             rig.core.mute_toggle()
             rig.run_worker()
             assert rig.hub.wait_for_change(seen, 2.0) is not None
-            assert json.loads(rig.hub.state()[1])["volume"]["muted"] is True
+            assert rig.volume()["muted"] is True
         finally:
             rig.hub.stop()
 

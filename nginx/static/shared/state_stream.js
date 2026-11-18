@@ -141,6 +141,7 @@ export class StateStream {
       Object.assign(this._view.parts, d.data);
       for (const n of names) this._view.partVersions[n] = d.version;
       this._view.boot = d.boot; this._view.version = d.version;
+      if (d.time) this._view.time = d.time;
       call(this.onChange, this._view, names, false);
     });
     src.addEventListener('access', (ev) => {

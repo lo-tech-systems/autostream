@@ -39,8 +39,8 @@ from dial_hd_actions import (
     ACTION_NAME_RE, ACTIONS, HD_INTENTS, Context, InvalidArgument, boolean, integer, prepare,
 )
 from dial_hd_backdrop import BackdropStore
-from dial_hd_events import SSE_MAX_CLIENTS, serve_events
-from dial_hd_state import build_state, dumps
+from dial_hd_events import SSE_MAX_CLIENTS, PartDiffer, PartStep, encode_parts, serve_events, state_bytes
+from dial_hd_state import build_parts
 
 HD_PORT = HD_PORT_DEFAULT       # loopback listener; the page's own address
 HD_DEV_PORT = 7844              # the development listener, when enabled
@@ -226,10 +226,9 @@ class HdServer:
     *core* supplies snapshot(); *http_server* the management server whose
     screen settings and recovery status fill in the state body; *panel*, when
     given, a view() mapping for the panel block. *static_root* is the
-    directory the page files are served from. *muted_fn* reads the shown mute
-    flag for a service name (injected so tests need not touch the volume
-    store). *info_fn* returns the info page's (label, value) rows. *extra_routes*
-    are (method, path, handler[, prefix]) rows added to the table.
+    directory the page files are served from. *info_fn* returns the info
+    page's (label, value) rows. *extra_routes* are (method, path, handler[,
+    prefix]) rows added to the table.
 
     A second listener, the development listener, binds the LAN on *dev_port*
     while set_dev_access(True) holds. It serves the same routes behind a PIN
@@ -237,7 +236,7 @@ class HdServer:
 
     def __init__(
         self, cfg, core, *, http_server=None, panel=None, hub=None, static_root=HD_STATIC_ROOT,
-        clock=time.monotonic, wall_clock=time.time, muted_fn=None, extra_routes=(),
+        clock=time.monotonic, wall_clock=time.time, extra_routes=(),
         port: int | None = None, dev_port: int | None = None, info_fn=None,
         dev_bind_address: str = DEV_BIND_ADDRESS, backdrops: BackdropStore | None = None,
     ) -> None:
@@ -249,9 +248,9 @@ class HdServer:
         self._static_root = Path(static_root)
         self._clock = clock
         self._wall_clock = wall_clock
-        if muted_fn is None:
-            from dial_volume import shown_muted as muted_fn
-        self._muted_fn = muted_fn
+        # The dial's boot id: every event id and state body names it, so a
+        # page can tell a restarted dial's sequence from this one's.
+        self._boot = secrets.token_hex(8)
         self._port = HD_PORT if port is None else port
         self._dev_port = HD_DEV_PORT if dev_port is None else dev_port
         self._dev_bind_address = dev_bind_address
@@ -303,8 +302,9 @@ class HdServer:
             self._routes.append((method, path, handler, bool(prefix and prefix[0])))
         self._handler_class = self._make_handler()
         self._server = _HdHTTPServer((LOOPBACK_ADDRESS, self._port), self._handler_class)
+        self._differ = PartDiffer(self.client_count)
         if hub is not None:
-            hub.set_builder(self.build_state_bytes)
+            hub.set_builder(self._step)
 
     # ---- event-stream clients --------------------------------------------
 
@@ -380,28 +380,38 @@ class HdServer:
             "confirmed": status.get("volume_confirmed", False),
         }
 
-    def build_state_bytes(self, seq: int) -> bytes:
-        """The state body for the core's current snapshot, as the wire form.
+    @property
+    def boot(self) -> str:
+        return self._boot
+
+    def _parts(self, now: float) -> dict:
+        """Both parts of the page's state for the core's current snapshot.
         Reads only lock-free or briefly locked values, never a core or view
         lock across the build."""
         snapshot = self._core.snapshot()
         warnings = getattr(self._core, "warnings", None)
         descriptors = warnings.descriptors() if warnings is not None else ()
         panel = self._panel.view() if self._panel is not None else None
-        muted = self._muted_fn(snapshot.volume_readout[0]) if snapshot.volume_readout[0] else None
-        body = build_state(
+        return build_parts(
             snapshot, descriptors=descriptors, panel=panel, settings=self._settings(),
-            recovery=self._recovery(), hub_seq=seq, now=self._clock(),
-            wall_now=self._wall_clock(), muted=muted,
+            recovery=self._recovery(), now=now, wall_now=self._wall_clock(),
         )
-        return dumps(body).encode("utf-8")
 
-    def current_state(self) -> tuple[int, bytes]:
-        """(sequence, wire body) of the state now."""
-        if self._hub is not None:
-            return self._hub.state()
-        seq = self._core.snapshot().seq
-        return seq, self.build_state_bytes(seq)
+    def _step(self, seq: int) -> tuple:
+        """One hub step: (the parts that changed, or None with no page
+        connected; the core's clock when they were built)."""
+        now = self._clock()
+        return self._differ.step(seq, lambda: self._parts(now)), round(now, 3)
+
+    def state_body(self) -> bytes:
+        """The whole state as the wire form, built fresh: a loopback read."""
+        seq = self._hub.seq() if self._hub is not None else self._core.snapshot().seq
+        now = self._clock()
+        parts = self._parts(now)
+        versions = {"dial": seq}
+        if parts["focused"] is not None:
+            versions["focused"] = parts["focused"]["version"]
+        return state_bytes(self._boot, seq, round(now, 3), PartStep({}, versions), encode_parts(parts))
 
     # ---- request checks --------------------------------------------------
 
@@ -600,20 +610,16 @@ class HdServer:
         )
 
     def _get_state(self, handler, rest) -> None:
-        _seq, body = self.current_state()
-        handler.send_bytes(200, body, "application/json", {"Cache-Control": "no-store"})
+        handler.send_bytes(200, self.state_body(), "application/json", {"Cache-Control": "no-store"})
 
     def _stream_events(self, handler, rest) -> None:
         if self._hub is None:
             handler.send_json(404, {"ok": False, "error": "not_found"})
             return
-        if not handler.server.hd_dev:
-            serve_events(handler, self._hub, self)
-            return
-        gate = _StreamGate(
+        clients = self if not handler.server.hd_dev else _StreamGate(
             self, handler.server.hd_stopping, handler.session_token(),
         )
-        serve_events(handler, self._hub, gate)
+        serve_events(handler, self._hub, clients, self._boot, self._clock)
 
     def _get_artwork(self, handler, rest) -> None:
         match = ARTWORK_REST_RE.match(rest)
