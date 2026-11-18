@@ -41,14 +41,14 @@ from dial_hd_actions import (
 from dial_hd_backdrop import BackdropStore
 from dial_hd_events import SSE_MAX_CLIENTS, PartDiffer, PartStep, encode_parts, serve_events, state_bytes
 from dial_hd_state import build_parts
-from dial_values import is_int
+from dial_http_common import MAX_BODY, TOO_MANY_ATTEMPTS, content_length, json_bytes
+from dial_values import NotAnObject, NotJson, is_int, parse_json_object
 
 HD_PORT = HD_PORT_DEFAULT       # loopback listener; the page's own address
 HD_DEV_PORT = 7844              # the development listener, when enabled
 LOOPBACK_ADDRESS = "127.0.0.1"
 DEV_BIND_ADDRESS = "0.0.0.0"
 CLIENT_WRITE_TIMEOUT_S = 2.0
-MAX_BODY = 4096                 # the same cap the management server applies
 MAX_REQUEST_LINE = 1024
 # How long an intent's route waits for the appliance's answer before it says
 # timeout; above the peer client's own read, so a slow appliance usually
@@ -912,11 +912,11 @@ class HdServer:
                 self.close_connection = True
 
             def send_json(self, status, obj) -> None:
-                body = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+                body = json_bytes(obj, compact=True)
                 self.send_bytes(status, body, "application/json")
 
             def send_too_many(self, wait: int) -> None:
-                body = json.dumps({"ok": False, "error": "too_many_attempts"}).encode()
+                body = json_bytes(TOO_MANY_ATTEMPTS)
                 self.send_bytes(429, body, "application/json", {"Retry-After": str(int(wait))})
 
             def session_token(self) -> "str | None":
@@ -942,16 +942,15 @@ class HdServer:
             def read_json_body(self) -> dict | None:
                 """The request's JSON object, or None after answering the
                 refusal itself. An empty body is an empty object."""
-                length_header = self.headers.get("Content-Length")
-                if length_header is None:
+                try:
+                    length = content_length(self.headers)
+                except ValueError:
+                    length = -1
+                if length is None:
                     if self.headers.get("Transfer-Encoding"):
                         self.send_json(411, {"ok": False, "error": "length_required"})
                         return None
                     return {}
-                try:
-                    length = int(length_header)
-                except ValueError:
-                    length = -1
                 if length < 0:
                     self.send_json(400, {"ok": False, "error": "bad_content_length"})
                     return None
@@ -962,14 +961,12 @@ class HdServer:
                 if not raw.strip():
                     return {}
                 try:
-                    value = json.loads(raw.decode("utf-8"))
-                except (ValueError, UnicodeDecodeError):
+                    return parse_json_object(raw.decode("utf-8"))
+                except (UnicodeDecodeError, NotJson):
                     self.send_json(400, {"ok": False, "error": "bad_json"})
-                    return None
-                if not isinstance(value, dict):
+                except NotAnObject:
                     self.send_json(400, {"ok": False, "error": "body_must_be_object"})
-                    return None
-                return value
+                return None
 
             # ---- dispatch ------------------------------------------------
 

@@ -24,6 +24,7 @@ if _DIAL not in sys.path:
     sys.path.insert(0, _DIAL)
 
 import dial_admin
+import dial_http_common
 import dial_pin_guard as pg
 import dial_http_server as dhs
 from dial_config import DEFAULT_PROFILE_KEY, DEFAULT_TOUCH_KEY, DialConfig, DialDisplayConfig
@@ -234,7 +235,7 @@ class TestMalformedBody:
         h.path           = "/configure"
         h.rfile          = io.BytesIO(b"x")
         h.client_address = ("127.0.0.1", 1)
-        h.headers        = {"Content-Length": str(dhs.MAX_BODY + 1)}
+        h.headers        = {"Content-Length": str(dial_http_common.MAX_BODY + 1)}
         result = {}
         h.send_error = lambda code, *_: result.update(status=code)
         h._send_json = lambda s, d: result.update(status=s, data=d)
@@ -355,7 +356,7 @@ class TestPINAuth:
 
     def test_five_failures_trigger_rate_limit(self):
         cfg = DialConfig(uuid="x", pin="1234")
-        # Re-use the same server so _pin_attempts accumulate across calls
+        # Re-use the same server so the failure counts accumulate across calls
         server = FakeDialServer(cfg)
         for _ in range(pg.MAX_ATTEMPTS):
             _call_handler("/configure",

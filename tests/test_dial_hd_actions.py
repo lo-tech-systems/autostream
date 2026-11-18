@@ -18,6 +18,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 import dial_hd_actions as hda
+import dial_http_common
 import dial_hd_server as hds
 import hd_scenarios as hs
 from dial_core_state import ActionResult
@@ -262,7 +263,7 @@ class TestActionRequestHardening:
         assert again.status == 200
 
     def test_an_oversized_body_is_413_and_never_read(self, server, core):
-        response, data = act(server, "focus", b'{"appliance_id":"' + b"a" * hds.MAX_BODY + b'"}')
+        response, data = act(server, "focus", b'{"appliance_id":"' + b"a" * dial_http_common.MAX_BODY + b'"}')
         assert response.status == 413
         assert error_of(data) == "body_too_large"
         assert core.calls == []
@@ -851,7 +852,7 @@ class TestPanelRoutes:
         panel = FakePanel()
         server = make_server(panel=panel)
         assert post(server.port, "/api/v1/panel/wake", b"[1]")[0].status == 400
-        assert post(server.port, "/api/v1/panel/wake", b"x" * (hds.MAX_BODY + 1))[0].status == 413
+        assert post(server.port, "/api/v1/panel/wake", b"x" * (dial_http_common.MAX_BODY + 1))[0].status == 413
         assert panel.calls == []
 
     def test_a_missing_header_and_a_wrong_host_are_403(self, make_server):

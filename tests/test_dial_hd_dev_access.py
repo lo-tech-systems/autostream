@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
 import dial_hd_events as hde
 from autostream_peer_client import PeerReply
+import dial_http_common
 import dial_hd_server as hds
 import dial_http_server as dhs
 import dial_pin_guard as pg
@@ -556,7 +557,7 @@ class TestLogin:
     def test_bad_json_and_an_oversized_body_are_refused(self, dev):
         host = f"127.0.0.1:{dev.dev_port}"
         assert post(dev.dev_port, "/login", b"{", host=host)[0].status == 400
-        assert post(dev.dev_port, "/login", b"{" + b" " * hds.MAX_BODY + b"}", host=host)[0].status == 413
+        assert post(dev.dev_port, "/login", b"{" + b" " * dial_http_common.MAX_BODY + b"}", host=host)[0].status == 413
 
     def test_the_login_post_needs_the_custom_header(self, dev):
         response, data = dev_request(dev, "POST", "/login", {"pin": PIN}, {})

@@ -18,6 +18,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "dial"))
 
+import dial_http_common
 import dial_hd_server as hds
 import hd_scenarios as hs
 from hd_fake_core import FakeCore
@@ -375,14 +376,14 @@ class TestPostHardening:
 
     def test_a_body_over_the_cap_is_413_without_being_read(self, post_server):
         response, data = request(post_server, "POST", "/api/v1/echo",
-                                 body=b"x" * (hds.MAX_BODY + 1), headers=POST_HEADERS)
+                                 body=b"x" * (dial_http_common.MAX_BODY + 1), headers=POST_HEADERS)
         assert response.status == 413
         assert error_of(data) == "body_too_large"
 
     def test_a_body_at_the_cap_is_accepted(self, post_server):
-        pad = "x" * (hds.MAX_BODY - len('{"p": ""}'))
+        pad = "x" * (dial_http_common.MAX_BODY - len('{"p": ""}'))
         body = json.dumps({"p": pad}).encode()
-        assert len(body) == hds.MAX_BODY
+        assert len(body) == dial_http_common.MAX_BODY
         assert request(post_server, "POST", "/api/v1/echo", body=body, headers=POST_HEADERS)[0].status == 200
 
     @pytest.mark.parametrize("body", [b"[1]", b'"x"', b"3", b"null", b"true"])
@@ -934,7 +935,7 @@ class TestIntentsRoute:
 
     def test_a_body_just_under_the_cap_is_read(self, server, submit):
         body = json.dumps({"appliance_id": APPLIANCE, "args": {"pad": "x" * 3800}}).encode()
-        assert hds.MAX_BODY - 400 < len(body) < hds.MAX_BODY
+        assert dial_http_common.MAX_BODY - 400 < len(body) < dial_http_common.MAX_BODY
         assert intent(server, "outputs.set", body)[0].status == 200
 
     def test_a_missing_or_wrong_request_header_is_403(self, server, submit):

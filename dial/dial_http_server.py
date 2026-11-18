@@ -41,10 +41,16 @@ from dial_display_profiles import (
 )
 from dial_touch_controllers import list_controllers
 from dial_touch_layout import metrics_for
-from dial_values import is_int, read_env_file
+from dial_values import NotAnObject, NotJson, is_int, parse_json_object, read_env_file
 
 import dial_admin
 import dial_pin_guard
+from dial_http_common import (
+    MAX_BODY,
+    TOO_MANY_ATTEMPTS,
+    content_length,
+    json_bytes,
+)
 from autostream_sysutils import (
     SDCARD_HEALTH_METHODS,
     sdcard_health_check,
@@ -56,8 +62,6 @@ from autostream_sysutils import (
 _UPDATER_CMD        = '/usr/local/libexec/autostream/autostream_dial_updater'
 _INSTALL_STATE_PATH = Path('/var/lib/autostream/install-state.env')
 _UPDATE_RESULT_PATH = Path('/var/lib/autostream/update-result.env')
-
-MAX_BODY = 4096  # bytes — rejects oversized bodies before JSON parsing
 
 # POST /screen/settings is unauthenticated when no PIN is configured (the
 # out-of-box state — see the PIN check further down), and the dial's unit
@@ -721,7 +725,7 @@ class DialHTTPServer:
         class _Handler(http.server.BaseHTTPRequestHandler):
 
             def _send_json(self, status: int, data: dict) -> None:
-                body = json.dumps(data).encode()
+                body = json_bytes(data)
                 self.send_response(status)
                 self.send_header('Content-Type', 'application/json')
                 self.send_header('Content-Length', str(len(body)))
@@ -737,7 +741,7 @@ class DialHTTPServer:
                 self.wfile.write(body)
 
             def _send_429(self, wait_secs: int) -> None:
-                body = json.dumps({'ok': False, 'error': 'too_many_attempts'}).encode()
+                body = json_bytes(TOO_MANY_ATTEMPTS)
                 self.send_response(429)
                 self.send_header('Retry-After', str(wait_secs))
                 self.send_header('Content-Type', 'application/json')
@@ -747,14 +751,49 @@ class DialHTTPServer:
 
             def _read_body(self) -> bytes | None:
                 try:
-                    content_length = int(self.headers.get('Content-Length', 0))
+                    length = content_length(self.headers) or 0
                 except (ValueError, TypeError):
                     self.send_error(400)
                     return None
-                if not (0 <= content_length <= MAX_BODY):
+                if not (0 <= length <= MAX_BODY):
                     self.send_error(413)
                     return None
-                return self.rfile.read(content_length)
+                return self.rfile.read(length)
+
+            def _read_json_object(self) -> dict | None:
+                """The request body as a JSON object, or None after answering
+                the refusal itself."""
+                body = self._read_body()
+                if body is None:
+                    return None
+                try:
+                    return parse_json_object(body)
+                except NotJson:
+                    self._send_json(400, {'ok': False, 'error': 'invalid_json'})
+                except NotAnObject:
+                    self._send_json(400, {'ok': False, 'error': 'body_must_be_object'})
+                return None
+
+            def _pin_ok(self, obj: dict, cfg) -> bool:
+                """True when the body carries the current PIN. Otherwise the
+                refusal (429 while backed off, else 403) has been sent."""
+                ip = self.client_address[0]
+                blocked, wait_secs = dial_pin_guard.blocked(ip)
+                if blocked:
+                    self._send_429(wait_secs)
+                    return False
+                current_pin = obj.get('current_pin', '')
+                if not isinstance(current_pin, str) or current_pin != cfg.pin:
+                    dial_pin_guard.record_failure(ip)
+                    # Return 429 immediately if this failure hit the threshold
+                    blocked, wait_secs = dial_pin_guard.blocked(ip)
+                    if blocked:
+                        self._send_429(wait_secs)
+                    else:
+                        self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
+                    return False
+                dial_pin_guard.clear(ip)
+                return True
 
             def do_GET(self) -> None:
                 if self.path == '/configure':
@@ -890,19 +929,9 @@ class DialHTTPServer:
                 self._send_json(200, {'ok': True})
 
             def _handle_configure(self) -> None:
-                body = self._read_body()
-                if body is None:
+                obj = self._read_json_object()
+                if obj is None:
                     return
-                try:
-                    obj = json.loads(body)
-                except (ValueError, TypeError):
-                    self._send_json(400, {'ok': False, 'error': 'invalid_json'})
-                    return
-                if not isinstance(obj, dict):
-                    self._send_json(400, {'ok': False, 'error': 'body_must_be_object'})
-                    return
-
-                ip = self.client_address[0]
 
                 # ---- Field validation ----
                 with dial_server._cfg_lock:
@@ -923,22 +952,8 @@ class DialHTTPServer:
                         if not snap['active'] or not snap['volume_confirmed']:
                             self._send_json(403, {'ok': False, 'error': 'recovery_not_confirmed'})
                             return
-                    else:
-                        blocked, wait_secs = dial_pin_guard.blocked(ip)
-                        if blocked:
-                            self._send_429(wait_secs)
-                            return
-                        current_pin = obj.get('current_pin', '')
-                        if not isinstance(current_pin, str) or current_pin != cfg.pin:
-                            dial_pin_guard.record_failure(ip)
-                            # Return 429 immediately if this failure hit the threshold
-                            blocked, wait_secs = dial_pin_guard.blocked(ip)
-                            if blocked:
-                                self._send_429(wait_secs)
-                            else:
-                                self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
-                            return
-                        dial_pin_guard.clear(ip)
+                    elif not self._pin_ok(obj, cfg):
+                        return
 
                 if 'name' in obj:
                     v = obj['name']
@@ -1048,38 +1063,15 @@ class DialHTTPServer:
                 self._send_json(200, {'ok': True})
 
             def _handle_screen_settings(self) -> None:
-                body = self._read_body()
-                if body is None:
+                obj = self._read_json_object()
+                if obj is None:
                     return
-                try:
-                    obj = json.loads(body)
-                except (ValueError, TypeError):
-                    self._send_json(400, {'ok': False, 'error': 'invalid_json'})
-                    return
-                if not isinstance(obj, dict):
-                    self._send_json(400, {'ok': False, 'error': 'body_must_be_object'})
-                    return
-
-                ip = self.client_address[0]
                 with dial_server._cfg_lock:
                     cfg = dial_server._cfg
 
                 # PIN auth — screen settings follow POST /configure semantics.
-                if cfg.pin:
-                    blocked, wait_secs = dial_pin_guard.blocked(ip)
-                    if blocked:
-                        self._send_429(wait_secs)
-                        return
-                    current_pin = obj.get('current_pin', '')
-                    if not isinstance(current_pin, str) or current_pin != cfg.pin:
-                        dial_pin_guard.record_failure(ip)
-                        blocked, wait_secs = dial_pin_guard.blocked(ip)
-                        if blocked:
-                            self._send_429(wait_secs)
-                        else:
-                            self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
-                        return
-                    dial_pin_guard.clear(ip)
+                if cfg.pin and not self._pin_ok(obj, cfg):
+                    return
 
                 status, response = dial_server.apply_screen_settings(obj.get('screen'))
                 self._send_json(status, response)
@@ -1087,38 +1079,15 @@ class DialHTTPServer:
                     dial_server.fire_touch_restart()
 
             def _handle_sdcard_health(self) -> None:
-                body = self._read_body()
-                if body is None:
+                obj = self._read_json_object()
+                if obj is None:
                     return
-                try:
-                    obj = json.loads(body)
-                except (ValueError, TypeError):
-                    self._send_json(400, {'ok': False, 'error': 'invalid_json'})
-                    return
-                if not isinstance(obj, dict):
-                    self._send_json(400, {'ok': False, 'error': 'body_must_be_object'})
-                    return
-
-                ip = self.client_address[0]
                 with dial_server._cfg_lock:
                     cfg = dial_server._cfg
 
                 # PIN auth: same rule as POST /screen/settings.
-                if cfg.pin:
-                    blocked, wait_secs = dial_pin_guard.blocked(ip)
-                    if blocked:
-                        self._send_429(wait_secs)
-                        return
-                    current_pin = obj.get('current_pin', '')
-                    if not isinstance(current_pin, str) or current_pin != cfg.pin:
-                        dial_pin_guard.record_failure(ip)
-                        blocked, wait_secs = dial_pin_guard.blocked(ip)
-                        if blocked:
-                            self._send_429(wait_secs)
-                        else:
-                            self._send_json(403, {'ok': False, 'error': 'wrong_pin'})
-                        return
-                    dial_pin_guard.clear(ip)
+                if cfg.pin and not self._pin_ok(obj, cfg):
+                    return
 
                 enabled = obj.get('enabled')
                 if not isinstance(enabled, bool):
