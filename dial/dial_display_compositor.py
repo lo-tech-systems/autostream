@@ -890,10 +890,8 @@ class DialDisplayCompositor:
         failure degrades to a plainer frame, matching every other screen's
         discipline. metrics: see compose().
         """
-        if metrics is None:
-            metrics = metrics_for(width, height)
-        return _compose_frame(
-            None, width, height, _output_frame(state, width, height, metrics),
+        return _compose_screen(
+            None, width, height, lambda w, h, m: _output_frame(state, w, h, m),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -912,10 +910,8 @@ class DialDisplayCompositor:
         frame, matching every other screen's discipline. metrics: see
         compose().
         """
-        if metrics is None:
-            metrics = metrics_for(width, height)
-        return _compose_frame(
-            None, width, height, _eq_frame(state, width, height, metrics),
+        return _compose_screen(
+            None, width, height, lambda w, h, m: _eq_frame(state, w, h, m),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -932,10 +928,9 @@ class DialDisplayCompositor:
         raises: a font or measuring failure degrades to nothing drawn for
         that element, matching every other screen's discipline. metrics:
         see compose()."""
-        if metrics is None:
-            metrics = metrics_for(width, height)
-        return _compose_frame(
-            None, width, height, Frame(BG_CHASSIS, body=Body(BODY_INFO_VALUE, label=view.label, line=view.value)),
+        return _compose_screen(
+            None, width, height,
+            lambda w, h, m: Frame(BG_CHASSIS, body=Body(BODY_INFO_VALUE, label=view.label, line=view.value)),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -982,10 +977,8 @@ class DialDisplayCompositor:
         cell, if any, carries the ordinary press wash and nothing else.
         rotate/bgr last, as always. Never raises: a font failure leaves
         the dividers and card without text. metrics: see compose()."""
-        if metrics is None:
-            metrics = metrics_for(width, height)
-        return _compose_frame(
-            base, width, height, _warning_frame(view, width, height, metrics),
+        return _compose_screen(
+            base, width, height, lambda w, h, m: _warning_frame(view, w, h, m),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
 
@@ -1024,12 +1017,21 @@ class DialDisplayCompositor:
         tier — the shared body of compose_restarting()/compose_starting()
         (see BODY_CENTRED_LABEL and _body_centred_label). rotate/bgr last,
         as always."""
-        if metrics is None:
-            metrics = metrics_for(width, height)
-        return _compose_frame(
-            None, width, height, Frame(BG_CHASSIS, body=Body(BODY_CENTRED_LABEL, line=text)),
+        return _compose_screen(
+            None, width, height, lambda w, h, m: Frame(BG_CHASSIS, body=Body(BODY_CENTRED_LABEL, line=text)),
             rotate=rotate, bgr=bgr, metrics=metrics,
         )
+
+
+def _compose_screen(base, width: int, height: int, build, *, rotate: bool, bgr: bool, metrics):
+    """The shared body of the plain compose*() calls: the metrics default,
+    then the frame build(width, height, metrics) through the one pipeline,
+    with rotate/bgr last."""
+    if metrics is None:
+        metrics = metrics_for(width, height)
+    return _compose_frame(
+        base, width, height, build(width, height, metrics), rotate=rotate, bgr=bgr, metrics=metrics,
+    )
 
 
 def format_mmss(seconds: float) -> str:
@@ -1916,6 +1918,26 @@ _GLYPH_PAINTERS = {
 }
 
 
+def _place_label(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, color, x_for):
+    """Draw *text* vertically centred in *rect*, its left edge at
+    x_for(rect, text_w), no halo and no truncation. Returns that left edge,
+    or None when nothing could be measured (a blank string, a missing font
+    or a Pillow failure): the same degrade-gracefully discipline as
+    _draw_text_with_halo()."""
+    if not text or font is None:
+        return None
+    measured = _text_size(draw, text, font)
+    if measured is None:
+        return None
+    text_w, text_h, bbox = measured
+    left, top, _, _ = bbox
+    cy = (rect[1] + rect[3]) // 2
+    x = x_for(rect, text_w)
+    y = cy - text_h // 2
+    _draw_text_safe(draw, (x - left, y - top), text, font, fill=color)
+    return x
+
+
 def _draw_label(
     draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int], text: str, font, pad: int,
     color=GLYPH_RGB,
@@ -1932,17 +1954,7 @@ def _draw_label(
     if max_w <= 0:
         return
     truncated = _truncate_to_width(draw, text, font, max_w)
-    if not truncated:
-        return
-    measured = _text_size(draw, truncated, font)
-    if measured is None:
-        return
-    text_w, text_h, bbox = measured
-    left, top, _, _ = bbox
-    cy = (rect[1] + rect[3]) // 2
-    x = rect[0] + pad
-    y = cy - text_h // 2
-    _draw_text_safe(draw, (x - left, y - top), truncated, font, fill=color)
+    _place_label(draw, rect, truncated, font, color, lambda r, w: r[0] + pad)
 
 
 def _draw_label_right(
@@ -1950,20 +1962,10 @@ def _draw_label_right(
     color=GLYPH_RGB,
 ) -> None:
     """Draw *text* right-aligned inside *rect*, no halo and no truncation —
-    the right-aligned secondary-text path _body_list_rows() draws inline,
-    factored out here so the EQ page's caption row (label left, dB right)
-    can share it. Same degrade-gracefully discipline as _draw_label()."""
-    if not text or font is None:
-        return
-    measured = _text_size(draw, text, font)
-    if measured is None:
-        return
-    text_w, text_h, bbox = measured
-    left, top, _, _ = bbox
-    cy = (rect[1] + rect[3]) // 2
-    x = rect[2] - pad - text_w
-    y = cy - text_h // 2
-    _draw_text_safe(draw, (x - left, y - top), text, font, fill=color)
+    the right-aligned secondary-text path the EQ page's caption row (label
+    left, dB right) uses. Same degrade-gracefully discipline as
+    _draw_label()."""
+    _place_label(draw, rect, text, font, color, lambda r, w: r[2] - pad - w)
 
 
 def _draw_label_centered(
@@ -1971,18 +1973,12 @@ def _draw_label_centered(
 ) -> None:
     """Draw *text* centred within *rect*, no halo — same degrade-gracefully
     discipline as _draw_label()."""
-    if not text or font is None:
-        return
-    measured = _text_size(draw, text, font)
-    if measured is None:
-        return
-    text_w, text_h, bbox = measured
-    left, top, _, _ = bbox
-    cx = (rect[0] + rect[2]) // 2
-    cy = (rect[1] + rect[3]) // 2
-    x = cx - text_w // 2
-    y = cy - text_h // 2
-    _draw_text_safe(draw, (x - left, y - top), text, font, fill=color)
+    _place_label(draw, rect, text, font, color, lambda r, w: (r[0] + r[2]) // 2 - w // 2)
+
+
+def _tone(on) -> tuple:
+    """The glyph colour for a control that is lit (*on*) or dimmed."""
+    return GLYPH_RGB if on else DIMMED_GLYPH_RGB
 
 
 def _new_frame(base, width: int, height: int, background: str) -> Image.Image:
@@ -2463,7 +2459,7 @@ def _row_text_color(secondary) -> tuple:
     """The text colour of a list row: dimmed when its secondary text is the
     selector's "not authorised" or "needs an update" label, the plain glyph
     colour otherwise."""
-    return DIMMED_GLYPH_RGB if secondary in (NOT_AUTHORISED_TEXT, NEEDS_UPDATE_TEXT) else GLYPH_RGB
+    return _tone(secondary not in (NOT_AUTHORISED_TEXT, NEEDS_UPDATE_TEXT))
 
 
 def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
@@ -2496,14 +2492,10 @@ def _body_list_rows(img: Image.Image, metrics: LayoutMetrics, body: Body) -> Non
             right_edge -= box
 
         if isinstance(secondary, str) and secondary and row_font is not None:
-            measured_sec = _text_size(draw, secondary, row_font)
-            if measured_sec is not None:
-                sec_w, sec_h, sec_bbox = measured_sec
-                sec_left, sec_top, _, _ = sec_bbox
-                sec_x = right_edge - sec_w
-                _draw_text_safe(
-                    draw, (sec_x - sec_left, cy - sec_h // 2 - sec_top), secondary, row_font, fill=row_color,
-                )
+            sec_x = _place_label(
+                draw, (x0, y0, x1, y1), secondary, row_font, row_color, lambda r, w, edge=right_edge: edge - w,
+            )
+            if sec_x is not None:
                 right_edge = sec_x - pad
 
         # A trailing mark keeps its own room: the label is cut to leave it,
@@ -2615,7 +2607,7 @@ def _body_compact_controls(img: Image.Image, metrics: LayoutMetrics, body: Body)
     runs), minus and plus."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
     ss = metrics.supersample
-    dots_color = GLYPH_RGB if body.dots_lit else DIMMED_GLYPH_RGB
+    dots_color = _tone(body.dots_lit)
     _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 0, dots_color, supersample=ss)
     if body.bell is not None:
         _draw_bell(img, dots_bell_rect(c.tl), body.bell, metrics, _DOTS_BELL_FRACTION)
@@ -2709,8 +2701,8 @@ def _body_compact_replay(img: Image.Image, metrics: LayoutMetrics, body: Body) -
     font = _load_font(metrics.font_readout)
     position = body.line.split(" / ", 1)[0] if body.line else body.line
     _draw_text_with_halo(img, c.tr, position, font, metrics, align="center")
-    start_color = GLYPH_RGB if body.start_enabled else DIMMED_GLYPH_RGB
-    stop_color = GLYPH_RGB if body.stop_enabled else DIMMED_GLYPH_RGB
+    start_color = _tone(body.start_enabled)
+    stop_color = _tone(body.stop_enabled)
     _draw_glyph(img, _compact_glyph_box(c.bl), GLYPH_RESTART, start_color, supersample=ss)
     _draw_glyph(img, _compact_glyph_box(c.br), GLYPH_STOP, stop_color, supersample=ss)
     _draw_compact_dividers(img, c, metrics, vertical="full")
@@ -2775,8 +2767,8 @@ def _draw_eq_bar(img: Image.Image, bar, label: str, value: "int | None", metrics
 
     at_min = value is not None and value <= -EQ_BASS_TREBLE_LIMIT_DB
     at_max = value is not None and value >= EQ_BASS_TREBLE_LIMIT_DB
-    minus_color = DIMMED_GLYPH_RGB if (value is None or at_min) else GLYPH_RGB
-    plus_color = DIMMED_GLYPH_RGB if (value is None or at_max) else GLYPH_RGB
+    minus_color = _tone(value is not None and not at_min)
+    plus_color = _tone(value is not None and not at_max)
     _draw_minus_glyph(draw, bar.down, color=minus_color)
     _draw_plus_glyph(draw, bar.up, color=plus_color)
 
@@ -2974,8 +2966,8 @@ def _footer_volume(img: Image.Image, layout, metrics: LayoutMetrics, footer: Foo
     its own side is disabled (Footer.left_enabled/right_enabled) — the
     detail page's own steppers when the output is not selected, matching
     the shade the disabled Restart/Stop labels already use elsewhere."""
-    left_color = GLYPH_RGB if footer.left_enabled else DIMMED_GLYPH_RGB
-    right_color = GLYPH_RGB if footer.right_enabled else DIMMED_GLYPH_RGB
+    left_color = _tone(footer.left_enabled)
+    right_color = _tone(footer.right_enabled)
     _draw_bottom_band(
         img, layout, metrics,
         left_rect=layout.down, right_rect=layout.up,
@@ -3002,8 +2994,8 @@ def _footer_volume_mute(img: Image.Image, layout, metrics: LayoutMetrics, footer
 
 def _footer_labels(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     font = _load_font(metrics.font_readout)
-    left_color = GLYPH_RGB if footer.left_enabled else DIMMED_GLYPH_RGB
-    right_color = GLYPH_RGB if footer.right_enabled else DIMMED_GLYPH_RGB
+    left_color = _tone(footer.left_enabled)
+    right_color = _tone(footer.right_enabled)
     _draw_bottom_band(
         img, layout, metrics,
         left_rect=layout.down, right_rect=layout.up,
