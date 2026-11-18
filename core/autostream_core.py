@@ -330,6 +330,17 @@ def _set_owntone_selfheal_state(**fields) -> None:
     _health_writer.update(lambda cur: replace(cur, **fields)).notify()
 
 
+_settings_writer = autostream_state.store().claim("settings", "autostream_core")
+
+
+def _publish_settings_generation(generation: int) -> None:
+    """Commit hook for the settings store: record the newest generation,
+    never letting a late hook move it backwards."""
+    _settings_writer.update(
+        lambda cur: autostream_state.SettingsPart(max(cur.generation, generation))
+    ).notify()
+
+
 def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
     return {
         1: PlaybackInputConfig.normalized(
@@ -4264,6 +4275,7 @@ def _bootstrap(config_path: str, start_webui, settings) -> _BootstrapResult:
     own_settings = settings is None
     if settings is None:
         settings = _SettingsStore(config_path)
+    settings.add_commit_hook(_publish_settings_generation)
 
     _install_signal_handlers()
     cfg = settings.snapshot()

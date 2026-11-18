@@ -123,6 +123,8 @@ class SettingsStore:
         # Monotonically increasing; used to detect mutations that arrive while
         # a save is in progress so that dirty state is not prematurely cleared.
         self._generation: int = 0
+        # Called with the new generation after each commit, outside _lock.
+        self._commit_hooks: list[Callable[[int], None]] = []
         # Serialises all disk writes (save_now threads and _run_save_cycle).
         # Ensures a timed-out save_now thread that eventually completes cannot
         # write stale data after a newer save cycle has already written.
@@ -177,6 +179,22 @@ class SettingsStore:
 
     # ── Write ────────────────────────────────────────────────────────────────
 
+    def add_commit_hook(self, fn: Callable[[int], None]) -> None:
+        """Register *fn*, called with the new generation after each commit.
+
+        The hook runs on the committing thread after the store's lock is
+        released, so it may take other locks.  An exception from a hook is
+        logged at DEBUG and swallowed; it never fails the commit.
+        """
+        self._commit_hooks.append(fn)
+
+    def _run_commit_hooks(self, generation: int) -> None:
+        for hook in list(self._commit_hooks):
+            try:
+                hook(generation)
+            except Exception:
+                logging.debug("Settings: commit hook failed", exc_info=True)
+
     def update(self, mutator: Callable[[dict], None]) -> AutostreamConfig:
         """Apply *mutator* to a copy of the raw config, commit, and return a snapshot.
 
@@ -195,6 +213,8 @@ class SettingsStore:
             self._raw = raw_copy
             self._generation += 1
             self._dirty = True
+            generation = self._generation
+        self._run_commit_hooks(generation)
         return self.snapshot()
 
     def set(self, path: str, value: object, *, state: object = None) -> "SetOutcome":
@@ -366,6 +386,8 @@ class SettingsStore:
             self._raw = raw
             self._dirty = False
             self._generation += 1
+            generation = self._generation
+        self._run_commit_hooks(generation)
 
     def close(self, *, save: bool = True) -> None:
         """Stop the background save thread and optionally make a final save.

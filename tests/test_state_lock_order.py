@@ -206,3 +206,25 @@ def test_a_monitors_identification_lock_is_released_before_subscribers_run(track
     assert seen and all(held == frozenset() and not locked for held, locked in seen)
     assert lockcheck.ACQUIRED_UNDER_STORE == []
     assert tracked_singleton.lock_violations == []
+
+
+def test_the_settings_lock_is_released_before_the_generation_reaches_subscribers(tracked_singleton, tmp_path):
+    import json
+
+    import autostream_core as core
+    from autostream_settings import SettingsStore
+
+    p = tmp_path / "cfg.json"
+    p.write_text(json.dumps({}))
+    s = SettingsStore(str(p), _save_interval_seconds=60.0, _writer=lambda path, data: None)
+    try:
+        s._lock = lockcheck.TrackedLock("settings")
+        s.add_commit_hook(core._publish_settings_generation)
+        seen = []
+        tracked_singleton.subscribe(lambda change: seen.append((lockcheck.held(), s._lock.locked())))
+        s.update(lambda raw: raw.update(x=1))
+        assert seen and all(held == frozenset() and not locked for held, locked in seen)
+        assert lockcheck.ACQUIRED_UNDER_STORE == []
+        assert tracked_singleton.lock_violations == []
+    finally:
+        s.close(save=False)
