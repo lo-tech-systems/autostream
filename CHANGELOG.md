@@ -1,5 +1,157 @@
 # Changelog
 
+## Unreleased
+
+This release changes how the Home page, the dials and other appliances stay in
+step with an appliance: they now follow one stream of changes from it, so what
+you change in one place shows in the others at once. Update every appliance and
+every dial to 0.8 together. A 0.7 dial or appliance is not supported alongside
+0.8, and one left behind is reported as needing an update.
+
+### Home page and web pages
+
+- new: the Home and Equaliser pages follow the appliance's own stream of
+  changes instead of polling. Speakers, volume, mute, repeat, the track and
+  warnings update as they change, with no reload. If the stream is refused or
+  lost, a page falls back to polling and tries the stream again.
+- new: another appliance's Home and Equaliser pages (opened from the appliance
+  selector) are now the same pages as this appliance's own, drawn from that
+  appliance's state. An appliance that needs an update or is not yet set up is
+  listed in the selector without a link.
+- new: a speaker that is wanted but not yet playing reads "Name (Connecting)" on
+  the Home speaker card, and an Auto-Start speaker the player cannot see reads
+  "Name (offline)". Both switches are dimmed, and a connecting speaker can still
+  be switched off.
+- new: a speaker that fails to start is reported as a failed start, not as a
+  request for a PIN, and a wrong PIN has its own message.
+- new: warnings come from one list and appear on every page and dial. The
+  message is a short instruction ("Change now", "Service soon", "Replace soon",
+  "Too hot", "Low voltage seen") and a detail line gives the reason: hours
+  played or left, the date an item was last changed, the temperature, the sample
+  rate, or the microSD percentage and the day it was read. A warning card that
+  links elsewhere shows a chevron, darkens while pressed and shows a focus ring
+  from the keyboard. The Service tab takes the colour of the most serious
+  warning that links to it.
+- new: a warning for a CPU running hot, at two levels, linking to the About
+  page's System panel. It warns at 70 degrees C and is critical at 80 (a Pi 3
+  Model B+ warns at 60). A level clears 5 degrees below where it was raised.
+  This replaces the firmware throttling flags as the temperature warning.
+- changed: the microSD wear warning has one rule and one wording on appliances
+  and dials. Low is below 20 percent life left (cleared above 25) and failing,
+  which is critical, is below 10 percent (cleared above 15). It links to the
+  System panel. A dial now warns at both levels, in the appliance's wording.
+- changed: the Playback card on Setup lists the Auto-Start speakers, each with
+  its level and a Remove button, in place of a single speaker drop-down. The
+  last one cannot be removed. The start volume slider now applies to speakers
+  outside the set.
+- changed: the one-off green message after saving a form is gone, and the
+  sign-in page shows "Incorrect PIN" inside its card.
+
+### Speakers
+
+- new: Auto-Start is now a set of speakers. Choose the speakers on Home, or on
+  the HD dial page, and save them with the Auto-Start pin in the master volume
+  card; each starts at the level it was saved with. First boot still chooses
+  one. A member that is missing or refuses is retried after 10, 20 and 30
+  seconds and then every 30 seconds for the rest of the session.
+- new: a Pause setting on the Personalisation card, "When Pause is pressed on a
+  speaker", for Pause and Play sent by a HomePod or an Apple TV remote. The
+  choices are Keep playing, Mute that speaker, Mute all playing speakers and
+  Turn off all speakers. The shipped choice is Keep playing, so nothing changes
+  unless you choose otherwise. A Play undoes only what its own Pause muted, and
+  speakers a Pause muted are turned off if it lasts longer than five minutes. A
+  stereo pair, or an Apple TV with its HomePods, counts as one speaker. The
+  setting needs owntone-mini 1.6 and is greyed out with the reason when the
+  player cannot report these events.
+- new: HomePods behind an Apple TV can play without it. The OwnTone page has
+  "Play on the Apple TV as well as its HomePods" for each Apple TV that has
+  HomePods. With it off they play as a stereo pair and the Apple TV shows
+  nothing. Changing it while they play restarts them. It is on by default.
+- new: a switch on the Personalisation card, "Volume changes made at any speaker
+  apply to all playing speakers". It covers a speaker's own buttons, knob or app
+  and an Apple TV remote. The others move in proportion so they all reach silent
+  together, and muted speakers stay muted. It needs owntone-mini 1.6 and the
+  player's event channel. It is off by default.
+
+### Dials
+
+- new: dials follow the appliance's stream like the web pages do. Speakers,
+  volume, mute, repeat, the track and warnings show at once instead of on the
+  next poll, and every change a dial makes goes through the same route as the
+  web pages.
+- new: warnings show as a bell on the dial. On the small screen it sits in the
+  top band, in the compact view's corner and on resting artwork, with the count
+  in it, and a tap opens a card that pages through the warnings, with Close on
+  the left and Next on the right. On the small screen the card fills the panel. Close only puts the card away; the bell still counts the warning.
+  Warnings no longer open by themselves, and there is no snooze.
+- new: a warning card names who it is about in a blue band with a bell and a
+  severity rule (amber, red or blue), shows the detail line where it fits, and
+  on the HD page starts with the level, for example "Warning: Turntable stylus".
+  The dial's own warnings carry the dial's name, or "This Dial".
+- new: a dial and an appliance on different software versions say so instead
+  of half working. The appliance is listed as needing an update and cannot be
+  chosen until both match; the dial warns "Update <appliance>" when the
+  appliance is older, and "Update this dial" when the dial is.
+- new: the HD page has volume minus and plus buttons and the Auto-Start pin, and
+  shows Connecting and offline on its speaker rows.
+- new: a dial's settings in the Dials panel stay unlocked until you leave the
+  panel, instead of locking as soon as focus moves. They lock again when the
+  panel is closed with Back or the page is hidden, and the padlock still locks
+  one by hand.
+- fixed: a small dial with an FT6206 or FT6236 capacitive touch panel could
+  not open it. The driver now uses Adafruit's FocalTech library, which the dial
+  update installs.
+- changed: the HD artwork frame matches the logo's background, so the idle logo
+  no longer shows as a lighter box.
+
+### System
+
+- new: the audio monitor counts every way it can lose or queue audio on its way
+  to the player, logs one summary line when an output stream ends (a warning
+  only if something was lost) and publishes its output health in the
+  appliance's state for diagnostics. Nothing new appears on the pages.
+- fixed: a stale FIFO defect. A stream that ended while the player was not
+  reading could keep a stall open through the idle period, restart the player at
+  the start of the next session and play old audio first. The FIFO is now ended
+  once the output has gone idle.
+- changed: the monitor's repeating log lines (a missing or broken FIFO,
+  resampler errors, the input watchdog's restarts, rate detection) are written
+  at most once per window, with a count of those held back. An input that dies
+  straight after a restart is retried after a short wait rather than ten times
+  a second.
+- changed: faster boot. The monitor no longer waits for every device to
+  settle, and Wi-Fi profiles are written only when a setting differs, which
+  avoids several seconds of network configuration on small boards at each boot
+  and reconnect.
+- changed: the appliance no longer announces a "playing" record on the network.
+  A flag file marks a session in use, so an automatic update still waits for
+  playback to end, and an update removes the old record.
+- changed: the appliance and dial protocol number is 4, advertised in each
+  one's network record. Everything must be on 0.8.
+- changed: an update removes files a previous release left behind.
+- changed: [gap: owntone-mini 1.6.0 pin: appliances rebuild owntone-mini
+  during the update, which takes a long time on a Pi Zero 2 W]
+- changed: the web server, the core and the dial are split into smaller modules,
+  with one state store and one path for every request to change state. Nothing
+  else about it is visible.
+
+### API and integrations
+
+- removed: `GET /api/status`, `/api/owntone/outputs`,
+  `/api/owntone/outputs_state`, `/api/inputs/levels` and
+  `/api/output_eq/status`, and the POST routes `/api/output`, `/api/repeat`,
+  `/api/output_eq/config`, `/api/output_eq/reset`, `/api/input_eq` and
+  `/api/input_gain`, and the old form posts to `/setup` and `/owntone-setup`.
+  Read `GET /api/v1/state` and the change stream `GET /api/v1/events`, and make
+  changes with `POST /api/v1/intents/<name>`. These routes are marked unstable.
+- removed: the dial routes an appliance served, the gateway and federation
+  routes, `/api/audio/status`, the output usage poller and its interval
+  setting, the bearer route scheme, and the federation and `ui` keys in the
+  network record. The stylus, belt and bearing banner texts and the
+  dial-update banner are gone; wording comes from the warnings list.
+- changed: a change event carries `{boot, version, resync, data}`, and the
+  names list is gone.
+
 ## Version 0.7.0 - 2026-10-19
 
 This is the first release of the autostream dial; earlier versions were
