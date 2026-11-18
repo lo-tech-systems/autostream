@@ -23,7 +23,7 @@ const dismissed = new Set();   // speakers whose PIN prompt was cancelled
 const handled = {};            // speaker id -> when its own switch showed the CPU-limit notice
 const names = {};              // speaker id -> name, as last drawn
 
-const hold = (key, value, version) => { ctx.pending.mark(key, value, version); setTimeout(ctx.redraw, 2100); };
+const hold = (key, value, version) => { if (value === undefined) return; ctx.pending.mark(key, value, version); setTimeout(ctx.redraw, 2100); };
 const label = (id, v) => { const s = $('vol_label_' + id); if (s) s.textContent = clamp(v) + '%'; };
 
 // The PIN dialog: resolves with the digits, or null on Cancel. With wait > 0 it
@@ -116,7 +116,7 @@ async function send(id, selected, volume) {
       const t = REFUSAL.encoder_capacity(name);
       window.showInfoModal(t.title, t.text).then(ctx.redraw);
     } else if (selected && res.pin_required) {
-      if (!(await pinFlow(id, name, volume || prefs.preset_volume))) dismissed.add(id);
+      if (!(await pinFlow(id, name, volume || (ctx.own ? prefs.preset_volume : undefined)))) dismissed.add(id);
     }
   } catch (e) {
     pending.drop('sel:' + id);
@@ -143,8 +143,10 @@ function build(id) {
   const cb = Object.assign(document.createElement('input'), { type: 'checkbox', id: 'output_enabled_' + id });
   cb.addEventListener('change', () => {
     const sl = $('vol_slider_' + id);
-    if (cb.checked && sl) sl.value = String(ctx.prefs.preset_volume);
-    send(id, cb.checked, cb.checked ? ctx.prefs.preset_volume : clamp(sl && sl.value));
+    // Another appliance starts a speaker at its own level: no volume is sent.
+    const start = ctx.own ? ctx.prefs.preset_volume : undefined;
+    if (cb.checked && sl && ctx.own) sl.value = String(start);
+    send(id, cb.checked, cb.checked ? start : clamp(sl && sl.value));
   });
   const sw = mk('span', 'switch');
   sw.setAttribute('aria-hidden', 'true');
@@ -175,6 +177,7 @@ function paint(card, r) {
   card.setAttribute('data-auto-start', r.autoStart ? '1' : '0');
   card.setAttribute('data-remote-in-use', r.inUseBy ? '1' : '0');
   card.setAttribute('data-remote-owner', r.inUseBy);
+  card.setAttribute('data-remote-owner-id', r.inUseId);
   const nm = card.querySelector('.output-card-name');
   nm.firstChild.data = r.name;
   const lab = $('output_label_' + id);
@@ -286,11 +289,8 @@ export function initSpeakers(context) {
   }
   $('outputs-list').addEventListener('click', (e) => {
     const card = e.target.closest('.output-card[data-remote-in-use="1"]');
-    const owner = card && card.getAttribute('data-remote-owner');
+    const owner = card && card.getAttribute('data-remote-owner-id');
     if (!ctx.prefs.control_other_appliances || !owner || e.target.closest('.output-toggle, .output-slider-wrap')) return;
-    fetch('/api/appliances', { cache: 'no-store' }).then((r) => r.json()).then((d) => {
-      const a = d && d.ok && d.appliances.find((x) => String(x.hostname || '').toLowerCase() === owner.toLowerCase());
-      if (a) window.location.href = '/a/' + a.id + '/';
-    }).catch(() => {});
+    window.location.href = '/a/' + owner + '/';
   });
 }

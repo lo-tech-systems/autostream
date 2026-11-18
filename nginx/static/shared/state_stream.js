@@ -1,7 +1,7 @@
 // StateStream -- holds the appliance's state and keeps it current from the
 // change stream at base + '/events', resumed across reconnects.
 //
-//   const s = new StateStream({ base: '/api/v1', initial, onChange, onAccess, onUp, onDown });
+//   const s = new StateStream({ base: '/api/v1', initial, onChange, onAccess, onUp, onDown, onRefused });
 //   s.view  // { boot, version, time, parts, partVersions }
 //   onChange(view, names, resync): names are the parts that changed (null when
 //   the copy was replaced whole); resync is true when it was replaced because
@@ -14,11 +14,13 @@
 // - While the stream is down the state is fetched every 2 s. A new boot
 //   replaces the copy whole and is never compared by version.
 // - isUp() stays true while the page is hidden if the stream was up.
+// - onRefused(status, error) is called when a state fetch is answered with
+//   anything but a state (status 0 for a network failure).
 const call = (fn, ...args) => { if (typeof fn === 'function') { try { fn(...args); } catch (e) { /* a handler's fault is its own */ } } };
 
 export class StateStream {
-  constructor({ base, initial, onChange, onAccess, onUp, onDown, graceMs = 5000, retryMs = 30000 }) {
-    Object.assign(this, { base, onChange, onAccess, onUp, onDown, graceMs, retryMs });
+  constructor({ base, initial, onChange, onAccess, onUp, onDown, onRefused, graceMs = 5000, retryMs = 30000 }) {
+    Object.assign(this, { base, onChange, onAccess, onUp, onDown, onRefused, graceMs, retryMs });
     this._view = { boot: '', version: 0, time: 0, parts: {}, partVersions: {} };
     if (initial) this._adopt(initial);
     this._es = null; this._up = false; this._gone = false; this._seq = 0;
@@ -62,9 +64,16 @@ export class StateStream {
   }
 
   async _fetchState(query = '') {
-    const r = await fetch(this.base + '/state' + query, { cache: 'no-store', credentials: 'same-origin' });
-    if (!r.ok) throw new Error('state ' + r.status);
-    return r.json();
+    let r;
+    try { r = await fetch(this.base + '/state' + query, { cache: 'no-store', credentials: 'same-origin' }); } catch (e) { call(this.onRefused, 0, 'unreachable'); throw e; }
+    let b = null;
+    let readable = true;
+    try { b = await r.json(); } catch (e) { readable = false; }
+    // A 404 or 503 behind the proxy arrives as a 200 that names its status.
+    const status = r.ok ? (b && b.ok === false && b.error_status) || 200 : r.status;
+    if (status !== 200) { call(this.onRefused, status, b && b.error); throw new Error('state ' + status); }
+    if (!readable) throw new Error('state body');
+    return b;
   }
 
   async _resync() {

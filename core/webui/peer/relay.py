@@ -12,6 +12,7 @@ passed on as they come, so a browser can resume against the peer's versions.
 
 Contents:
   - PeerSource      -- a followed appliance as a stream source
+  - state_body      -- a followed appliance's state, as the state route shows it
   - serve_peer_get  -- GET /api/v1/peers/<id>/state and /events
   - serve_peer_intent -- POST /api/v1/peers/<id>/intents/<name>
 """
@@ -181,7 +182,7 @@ def _requested_parts(path: str) -> Optional[list]:
     return names
 
 
-def _state_body(snap) -> dict:
+def state_body(snap) -> dict:
     return {"boot": snap.boot, "version": snap.version, "protocol": snap.protocol or PROTOCOL,
             "clients": None, "time": time.time(),
             "part_versions": dict(snap.part_versions), "parts": dict(snap.parts)}
@@ -200,7 +201,7 @@ def serve_peer_state(handler, state, peer_id: str) -> None:
         return
     snap = client.snapshot()
     if names is None and snap.boot is not None:
-        common.send_json(handler, 200, _state_body(snap))
+        common.send_json(handler, 200, state_body(snap))
         return
     reply = client.fetch(list(PART_NAMES) if names is None else names)
     if reply is None:

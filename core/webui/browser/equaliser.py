@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import html
 import math
+from types import SimpleNamespace
 
 from autostream_appliances import get_all_appliances
 from autostream_state.live import get_live_monitor_output_rate
@@ -28,12 +29,14 @@ from autostream_sysutils import get_system_hostname
 from webui import static
 from webui.protocol.state import state_for_page
 from webui.common import (
+    appliance_selector_entries,
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
 )
 from webui.session_state import WebUIState
 from webui import common
+from webui.peer import relay
 
 
 def _build_eq_appliances_for_selector() -> list:
@@ -283,9 +286,24 @@ def _eq_cards_html(output_eq, selector_html: str = "") -> str:
 # Page renderer
 # -----------------------------------------------------------------------------
 
-def send_equaliser_page(handler, state: WebUIState) -> None:
-    """Render and send the /equaliser page."""
-    lic_html, lic_spacer = build_top_banner_html()
+def _eq_from_part(part) -> SimpleNamespace:
+    """The sliders' values from an eq part as the state shows it."""
+    bands = list(part.get("output_bands") or [])
+    values = {b["key"]: float(bands[i]) if i < len(bands) else 0.0
+              for i, b in enumerate(OUTPUT_PEQ_BANDS)}
+    return SimpleNamespace(gain_db=float(part.get("output_gain_db") or 0.0),
+                           auto_trim_enabled=bool(part.get("auto_trim_enabled")), **values)
+
+
+def send_equaliser_page(handler, state: WebUIState, peer=None) -> None:
+    """Render and send the /equaliser page. With *peer* (an appliance.resolve
+    result for another appliance) the page is that appliance's: its sliders,
+    its state, and the relay's routes as its base."""
+    snap = peer.client.snapshot() if peer is not None else None
+    if snap is None:
+        lic_html, lic_spacer = build_top_banner_html()
+    else:
+        lic_html, lic_spacer = build_top_banner_html(entries=(snap.parts.get("warnings") or {}).get("entries") or [])
 
     parsed = None
     try:
@@ -296,20 +314,23 @@ def send_equaliser_page(handler, state: WebUIState) -> None:
     csrf_token = getattr(handler, "_csrf_token", None) or ""
     dark_mode = parsed.webui.dark_mode if parsed is not None else False
 
-    _local_appliances = _build_eq_appliances_for_selector()
+    _selector = appliance_selector_entries(str(rpi.get_appliance_id() or ""), get_system_hostname())
     _local_id = str(rpi.get_appliance_id() or "")
 
     if parsed is not None:
         _show_hostname = parsed.webui.show_hostname_on_home
         _effective_control = _show_hostname and parsed.webui.control_other_appliances
-        if _show_hostname:
-            _selector_html = build_appliance_selector_html(
-                _local_appliances, _local_id, "equaliser",
-                display_only=not _effective_control,
-            )
+        if peer is not None:
+            _selector_html = build_appliance_selector_html(_selector, peer.sighting.id, "equaliser")
+            eq_values = _eq_from_part(snap.parts.get("eq") or {})
         else:
-            _selector_html = ""
-        card_html = _eq_cards_html(parsed.output_eq, selector_html=_selector_html)
+            eq_values = parsed.output_eq
+            if _show_hostname:
+                _selector_html = build_appliance_selector_html(
+                    _selector, _local_id, "equaliser", display_only=not _effective_control)
+            else:
+                _selector_html = ""
+        card_html = _eq_cards_html(eq_values, selector_html=_selector_html)
     else:
         card_html = (
             "<p style='color:var(--color-text-secondary);'>"
@@ -319,7 +340,10 @@ def send_equaliser_page(handler, state: WebUIState) -> None:
     _head_extra = static.page_data_island({
         "local_id": _local_id,
         "selector_current_page": "equaliser",
-        "state": state_for_page(),
+        "state": state_for_page() if peer is None else relay.state_body(snap),
+        "base": "/api/v1" if peer is None else f"/api/v1/peers/{peer.sighting.id}",
+        "own": peer is None,
+        "selector": _selector,
         "eq_bands": _eq_bands_data(),
         "eq_fs": _curve_fs(),
         "curve": _curve_data(),
@@ -333,15 +357,16 @@ def send_equaliser_page(handler, state: WebUIState) -> None:
     )
 
     page = build_page_html(
-        "Equaliser",
+        "Equaliser" if peer is None else "Equaliser — " + peer.sighting.hostname,
         body_html,
         style_files=("page/appliance_selector.css",),
         head_extra=_head_extra,
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="equaliser",
-        service_severity=common.service_severity(),
+        service_severity=common.service_severity() if peer is None else None,
         dark_mode=dark_mode,
+        remote_id="" if peer is None else peer.sighting.id,
     )
     common.send_html(handler, 200, page)
 

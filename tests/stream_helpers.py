@@ -134,10 +134,10 @@ class Client:
 
 
 class RealServer:
-    """A ConfigWebHandler server on a free loopback port, with a stream hub
-    over its own store installed."""
+    """A ConfigWebHandler server on a free loopback port (or *handler*, a
+    subclass of it), with a stream hub over its own store installed."""
 
-    def __init__(self, monkeypatch, *, pin=None) -> None:
+    def __init__(self, monkeypatch, *, pin=None, handler=None) -> None:
         import autostream_commissioning as commissioning
         from autostream_auth import AuthManager
         from autostream_state.store import StateStore
@@ -162,7 +162,7 @@ class RealServer:
         monkeypatch.setattr(commissioning, "is_commissioning_required",
                             lambda *a, **k: self.commissioning_required)
         monkeypatch.setattr(commissioning, "required_first_boot_step", lambda *a, **k: "owntone")
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), ConfigWebHandler)
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler or ConfigWebHandler)
         self.httpd.daemon_threads = True
         self.port = self.httpd.server_address[1]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)

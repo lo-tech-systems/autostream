@@ -53,9 +53,18 @@ class TestTopBanner:
         banner, _ = _banner(_entry("critical", "<b>x</b>", "a & b"))
         assert html.escape("<b>x</b>: a & b") in banner
 
-    def test_the_builder_takes_no_message_to_show_instead(self):
+    def test_the_builder_takes_only_another_appliances_entries(self):
         import inspect
-        assert not inspect.signature(common.build_top_banner_html).parameters
+        assert list(inspect.signature(common.build_top_banner_html).parameters) == ["entries"]
+
+    def test_entries_given_as_the_state_shows_them_are_read_instead_of_this_appliances(self):
+        entries = [{"severity": "critical", "title": "Other", "message": "broken"},
+                   {"severity": "warning", "title": "Minor", "message": "m"},
+                   {"severity": "critical", "title": "Worse", "message": "w"}]
+        banner, spacer = common.build_top_banner_html(entries=entries)
+        assert banner == "<div id='red-banner'>Other: broken +1 more</div>"
+        assert spacer == "<div id='red-banner-spacer'></div>"
+        assert common.build_top_banner_html(entries=[]) == ("", "")
 
 
 class TestEveryPageCarriesTheBanner:

@@ -90,6 +90,7 @@ export function speakerRows(p, opts = {}) {
       chip: by ? 'in-use' : on ? 'on' : 'off',
       autoStart: !!u.auto_start,
       inUseBy: by,
+      inUseId: by ? u.in_use_id || '' : '',
       connecting: !by && !!u.connecting,
       offline: !by && !u.connecting && !!u.offline,
       disabled: !!by || (!!u.offline && !inSession),

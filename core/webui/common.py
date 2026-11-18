@@ -291,14 +291,21 @@ def send_hostname_changed_page(
 # Top-of-page banner HTML
 # -----------------------------------------------------------------------------
 
-def build_top_banner_html() -> tuple[str, str]:
-    """Returns (banner_html, spacer_html): the critical entries of the warnings
+def _field(entry, name):
+    return entry.get(name) if isinstance(entry, dict) else getattr(entry, name, None)
+
+
+def build_top_banner_html(entries=None) -> tuple[str, str]:
+    """Returns (banner_html, spacer_html): the critical entries of a warnings
     part, most severe first, or two empty strings when there are none. With
-    several, the first and a count of the rest."""
-    critical = [e for e in store().snapshot().warnings.entries if e.severity == "critical"]
+    several, the first and a count of the rest. *entries* are another
+    appliance's, as its state shows them; without them, this appliance's."""
+    if entries is None:
+        entries = store().snapshot().warnings.entries
+    critical = [e for e in entries if _field(e, "severity") == "critical"]
     if not critical:
         return ("", "")
-    text = f"{critical[0].title}: {critical[0].message}"
+    text = f"{_field(critical[0], 'title')}: {_field(critical[0], 'message')}"
     if len(critical) > 1:
         text += f" +{len(critical) - 1} more"
     return banner_html("red-banner", html.escape(text))
@@ -427,6 +434,25 @@ def build_nav_bar_html(
     return '<nav class="bottom-nav">' + "".join(items) + "</nav>"
 
 
+def appliance_selector_entries(local_id: str, hostname: str) -> list:
+    """The selector's list, this appliance first, then each appliance it may
+    control as the peers part lists them. An appliance that cannot be used yet
+    carries a ``note`` saying why."""
+    own = str(hostname or "").strip()
+    if own.lower().endswith(".local"):
+        own = own[:-6]
+    result = [{"id": local_id, "hostname": own.strip() or "autostream", "is_bound": True,
+               "home_path": "/", "equaliser_path": "/equaliser"}]
+    for e in store().snapshot().peers.entries:
+        if not e.control or e.id == local_id:
+            continue
+        note = "needs an update" if not e.protocol_ok else "not set up" if e.configured is False else ""
+        result.append({"id": e.id, "hostname": e.hostname or "autostream", "is_bound": False,
+                       "home_path": f"/a/{e.id}/", "equaliser_path": f"/a/{e.id}/equaliser",
+                       "note": note})
+    return result
+
+
 def build_appliance_selector_html(
     appliances: list,
     current_id: str,
@@ -491,6 +517,15 @@ def build_appliance_selector_html(
                 '<div class="appliance-selector-divider" role="separator" aria-hidden="true"></div>'
             )
             divider_inserted = True
+
+        note = str(a.get("note") or "")
+        if note:                # listed, but not somewhere to go
+            items.append(
+                '<span role="option" aria-disabled="true"'
+                ' class="appliance-selector-option appliance-selector-option-note">'
+                f'{html.escape(hostname)} ({html.escape(note)})</span>'
+            )
+            continue
 
         if current_page == "equaliser":
             href = str(a.get("equaliser_path") or f"/a/{aid}/equaliser")

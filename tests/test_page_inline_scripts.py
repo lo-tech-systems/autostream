@@ -88,7 +88,7 @@ FIRST_FILES = {
 }
 
 # Island keys each extracted page may carry, and the route that serves it.
-_HOME_KEYS = {"state", "csrf", "prefs", "icons", "local_id"}
+_HOME_KEYS = {"state", "csrf", "prefs", "icons", "local_id", "base", "own", "selector"}
 _REMOTE_HOME_KEYS = {
     "preset_volume", "show_input_detail", "vu_delay_ms", "icons", "local_id",
     "selector_current_id", "output_url", "repeat_url", "outputs_empty_tolerance_ms",
@@ -98,7 +98,7 @@ _EQ_KEYS = {"local_id", "selector_current_page", "eq_bands", "eq_fs", "curve"}
 ISLAND_KEYS = {
     "home": _HOME_KEYS,
     "remote_home": _REMOTE_HOME_KEYS | {"remote_aid", "remote_hostname", "poll_url"},
-    "equaliser": _EQ_KEYS | {"state"},
+    "equaliser": _EQ_KEYS | {"state", "base", "own", "selector"},
     "remote_equaliser": _EQ_KEYS | {"poll_url", "save_url", "reset_url", "status_url", "remote_aid", "remote_hostname"},
     "about": {"license_text"},
     "align": set(),

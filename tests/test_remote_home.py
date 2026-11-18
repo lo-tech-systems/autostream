@@ -1,317 +1,210 @@
-"""test_remote_home.py — tests for the remote Home route and page (/a/<id>/).
+"""tests/test_remote_home.py
 
-Covers:
-  - Route dispatch: valid remote ID → send_remote_home_page
-  - Canonical redirect: bound appliance ID → 302 to /
-  - Format guard: invalid ID → 404
-  - Auth: accessible without PIN session
-  - Page content: appliance ID bootstrap, poll URL, output URL, selector widget
+The remote Home (/a/<id>/) through a real server whose relay follows a fake
+appliance: what each thing the id can name does, and what the page it gets
+holds. The page is the Home shell with the relay's routes as its base.
 """
 from __future__ import annotations
 
-import io
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from types import SimpleNamespace
 
 import pytest
-from _source_text import page_with_static
-from _source_text import page_scripts, static_text
 
-REPO_ROOT = Path(__file__).parent.parent
-_CORE = str(REPO_ROOT / "core")
+_CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-try:
-    from webui.server import ConfigWebHandler
-    import webui.server as _webui
-    _HAS_WEBUI = True
-except ImportError:
-    _HAS_WEBUI = False
+import autostream_logging as log_setup
+import autostream_state as state
+from _source_text import linked_static, page_data
+from autostream_peer_client import RosterEntry
+from autostream_protocol import PROTOCOL
+from relay_rig import OWN_ID, PEER_ID, RelayRig
+import webui.browser.home as home
+from settings_fixtures import viewed_state
 
-from autostream_auth import AuthManager, PIN_STATUS_MISSING
-from settings_fixtures import CONTROLS_OTHER_APPLIANCES, viewed_state
-
-THEME_CSS = (REPO_ROOT / "nginx" / "static" / "theme.css").read_text(encoding="utf-8")
-
-_skip = pytest.mark.skipif(
-    not _HAS_WEBUI, reason="web server import chain unavailable"
-)
-
-_REMOTE_ID = "aabbccdd1122334455aa"
-_LOCAL_ID  = "00000000000000000000"
+OTHER_ID = "bbccddeeff0011223344"
+THIRD_ID = "ccddeeff001122334455"
+SETTINGS = {"webui": {"show_hostname_on_home": True, "control_other_appliances": True,
+                      "show_input_detail": True}}
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def rig(monkeypatch):
+    log_setup.reset_for_tests()
+    made = []
+    monkeypatch.setattr(home, "get_setting", lambda *a, **k: SimpleNamespace(ok=False, value=None))
+    monkeypatch.setattr(home, "get_system_hostname", lambda: "Lounge")
 
-def _make_auth(pin=None):
-    mgr = AuthManager(config_path="dummy.ini")
-    mgr._pin_loaded = True
-    if pin is not None:
-        mgr._pin_value = pin
-        mgr._pin_status = "ok"
-    else:
-        mgr._pin_value = None
-        mgr._pin_status = PIN_STATUS_MISSING
-    return mgr
-
-
-def _make_get(path: str) -> "ConfigWebHandler":
-    h = ConfigWebHandler.__new__(ConfigWebHandler)
-    h.path = path
-    h.command = "GET"
-    h.request_version = "HTTP/1.1"
-    h.headers = {"Cookie": "", "X-Forwarded-For": "", "X-Real-IP": ""}
-    h.client_address = ("127.0.0.1", 0)
-    h.rfile = io.BytesIO(b"")
-    h.wfile = io.BytesIO()
-    h.send_response = MagicMock()
-    h.send_header = MagicMock()
-    h.end_headers = MagicMock()
-    h.send_error = MagicMock()
-    h._pending_auth_cookie = None
-    h._pending_set_cookies = []
-    return h
+    def make(**kw):
+        r = RelayRig(monkeypatch, **kw)
+        page_state = viewed_state(SETTINGS)
+        page_state.config_path, page_state.state_path = "dummy.ini", "dummy-state.json"
+        monkeypatch.setattr("webui.session_state.STATE", page_state)
+        made.append(r)
+        return r
+    yield make
+    for r in made:
+        r.close()
 
 
-# ---------------------------------------------------------------------------
-# Route dispatch
-# ---------------------------------------------------------------------------
-
-@_skip
-class TestRemoteHomeRouting:
-    """do_GET routes /a/<id>/ correctly."""
-
-    def test_valid_remote_id_calls_send_remote_home_page(self):
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/a/{_REMOTE_ID}/")
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.home.send_remote_home_page") as stub:
-            handler.do_GET()
-        stub.assert_called_once()
-
-    def test_valid_remote_id_no_trailing_slash(self):
-        """Path /a/<id> (no trailing slash) should also route correctly."""
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/a/{_REMOTE_ID}")
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.home.send_remote_home_page") as stub:
-            handler.do_GET()
-        stub.assert_called_once()
-
-    def test_bound_id_redirects_to_home(self):
-        """GET /a/<local-id>/ must return 302 to /."""
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/a/{_LOCAL_ID}/")
-        redirect_locations = []
-        handler.send_header = MagicMock(side_effect=lambda k, v: redirect_locations.append((k, v)))
-        handler.send_response = MagicMock()
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
-            handler.do_GET()
-        codes = [c for c, in [handler.send_response.call_args_list[i][0] for i in range(len(handler.send_response.call_args_list))]]
-        assert 302 in codes
-        locations = [v for k, v in redirect_locations if k == "Location"]
-        assert "/" in locations
-
-    def test_invalid_format_returns_404(self):
-        """GET /a/invalid/ must return 404 — format guard."""
-        mgr = _make_auth(pin=None)
-        handler = _make_get("/a/invalid/")
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
-            handler.do_GET()
-        handler.send_error.assert_called()
-
-    def test_short_id_returns_404(self):
-        """A valid-hex-but-short ID (< 20 chars) must 404."""
-        mgr = _make_auth(pin=None)
-        handler = _make_get("/a/aabb/")
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
-            handler.do_GET()
-        handler.send_error.assert_called()
-
-    def test_no_auth_redirect_with_pin_enabled(self):
-        """GET /a/<remote-id>/ must not redirect even with PIN configured."""
-        mgr = _make_auth(pin="secret")
-        handler = _make_get(f"/a/{_REMOTE_ID}/")
-        redirect_codes = []
-        handler.send_response = MagicMock(side_effect=lambda c, *a: redirect_codes.append(c))
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.home.send_remote_home_page"):
-            handler.do_GET()
-        assert 302 not in redirect_codes
-
-    def test_remote_id_passed_to_handler(self):
-        """The appliance_id argument passed to send_remote_home_page must match the URL."""
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/a/{_REMOTE_ID}/")
-        called_with = {}
-        def _stub(h, s, aid):
-            called_with["aid"] = aid
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.home.send_remote_home_page", side_effect=_stub):
-            handler.do_GET()
-        assert called_with.get("aid") == _REMOTE_ID
+def ready(r):
+    assert r.ready()
+    return r
 
 
-# ---------------------------------------------------------------------------
-# Auth allowlist
-# ---------------------------------------------------------------------------
-
-class TestRemoteHomeAuth:
-    def test_requires_auth_returns_false_for_remote_page_path(self):
-        from autostream_auth import AuthManager
-        mgr = AuthManager(config_path="dummy.ini")
-        mgr._pin_loaded = True
-        mgr._pin_value = "secret"
-        mgr._pin_status = "ok"
-        assert mgr.requires_auth(f"/a/{_REMOTE_ID}/") is False
-
-    def test_requires_auth_returns_false_for_bound_page_path(self):
-        from autostream_auth import AuthManager
-        mgr = AuthManager(config_path="dummy.ini")
-        mgr._pin_loaded = True
-        mgr._pin_value = "secret"
-        mgr._pin_status = "ok"
-        assert mgr.requires_auth(f"/a/{_LOCAL_ID}/") is False
+def peers(*rows):
+    state.store().publish_for_tests("peers", state.PeersPart(tuple(RosterEntry(**r) for r in rows)))
 
 
-# ---------------------------------------------------------------------------
-# Page content (direct call to send_remote_home_page)
-# ---------------------------------------------------------------------------
+def roster(peer_id, hostname, **fields):
+    row = dict(id=peer_id, hostname=hostname, version="1.0", control=True, reachable=True,
+               protocol_ok=True, access="playback", configured=True, playing=False)
+    row.update(fields)
+    return row
 
-@_skip
-class TestRemoteHomePageContent:
-    """Verify that send_remote_home_page embeds required bootstrap variables."""
 
-    def _render(self, aid: str = _REMOTE_ID) -> str:
-        from webui.browser.home import send_remote_home_page
+class TestRouting:
+    def test_a_followed_appliance_gets_the_shell(self, rig):
+        r = ready(rig())
+        status, _, body = r.page(f"/a/{PEER_ID}/")
+        assert status == 200 and "home_main.js" in body
 
-        state = viewed_state(CONTROLS_OTHER_APPLIANCES)
-        state.config_path = "dummy.ini"
+    def test_no_trailing_slash_is_served_too(self, rig):
+        r = ready(rig())
+        assert r.page(f"/a/{PEER_ID}")[0] == 200
 
-        handler = MagicMock()
-        buf = io.BytesIO()
-        written_chunks = []
+    def test_this_appliances_own_id_goes_to_home(self, rig):
+        r = ready(rig())
+        assert r.page(f"/a/{OWN_ID}/")[:2] == (302, "/")
 
-        def _write(data):
-            written_chunks.append(data)
+    def test_this_appliances_own_id_equaliser_goes_to_its_equaliser(self, rig):
+        r = ready(rig())
+        assert r.page(f"/a/{OWN_ID}/equaliser")[:2] == (302, "/equaliser")
 
-        handler.wfile.write = _write
-        handler._csrf_token = "testcsrf"
-        handler._pending_set_cookies = []
+    def test_a_malformed_id_is_not_found(self, rig):
+        r = ready(rig())
+        assert r.page("/a/invalid/")[0] == 404
 
-        parsed = MagicMock()
-        parsed.owntone.volume_percent = 20
-        parsed.webui.dark_mode = False
-        parsed.webui.show_hostname_on_home = False
-        parsed.webui.control_other_appliances = False
-        with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.home.get_all_appliances", return_value=[]), \
-             patch("webui.browser.home.get_system_hostname", return_value="bound-host"):
-            send_remote_home_page(handler, state, aid)
+    def test_control_off_goes_home(self, rig):
+        r = ready(rig())
+        r.control = False
+        assert r.page(f"/a/{PEER_ID}/")[:2] == (302, "/")
 
-        return page_with_static(b"".join(written_chunks).decode("utf-8", errors="replace"))
+    @pytest.mark.parametrize("kind", ["unknown", "invalid", "conflict", "control_off", "unconfigured"])
+    def test_what_cannot_be_shown_goes_home(self, rig, kind):
+        r = ready(rig(kind=kind))
+        assert r.page(f"/a/{PEER_ID}/")[:2] == (302, "/")
 
-    def test_page_returns_html(self):
-        html = self._render()
-        assert "<!DOCTYPE html>" in html or "<html" in html
+    def test_an_appliance_on_another_protocol_goes_home(self, rig):
+        from autostream_state import store  # noqa: F401  (the page reads the store)
+        r = rig(peer_protocol=PROTOCOL + 1)
+        from stream_helpers import wait_for
+        assert wait_for(lambda: not r.client.snapshot().protocol_ok)
+        assert r.page(f"/a/{PEER_ID}/")[:2] == (302, "/")
 
-    def test_page_contains_appliance_id_bootstrap(self):
-        html = self._render()
-        assert _REMOTE_ID in html
+    def test_no_sign_in_is_needed_with_a_pin_set(self, rig):
+        r = ready(rig())
+        r.server.auth._pin_value = "secret"
+        r.server.auth._pin_status = "ok"
+        assert r.page(f"/a/{PEER_ID}/")[0] == 200
 
-    def test_page_contains_poll_url(self):
-        html = self._render()
-        assert f"/api/appliances/{_REMOTE_ID}/home" in html
 
-    def test_page_contains_output_url(self):
-        html = self._render()
-        assert f"/api/appliances/{_REMOTE_ID}/output" in html
+class TestPage:
+    def island(self, r, path=None):
+        status, _, body = r.page(path or f"/a/{PEER_ID}/")
+        assert status == 200
+        return page_data(body), body
 
-    def test_page_contains_selector_widget(self):
-        html = self._render()
-        assert "appliance-selector" in html
+    def test_the_island_follows_the_relay(self, rig):
+        r = ready(rig(parts={"outputs": {"units": []}}))
+        island, _ = self.island(r)
+        assert island["base"] == f"/api/v1/peers/{PEER_ID}"
+        assert island["own"] is False
+        assert island["state"]["boot"] == r.peer.boot
+        assert island["state"]["parts"]["outputs"] == {"units": []}
 
-    def test_page_contains_remote_polling_js(self):
-        html = self._render()
-        assert "pollHomeState" in html
+    def test_the_island_state_is_the_relays_state_body(self, rig):
+        from webui.peer import relay
+        r = ready(rig())
+        island, _ = self.island(r)
+        body = relay.state_body(r.client.snapshot())
+        assert set(island["state"]) == set(body)
+        assert island["state"]["part_versions"] == body["part_versions"]
 
-    def test_repeat_pill_starts_hidden_and_hidden_is_effective(self):
-        """The remote repeat pill is rendered with the hidden attribute and
-        shown only when the polled feed reports repeat.enabled. The hidden
-        attribute only works if no author display rule defeats the UA
-        stylesheet's [hidden] { display: none } -- .pill-btn sets
-        display: inline-block, so the shared theme CSS must carry the
-        override. The theme is served as a static file (nginx/static/theme.css)
-        rather than inlined into the page, so the rule is asserted against
-        that file directly instead of the rendered HTML."""
-        html = self._render()
-        pill_tag = html.split('id="repeat-btn"', 1)
-        assert len(pill_tag) == 2
-        assert "hidden" in pill_tag[1].split(">", 1)[0]
-        assert ".pill-btn[hidden]" in THEME_CSS
-        override = THEME_CSS.split(".pill-btn[hidden]", 1)[1].split("}", 1)[0]
-        assert "display: none" in override
+    def test_the_input_detail_preference_is_off_for_another_appliance(self, rig):
+        r = ready(rig())
+        assert self.island(r)[0]["prefs"]["show_input_detail"] is False
+        assert page_data(r.page("/")[2])["prefs"]["show_input_detail"] is True
 
-    def test_appliance_selector_right_anchor_rule_present(self):
-        """With the repeat pill hidden, the selector is the row's only flex
-        item; space-between alone would place it flush left. The theme is
-        served as a static file (see test_repeat_pill_starts_hidden_and_hidden_is_effective
-        above), so the rule is asserted against theme.css directly."""
-        assert ".airplay-top-controls > .appliance-selector" in THEME_CSS
-        rule = THEME_CSS.split(
-            ".airplay-top-controls > .appliance-selector", 1
-        )[1].split("}", 1)[0]
-        assert "margin-left: auto" in rule
+    def test_the_title_names_the_appliance(self, rig):
+        r = ready(rig())
+        _, body = self.island(r)
+        assert "<title>autostream — Kitchen</title>" in body
 
-    def test_page_has_remote_nav(self):
-        """Remote Home page nav should have disabled Service/Setup/Info tabs."""
-        html = self._render()
-        assert "nav-tab-disabled" in html
+    def test_the_page_is_the_shared_shell(self, rig):
+        r = ready(rig())
+        _, body = self.island(r)
+        files = linked_static(body)
+        assert "page/home/home_main.js" in files
+        for old in ("page/remote_home.js", "page/home_cards.js", "render_fragments.js",
+                    "page/start_failure.js", "page/appliance_selector.js"):
+            assert old not in files
+        assert "/api/appliances" not in body
 
-    def test_page_has_outputs_list_placeholder(self):
-        html = self._render()
-        assert "outputs-list" in html
+    def test_the_csrf_token_is_on_the_page(self, rig):
+        r = ready(rig())
+        _, body = self.island(r)
+        assert "window.__CSRF=" in body and "csrf-token" in body
 
-    def test_page_contains_navigate_to_remote_script(self):
-        """navigateToRemoteAppliance must be present (via _NAVIGATE_SCRIPT)."""
-        html = self._render()
-        assert "navigateToRemoteAppliance" in html
+    def test_the_top_banner_is_the_peers_critical_warnings(self, rig):
+        def warn(severity, title):
+            return {"id": title, "severity": severity, "title": title, "message": "m",
+                    "kind": "k", "subject": "", "link": ""}
+        r = ready(rig(parts={"warnings": {"entries": [
+            warn("critical", "Peer broken"), warn("warning", "Minor"), warn("critical", "Peer worse")]}}))
+        _, body = self.island(r)
+        banner = body.split("red-banner", 1)[1].split("</div>", 1)[0]
+        assert "Peer broken: m +1 more" in banner and "Minor" not in banner
 
-    def test_page_contains_control_other_appliances_flag(self):
-        """__CONTROL_OTHER_APPLIANCES JS global must be emitted in the page head."""
-        html = self._render()
-        assert "__CONTROL_OTHER_APPLIANCES" in html
+    def test_this_appliances_warnings_are_not_the_banner(self, rig):
+        r = ready(rig())
+        state.store().publish_for_tests("warnings", state.WarningsPart((state.WarningEntry(
+            "w", "", "critical", "k", "", "Local fault", "m", None, "week"),)))
+        _, body = self.island(r)
+        assert "Local fault" not in body
 
-    def test_page_contains_info_modal(self):
-        html = self._render()
-        assert html.count('id="infoModal"') == 1
-        assert "function showInfoModal" in page_scripts(html)
 
-    def test_common_modal_css_has_scroll_rule(self):
-        assert ".modal-bd-scroll" in static_text("page/modal.css")
+class TestSelector:
+    def test_it_lists_this_appliance_then_the_ones_it_may_control(self, rig):
+        r = ready(rig())
+        peers(roster(PEER_ID, "Kitchen"), roster(OTHER_ID, "Bedroom"),
+              roster(THIRD_ID, "Shed", control=False))
+        island = page_data(r.page(f"/a/{PEER_ID}/")[2])
+        assert [(a["hostname"], a["is_bound"]) for a in island["selector"]] == [
+            ("Lounge", True), ("Kitchen", False), ("Bedroom", False)]
+
+    def test_the_menu_links_each_appliance_and_marks_the_current_one(self, rig):
+        r = ready(rig())
+        peers(roster(PEER_ID, "Kitchen"), roster(OTHER_ID, "Bedroom"))
+        body = r.page(f"/a/{PEER_ID}/")[2]
+        assert 'href="/"' in body and f'href="/a/{OTHER_ID}/"' in body
+        assert f'data-current-id="{PEER_ID}"' in body
+        assert "appliance-selector-option-active" in body
+
+    def test_an_appliance_needing_an_update_or_setup_is_listed_without_a_link(self, rig):
+        r = ready(rig())
+        peers(roster(PEER_ID, "Kitchen"), roster(OTHER_ID, "Bedroom", protocol_ok=False),
+              roster(THIRD_ID, "Shed", configured=False))
+        body = r.page(f"/a/{PEER_ID}/")[2]
+        assert "Bedroom (needs an update)" in body and "Shed (not set up)" in body
+        assert f'href="/a/{OTHER_ID}/"' not in body and f'href="/a/{THIRD_ID}/"' not in body
+
+    def test_the_local_page_lists_the_same_appliances(self, rig):
+        r = ready(rig())
+        peers(roster(PEER_ID, "Kitchen"))
+        island = page_data(r.page("/")[2])
+        assert [a["hostname"] for a in island["selector"]] == ["Lounge", "Kitchen"]
+        assert island["own"] is True and island["base"] == "/api/v1"

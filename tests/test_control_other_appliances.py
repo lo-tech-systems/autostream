@@ -289,17 +289,21 @@ class TestRemotePageGuard:
             handler.do_GET()
         stub.assert_not_called()
 
-    def test_enabled_control_calls_send_remote_home_page(self):
+    def test_enabled_control_serves_the_home_shell_for_the_appliance(self):
+        from autostream_appliances import Resolution
         mgr = _make_auth(pin=None)
         handler = _make_get(f"/a/{_REMOTE_ID}/")
+        peer = Resolution("remote", MagicMock(), MagicMock())
         with patch("webui.session_state.AUTH", mgr), \
              patch("webui.session_state.STATE", MagicMock()), \
              patch("autostream_commissioning.is_commissioning_required", return_value=False), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
              patch("webui.common._effective_control_other_appliances", return_value=True), \
-             patch("webui.browser.home.send_remote_home_page") as stub:
+             patch("webui.browser.home.resolve", return_value=peer), \
+             patch("webui.browser.home.send_airplay_page") as stub:
             handler.do_GET()
         stub.assert_called_once()
+        assert stub.call_args.kwargs["peer"] is peer
 
     def test_disabled_control_equaliser_also_redirects(self):
         mgr = _make_auth(pin=None)

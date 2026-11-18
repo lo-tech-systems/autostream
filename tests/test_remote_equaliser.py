@@ -1,469 +1,192 @@
-"""test_remote_equaliser.py — tests for the remote Equaliser route (/a/<id>/equaliser).
+"""tests/test_remote_equaliser.py
 
-Covers:
-  - Route dispatch: valid remote ID → send_remote_equaliser_page
-  - Canonical redirect: bound appliance ID → 302 to /equaliser
-  - Format guard: invalid ID → 404
-  - Auth: accessible without PIN session
-  - Page content: poll/save/reset/status URLs, selector widget, EQ curve, JS
+The remote Equaliser (/a/<id>/equaliser) through a real server whose relay
+follows a fake appliance: what the route does and what the page holds, which
+is the Equaliser shell with the relay's routes as its base and the sliders
+set from the other appliance's eq part. Also the shell's own layout and the
+sample rate its curve uses.
 """
 from __future__ import annotations
 
-import ast
-import io
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
-from _source_text import linked_static, page_data, page_with_static, static_text
 
-REPO_ROOT = Path(__file__).parent.parent
-_CORE = str(REPO_ROOT / "core")
+_CORE = str(Path(__file__).resolve().parent.parent / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-try:
-    from webui.server import ConfigWebHandler
-    import webui.server as _webui
-    _HAS_WEBUI = True
-except ImportError:
-    _HAS_WEBUI = False
-
-from autostream_auth import AuthManager, PIN_STATUS_MISSING
+import autostream_logging as log_setup
+from _source_text import linked_static, page_data, static_text
+from relay_rig import OWN_ID, PEER_ID, RelayRig
+import webui.browser.equaliser as equaliser
 from settings_fixtures import CONTROLS_OTHER_APPLIANCES, viewed_state
 
-_skip = pytest.mark.skipif(
-    not _HAS_WEBUI, reason="web server import chain unavailable"
-)
-
-_REMOTE_ID = "aabbccdd1122334455aa"
-_LOCAL_ID  = "00000000000000000000"
+_LOCAL_ID = "00000000000000000000"
+EQ = {"output_bands": [1, -2, 3, -4, 5, -6], "output_gain_db": 2.5, "auto_trim_enabled": True,
+      "input_bands": {}, "input_gain": {}}
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+@pytest.fixture
+def rig(monkeypatch):
+    log_setup.reset_for_tests()
+    made = []
+    monkeypatch.setattr(equaliser, "get_system_hostname", lambda: "Lounge")
+    monkeypatch.setattr(equaliser, "get_live_monitor_output_rate", lambda fallback: 96000)
 
-def _make_auth(pin=None):
-    mgr = AuthManager(config_path="dummy.ini")
-    mgr._pin_loaded = True
-    if pin is not None:
-        mgr._pin_value = pin
-        mgr._pin_status = "ok"
-    else:
-        mgr._pin_value = None
-        mgr._pin_status = PIN_STATUS_MISSING
-    return mgr
-
-
-def _make_get(path: str) -> "ConfigWebHandler":
-    h = ConfigWebHandler.__new__(ConfigWebHandler)
-    h.path = path
-    h.command = "GET"
-    h.request_version = "HTTP/1.1"
-    h.headers = {"Cookie": "", "X-Forwarded-For": "", "X-Real-IP": ""}
-    h.client_address = ("127.0.0.1", 0)
-    h.rfile = io.BytesIO(b"")
-    h.wfile = io.BytesIO()
-    h.send_response = MagicMock()
-    h.send_header = MagicMock()
-    h.end_headers = MagicMock()
-    h.send_error = MagicMock()
-    h._pending_auth_cookie = None
-    h._pending_set_cookies = []
-    return h
+    def make(**kw):
+        r = RelayRig(monkeypatch, **kw)
+        page_state = viewed_state(CONTROLS_OTHER_APPLIANCES)
+        page_state.config_path, page_state.state_path = "dummy.ini", "dummy-state.json"
+        monkeypatch.setattr("webui.session_state.STATE", page_state)
+        assert r.ready()
+        made.append(r)
+        return r
+    yield make
+    for r in made:
+        r.close()
 
 
-# ---------------------------------------------------------------------------
-# Route dispatch
-# ---------------------------------------------------------------------------
+class TestRouting:
+    def test_a_followed_appliance_gets_the_equaliser_shell(self, rig):
+        r = rig(parts={"eq": EQ})
+        status, _, body = r.page(f"/a/{PEER_ID}/equaliser")
+        assert status == 200 and "page/equaliser.js" in linked_static(body)
 
-@_skip
-class TestRemoteEqualiserRouting:
-    """do_GET routes /a/<id>/equaliser correctly."""
+    def test_this_appliances_own_id_goes_to_its_equaliser(self, rig):
+        r = rig()
+        assert r.page(f"/a/{OWN_ID}/equaliser")[:2] == (302, "/equaliser")
 
-    def test_valid_remote_id_calls_send_remote_equaliser_page(self):
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/a/{_REMOTE_ID}/equaliser")
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.equaliser.send_remote_equaliser_page") as stub:
-            handler.do_GET()
-        stub.assert_called_once()
+    def test_control_off_goes_home(self, rig):
+        r = rig()
+        r.control = False
+        assert r.page(f"/a/{PEER_ID}/equaliser")[:2] == (302, "/")
 
-    def test_remote_id_passed_correctly(self):
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/a/{_REMOTE_ID}/equaliser")
-        called_with = {}
-        def _stub(h, s, aid):
-            called_with["aid"] = aid
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.equaliser.send_remote_equaliser_page", side_effect=_stub):
-            handler.do_GET()
-        assert called_with.get("aid") == _REMOTE_ID
+    @pytest.mark.parametrize("kind", ["unknown", "conflict", "control_off", "unconfigured"])
+    def test_what_cannot_be_shown_goes_home(self, rig, kind):
+        r = rig(kind=kind)
+        assert r.page(f"/a/{PEER_ID}/equaliser")[:2] == (302, "/")
 
-    def test_bound_id_redirects_to_equaliser(self):
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/a/{_LOCAL_ID}/equaliser")
-        redirect_locations = []
-        handler.send_header = MagicMock(side_effect=lambda k, v: redirect_locations.append((k, v)))
-        handler.send_response = MagicMock()
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
-            handler.do_GET()
-        codes = [c for (c,) in [handler.send_response.call_args_list[i][0]
-                                 for i in range(len(handler.send_response.call_args_list))]]
-        assert 302 in codes
-        locations = [v for k, v in redirect_locations if k == "Location"]
-        assert "/equaliser" in locations
-
-    def test_invalid_format_returns_404(self):
-        mgr = _make_auth(pin=None)
-        handler = _make_get("/a/invalid/equaliser")
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID):
-            handler.do_GET()
-        handler.send_error.assert_called()
-
-    def test_no_auth_redirect_with_pin_enabled(self):
-        """GET /a/<remote-id>/equaliser must not redirect even with PIN configured."""
-        mgr = _make_auth(pin="secret")
-        handler = _make_get(f"/a/{_REMOTE_ID}/equaliser")
-        redirect_codes = []
-        handler.send_response = MagicMock(side_effect=lambda c, *a: redirect_codes.append(c))
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.equaliser.send_remote_equaliser_page"):
-            handler.do_GET()
-        assert 302 not in redirect_codes
-
-    def test_home_route_still_dispatches_correctly(self):
-        """The existing /a/<id>/ home routing must be unaffected."""
-        mgr = _make_auth(pin=None)
-        handler = _make_get(f"/a/{_REMOTE_ID}/")
-        with patch("webui.session_state.AUTH", mgr), \
-             patch("webui.session_state.STATE", viewed_state(CONTROLS_OTHER_APPLIANCES)), \
-             patch("autostream_commissioning.is_commissioning_required", return_value=False), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.home.send_remote_home_page") as stub:
-            handler.do_GET()
-        stub.assert_called_once()
+    def test_no_sign_in_is_needed_with_a_pin_set(self, rig):
+        r = rig()
+        r.server.auth._pin_value = "secret"
+        r.server.auth._pin_status = "ok"
+        assert r.page(f"/a/{PEER_ID}/equaliser")[0] == 200
 
 
-# ---------------------------------------------------------------------------
-# Auth allowlist
-# ---------------------------------------------------------------------------
+class TestPage:
+    def render(self, r):
+        status, _, body = r.page(f"/a/{PEER_ID}/equaliser")
+        assert status == 200
+        return page_data(body), body
 
-class TestRemoteEqualiserAuth:
-    def test_requires_auth_false_for_equaliser_path(self):
-        from autostream_auth import AuthManager
-        mgr = AuthManager(config_path="dummy.ini")
-        mgr._pin_loaded = True
-        mgr._pin_value = "secret"
-        mgr._pin_status = "ok"
-        assert mgr.requires_auth(f"/a/{_REMOTE_ID}/equaliser") is False
+    def test_the_island_follows_the_relay(self, rig):
+        r = rig(parts={"eq": EQ})
+        island, _ = self.render(r)
+        assert island["base"] == f"/api/v1/peers/{PEER_ID}" and island["own"] is False
+        assert island["state"]["boot"] == r.peer.boot
+        assert island["state"]["parts"]["eq"] == EQ
+        assert island["selector"][0]["is_bound"] is True
+
+    def test_the_sliders_are_the_other_appliances_values(self, rig):
+        r = rig(parts={"eq": EQ})
+        _, body = self.render(r)
+        for key, value in zip(["peq1_db", "peq2_db", "peq3_db", "peq4_db", "peq5_db", "peq6_db"], EQ["output_bands"]):
+            assert f"id='{key}' value='{value:.0f}'" in body
+        assert "id='output_gain_db' value='2.5'" in body
+        assert "id='output_auto_trim' checked" in body
+
+    def test_the_selector_is_in_the_header_and_the_flat_button_in_the_card(self, rig):
+        r = rig(parts={"eq": EQ})
+        _, body = self.render(r)
+        header = body[body.index("<div class='eq-page-header'>"):body.index("<div class='eq-section'>")]
+        assert "appliance-selector" in header and "eq-flat-btn" not in header
+        assert body.index("id='eq-flat-btn'") > body.index("<div class='eq-section'>")
+
+    def test_the_page_is_the_shared_shell(self, rig):
+        r = rig(parts={"eq": EQ})
+        _, body = self.render(r)
+        files = linked_static(body)
+        assert "page/equaliser_curve.js" in files and "page/remote_equaliser.js" not in files
+        assert "page/appliance_selector.js" not in files
+        assert "/api/appliances" not in body
+        assert "<title>Equaliser — Kitchen</title>" in body
+
+    def test_the_curve_uses_this_appliances_monitor_rate(self, rig):
+        r = rig(parts={"eq": EQ})
+        island, _ = self.render(r)
+        assert island["eq_fs"] == 96000
+
+    def test_the_csrf_token_is_on_the_page(self, rig):
+        r = rig(parts={"eq": EQ})
+        _, body = self.render(r)
+        assert "id='_csrfField'" in body
 
 
-# ---------------------------------------------------------------------------
-# Page content (direct call to send_remote_equaliser_page)
-# ---------------------------------------------------------------------------
-
-@_skip
-class TestRemoteEqualiserPageContent:
-    """Verify that send_remote_equaliser_page embeds required bootstrap variables."""
-
-    def _render(self, aid: str = _REMOTE_ID) -> str:
-        from webui.browser.equaliser import send_remote_equaliser_page
-
-        state = viewed_state(CONTROLS_OTHER_APPLIANCES)
-        state.config_path = "dummy.ini"
-
-        handler = MagicMock()
-        written_chunks = []
-
-        def _write(data):
-            written_chunks.append(data)
-
-        handler.wfile.write = _write
-        handler._csrf_token = "testcsrf"
-        handler._pending_set_cookies = []
-
-        parsed = MagicMock()
-        parsed.webui.dark_mode = False
-        with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.equaliser.get_all_appliances", return_value=[]), \
-             patch("webui.browser.equaliser.get_system_hostname", return_value="bound-host"):
-            send_remote_equaliser_page(handler, state, aid)
-
-        return page_with_static(b"".join(written_chunks).decode("utf-8", errors="replace"))
-
-    def test_page_returns_html(self):
-        html = self._render()
-        assert "<!DOCTYPE html>" in html or "<html" in html
-
-    def test_page_contains_appliance_id(self):
-        html = self._render()
-        assert _REMOTE_ID in html
-
-    def test_page_contains_poll_url(self):
-        html = self._render()
-        assert f"/api/appliances/{_REMOTE_ID}/equaliser" in html
-
-    def test_page_contains_save_url(self):
-        html = self._render()
-        assert f"/api/appliances/{_REMOTE_ID}/equaliser/config" in html
-
-    def test_page_contains_reset_url(self):
-        html = self._render()
-        assert f"/api/appliances/{_REMOTE_ID}/equaliser/reset" in html
-
-    def test_page_contains_status_url(self):
-        html = self._render()
-        assert f"/api/appliances/{_REMOTE_ID}/equaliser/status" in html
-
-    def test_page_contains_selector_widget(self):
-        html = self._render()
-        assert "appliance-selector" in html
-
-    def test_page_header_contains_selector_without_flat_button(self):
-        html = self._render()
-        header_start = html.index("<div class='eq-page-header'>")
-        header_end = html.index("<div class='eq-section'>", header_start)
-        header = html[header_start:header_end]
-
-        assert "appliance-selector" in header
-        assert "eq-flat-btn" not in header
-        assert ">Reset<" not in header
-
-    def test_flat_button_is_inside_eq_card(self):
-        html = self._render()
-        flat_idx = html.index("id='eq-flat-btn'")
-        section_idx = html.rindex("<div class='eq-section'>", 0, flat_idx)
-        curve_idx = html.index("eq-curve-wrap", flat_idx)
-
-        assert section_idx < flat_idx < curve_idx
-        assert ">Flat</button>" in html
-        assert "eq-reset-btn" not in html
-
-    def test_page_has_remote_nav(self):
-        html = self._render()
-        assert "nav-tab-disabled" in html
-
-    def test_page_has_eq_curve(self):
-        html = self._render()
-        assert "eq-curve" in html
-
-    def test_page_has_bands_container(self):
-        html = self._render()
-        assert "eq-bands-container" in html
-
-    def test_page_has_gain_section(self):
-        html = self._render()
-        assert "eq-gain-section" in html
-
-    def test_remote_gain_card_has_no_gain_title(self):
-        html = self._render()
-        assert '<div class="eq-section-title">Gain</div>' not in html
-
-    def test_page_has_loading_message(self):
-        html = self._render()
-        assert "eq-loading-msg" in html
-
-    def test_page_has_render_eq_from_state_js(self):
-        html = self._render()
-        assert "renderEqFromState" in html
-
-    def test_page_has_poll_trim_status_js(self):
-        html = self._render()
-        assert "_pollTrimStatus" in html
-
-    def test_page_has_selector_js(self):
-        html = self._render()
-        assert "initApplianceSelector" in html
-
-    def test_page_has_eq_band_config_js(self):
-        """_EQ_BANDS must be defined so renderEqFromState can build sliders."""
-        html = self._render()
-        assert "_EQ_BANDS" in html
-
-    def test_remote_eq_band_slider_handler_survives_python_string_escaping(self):
-        """The browser-facing script must contain escaped quotes in generated slider handlers."""
-        script = static_text("page/remote_equaliser.js")
-
-        assert script
-        assert "syncOutputPeq(\\''+key+'\\',this.value)" in script
-        assert "syncOutputPeq(''+key+'',this.value)" not in script
-
-    def test_remote_script_enables_flat_button(self):
-        script = static_text("page/remote_equaliser.js")
-
-        assert script
-        assert "getElementById('eq-flat-btn')" in script
-        assert "getElementById('eq-reset-btn')" not in script
-
-    def test_local_equaliser_cards_match_flat_button_layout(self):
+class TestShell:
+    def test_the_local_cards_keep_the_flat_button_layout(self):
         from autostream_eq_bands import OUTPUT_PEQ_BANDS
-        from webui.browser.equaliser import _eq_cards_html
-
         values = {band["key"]: 0.0 for band in OUTPUT_PEQ_BANDS}
-        output_eq = SimpleNamespace(
-            gain_db=0.0,
-            auto_trim_enabled=False,
-            **values,
-        )
-        html = _eq_cards_html(output_eq, selector_html="<div id='appliance-selector'></div>")
-        header_start = html.index("<div class='eq-page-header'>")
-        header_end = html.index("<div class='eq-section'>", header_start)
-        header = html[header_start:header_end]
+        eq = SimpleNamespace(gain_db=0.0, auto_trim_enabled=False, **values)
+        html = equaliser._eq_cards_html(eq, selector_html="<div id='appliance-selector'></div>")
+        header = html[html.index("<div class='eq-page-header'>"):html.index("<div class='eq-section'>")]
+        assert "appliance-selector" in header and "eq-flat-btn" not in header
+        assert "id='eq-flat-btn'" in html and ">Flat</button>" in html and ">Reset</button>" not in html
 
-        assert "appliance-selector" in header
-        assert "eq-flat-btn" not in header
-        assert "id='eq-flat-btn'" in html
-        assert ">Flat</button>" in html
-        assert ">Reset</button>" not in html
-        assert "<div class='eq-section-title'>Gain</div>" not in html
+    def test_the_values_come_from_an_eq_part(self):
+        eq = equaliser._eq_from_part(EQ)
+        assert (eq.peq1_db, eq.peq6_db, eq.gain_db, eq.auto_trim_enabled) == (1.0, -6.0, 2.5, True)
 
-    def test_page_active_tab_is_equaliser(self):
-        html = self._render()
-        assert "nav-tab-active" in html
+    def test_a_part_with_nothing_in_it_is_flat(self):
+        eq = equaliser._eq_from_part({})
+        assert (eq.peq1_db, eq.gain_db, eq.auto_trim_enabled) == (0.0, 0.0, False)
 
 
-# ---------------------------------------------------------------------------
-# EQ curve sample rate sourced from the live monitor, not hardcoded.
-# ---------------------------------------------------------------------------
-
-@_skip
-class TestEqualiserCurveSampleRate:
-    """_EQ_FS in the injected JS must track the monitor-reported output_rate,
-    falling back to 48000 when the monitor is unreachable -- never a
-    hand-synced 44100 constant."""
+class TestCurveSampleRate:
+    """The curve's sample rate is the monitor's reported output rate, and 48000
+    when the monitor cannot be reached."""
 
     def test_curve_fs_uses_monitor_output_rate(self):
-        from webui.browser.equaliser import _curve_fs
-
-        with patch(
-            "webui.browser.equaliser.get_live_monitor_output_rate",
-            return_value=48000,
-        ) as stub:
-            assert _curve_fs() == 48000
-        # fallback must be threaded through as 48000, per design A7.
+        with patch("webui.browser.equaliser.get_live_monitor_output_rate", return_value=48000) as stub:
+            assert equaliser._curve_fs() == 48000
         stub.assert_called_once_with(fallback=48000)
 
-    def test_curve_fs_falls_back_when_monitor_unreachable(self):
-        from webui.browser.equaliser import get_live_monitor_output_rate
-        from webui.browser.equaliser import _CURVE_FS_FALLBACK
-
-        # get_live_monitor_output_rate itself owns the unreachable-monitor
-        # fallback logic (autostream_core._connected_monitor returns None);
-        # _curve_fs() must simply pass its own fallback through unchanged.
-        assert _CURVE_FS_FALLBACK == 48000
-        assert callable(get_live_monitor_output_rate)
-
-    def test_local_page_js_embeds_live_output_rate(self):
-        from webui.browser.equaliser import send_equaliser_page
-
+    def _local(self, **patches):
         state = viewed_state(CONTROLS_OTHER_APPLIANCES)
         state.config_path = "dummy.ini"
         handler = MagicMock()
-        written_chunks = []
-        handler.wfile.write = lambda data: written_chunks.append(data)
+        chunks = []
+        handler.wfile.write = lambda data: chunks.append(data)
         handler._csrf_token = "testcsrf"
         handler._pending_set_cookies = []
-
         parsed = MagicMock()
         parsed.webui.dark_mode = False
         parsed.webui.show_hostname_on_home = False
         parsed.output_eq = SimpleNamespace(
             gain_db=0.0, auto_trim_enabled=False,
-            peq1_db=0.0, peq2_db=0.0, peq3_db=0.0,
-            peq4_db=0.0, peq5_db=0.0, peq6_db=0.0,
-        )
+            peq1_db=0.0, peq2_db=0.0, peq3_db=0.0, peq4_db=0.0, peq5_db=0.0, peq6_db=0.0)
         with patch("webui.common._config_snapshot", return_value=parsed), \
              patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.equaliser.get_all_appliances", return_value=[]), \
-             patch("webui.browser.equaliser.get_system_hostname", return_value="bound-host"), \
-             patch(
-                 "webui.browser.equaliser.get_live_monitor_output_rate",
-                 return_value=96000,
-             ):
-            send_equaliser_page(handler, state)
+             patch("webui.browser.equaliser.get_system_hostname", return_value="bound-host"):
+            if "rate" in patches:
+                with patch("webui.browser.equaliser.get_live_monitor_output_rate",
+                           return_value=patches["rate"]):
+                    equaliser.send_equaliser_page(handler, state)
+            else:
+                equaliser.send_equaliser_page(handler, state)
+        return b"".join(chunks).decode("utf-8", errors="replace")
 
-        html = b"".join(written_chunks).decode("utf-8", errors="replace")
+    def test_local_page_embeds_the_live_output_rate(self):
+        html = self._local(rate=96000)
         assert page_data(html)["eq_fs"] == 96000
         assert "page/equaliser_curve.js" in linked_static(html)
         assert "var _EQ_FS        = pageData.eq_fs;" in static_text("page/equaliser_curve.js")
 
-    def test_remote_page_js_embeds_live_output_rate(self):
-        from webui.browser.equaliser import send_remote_equaliser_page
-
-        state = viewed_state(CONTROLS_OTHER_APPLIANCES)
-        state.config_path = "dummy.ini"
-        handler = MagicMock()
-        written_chunks = []
-        handler.wfile.write = lambda data: written_chunks.append(data)
-        handler._csrf_token = "testcsrf"
-        handler._pending_set_cookies = []
-
-        parsed = MagicMock()
-        parsed.webui.dark_mode = False
-        with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.equaliser.get_all_appliances", return_value=[]), \
-             patch("webui.browser.equaliser.get_system_hostname", return_value="bound-host"), \
-             patch(
-                 "webui.browser.equaliser.get_live_monitor_output_rate",
-                 return_value=44100,
-             ):
-            send_remote_equaliser_page(handler, state, _REMOTE_ID)
-
-        html = b"".join(written_chunks).decode("utf-8", errors="replace")
-        assert page_data(html)["eq_fs"] == 44100
-        assert "page/equaliser_curve.js" in linked_static(html)
-
-    def test_page_falls_back_to_48000_when_monitor_unreachable(self):
-        from webui.browser.equaliser import send_equaliser_page
-        from webui.browser.equaliser import _CURVE_FS_FALLBACK
-
-        state = viewed_state(CONTROLS_OTHER_APPLIANCES)
-        state.config_path = "dummy.ini"
-        handler = MagicMock()
-        written_chunks = []
-        handler.wfile.write = lambda data: written_chunks.append(data)
-        handler._csrf_token = "testcsrf"
-        handler._pending_set_cookies = []
-
-        parsed = MagicMock()
-        parsed.webui.dark_mode = False
-        parsed.webui.show_hostname_on_home = False
-        parsed.output_eq = SimpleNamespace(
-            gain_db=0.0, auto_trim_enabled=False,
-            peq1_db=0.0, peq2_db=0.0, peq3_db=0.0,
-            peq4_db=0.0, peq5_db=0.0, peq6_db=0.0,
-        )
-        # No monitor patch here -- real get_live_monitor_output_rate() runs
-        # against a socket that doesn't exist in the test sandbox, exercising
-        # the actual unreachable-monitor fallback path end to end.
-        with patch("webui.common._config_snapshot", return_value=parsed), \
-             patch("autostream_rpi.get_appliance_id", return_value=_LOCAL_ID), \
-             patch("webui.browser.equaliser.get_all_appliances", return_value=[]), \
-             patch("webui.browser.equaliser.get_system_hostname", return_value="bound-host"):
-            send_equaliser_page(handler, state)
-
-        html = b"".join(written_chunks).decode("utf-8", errors="replace")
-        assert page_data(html)["eq_fs"] == _CURVE_FS_FALLBACK
+    def test_page_falls_back_to_48000_when_the_monitor_is_unreachable(self):
+        html = self._local()
+        assert page_data(html)["eq_fs"] == equaliser._CURVE_FS_FALLBACK == 48000
         assert "page/appliance_selector.css" in linked_static(html)
         assert "nav-tab-disabled" in static_text("page/appliance_selector.css")

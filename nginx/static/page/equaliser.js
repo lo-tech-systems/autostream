@@ -3,10 +3,12 @@
 // made here goes out as an intent.
 import { StateStream } from '../shared/state_stream.js';
 import { Pending } from '../shared/pending.js';
-import { submit } from './home/home_intents.js';
+import { submit, setBase } from './home/home_intents.js';
 import { initSelector } from './selector_menu.js';
 
 const island = JSON.parse(document.getElementById('page-data').textContent);
+const own = island.own !== false;
+const base = island.base || '/api/v1';
 window.__CSRF = document.getElementById('_csrfField').value;
 const BANDS = ['peq1_db', 'peq2_db', 'peq3_db', 'peq4_db', 'peq5_db', 'peq6_db'];
 const pending = new Pending();
@@ -71,6 +73,15 @@ $('eq-flat-btn').addEventListener('click', () => submit('output.eq.reset').then(
   redraw();
 }));
 
-initSelector({ page: 'equaliser', currentId: island.local_id });
-stream = new StateStream({ base: '/api/v1', initial: island.state, onChange: draw });
+setBase(base);
+initSelector({ page: 'equaliser', currentId: island.local_id, self: island.selector[0] });
+// Another appliance's page goes back to this one's when the relay says it cannot
+// be had, or after three failures in a row to reach it.
+let failures = 0;
+const onRefused = (status) => {
+  if (own) return;
+  failures = [403, 404, 409].includes(status) ? 3 : failures + 1;
+  if (failures >= 3) window.location.href = '/';
+};
+stream = new StateStream({ base, initial: island.state, onChange: draw, onUp: () => { failures = 0; }, onRefused });
 draw(stream.view);

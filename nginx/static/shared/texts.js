@@ -19,6 +19,24 @@ export const REFUSAL = {
   settings_unavailable: 'The speakers could not be saved just now. Try again in a moment.',
 };
 
+// What the relay says when it cannot take a person to another appliance.
+const CANT_REACH = "Can't reach this appliance";
+export const RELAY = {
+  control_disabled: 'Control of other appliances is turned off',
+  unknown_appliance: 'Appliance not found',
+  bound_appliance: 'Appliance not found',
+  appliance_conflict: 'Two appliances share this name',
+  appliance_unconfigured: 'This appliance is not set up yet',
+  unconfigured: 'This appliance is not set up yet',
+  protocol_mismatch: 'This appliance needs an update',
+  peer_unreachable: CANT_REACH,
+  unreachable: CANT_REACH,
+  timeout: CANT_REACH,
+  bad_reply: CANT_REACH,
+  backoff: CANT_REACH + ', retrying',
+};
+export const SELECTOR_NOTE = { update: 'needs an update', setup: 'not set up' };
+
 export const CHIP = {
   on: 'On',
   off: 'Off',

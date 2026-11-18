@@ -1,11 +1,15 @@
 // Everything Home asks the appliance to do goes through submit().
 let reloading = false;
+let base = '/api/v1';
 
-// POST /api/v1/intents/<name> with { args }; resolves with the reply
+// The path the intents go to: this appliance's, or the relay's for another.
+export const setBase = (b) => { base = b; };
+
+// POST <base>/intents/<name> with { args }; resolves with the reply
 // ({ ok, error, version, result, ... }). A rejected session reloads the page
 // once, so the sign-in or the new token takes effect.
 export async function submit(name, args = {}) {
-  const r = await fetch('/api/v1/intents/' + name, {
+  const r = await fetch(base + '/intents/' + name, {
     method: 'POST',
     credentials: 'same-origin',
     signal: AbortSignal.timeout(5000),

@@ -25,6 +25,7 @@ from autostream_auth import SESSION_COOKIE_NAME, Session
 from fake_peer_server import FakePeer
 from stream_helpers import RealServer, wait_for
 import webui.common as webui_common
+import webui.browser.home as home_page
 import webui.peer.relay as relay
 import webui.protocol.intents as intents_route
 
@@ -34,9 +35,9 @@ OWN_ID = "00112233445566778899"
 
 class RelayRig:
     def __init__(self, monkeypatch, *, parts=None, kind: str = "remote",
-                 peer_protocol: int = PROTOCOL) -> None:
+                 peer_protocol: int = PROTOCOL, handler=None) -> None:
         self.monkeypatch = monkeypatch
-        self.server = RealServer(monkeypatch)
+        self.server = RealServer(monkeypatch, handler=handler)
         self.server.hub._peer_control = lambda: True
         self.control = True
         self.peer = FakePeer(parts=parts, protocol=peer_protocol).start()
@@ -50,6 +51,7 @@ class RelayRig:
         monkeypatch.setattr(webui_common, "_effective_control_other_appliances",
                             lambda state: self.control)
         monkeypatch.setattr(relay, "resolve", self._resolve)
+        monkeypatch.setattr(home_page, "resolve", self._resolve)
         monkeypatch.setattr(relay.rpi, "get_appliance_id", lambda: OWN_ID)
 
     def _resolve(self, appliance_id: str):
@@ -80,6 +82,16 @@ class RelayRig:
             return status, json.loads(raw)
         except ValueError:
             return status, raw
+
+    def page(self, path: str, headers=None):
+        """(status, Location header or None, body text) of one GET, not followed."""
+        conn = http.client.HTTPConnection("127.0.0.1", self.server.port, timeout=10)
+        try:
+            conn.request("GET", path, headers=headers or {})
+            resp = conn.getresponse()
+            return resp.status, resp.getheader("Location"), resp.read().decode("utf-8", "replace")
+        finally:
+            conn.close()
 
     def browser(self, *, authenticated: bool = True) -> dict:
         token, csrf = secrets.token_hex(16), secrets.token_hex(16)

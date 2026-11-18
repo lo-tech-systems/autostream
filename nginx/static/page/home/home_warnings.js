@@ -68,8 +68,8 @@ export function initWarnings(redraw) {
   });
 }
 
-export function drawWarnings(p, redraw) {
-  const w = warningsFor(p, { own: true });
+export function drawWarnings(p, redraw, own = true) {
+  const w = warningsFor(p, { own });
   const key = JSON.stringify([w, bannerOpen, stripOpen]);
   if (key !== last) { last = key; drawBanner(w.banner); drawStrip(w, redraw); }
   const tab = document.getElementById('service-nav-tab');

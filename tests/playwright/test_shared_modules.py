@@ -59,6 +59,7 @@ async (initial) => {
     onAccess: (b) => window.__log.push(['access', b]),
     onUp: () => window.__log.push(['up']),
     onDown: () => window.__log.push(['down']),
+    onRefused: (status, error) => window.__log.push(['refused', status, error]),
   });
 }
 """
@@ -130,6 +131,19 @@ class TestStateStream:
         assert v["parts"] == {"a": {"x": 7}} and v["version"] == 9 and v["partVersions"] == {"a": 9}
         assert _log(stream)[-1] == ["change", None, True, 9]
         assert stream.evaluate("() => window.__fetches") == ["/api/v1/state"]
+
+    def test_a_state_fetch_answered_with_a_named_refusal_calls_onRefused(self, stream):
+        _open(stream)
+        _state(stream, ok=False, error="unknown_appliance", error_status=404)
+        _emit(stream, "change", {"boot": "b1", "version": 9, "resync": True, "parts": [], "data": {}})
+        assert _log(stream)[-1] == ["refused", 404, "unknown_appliance"]
+        assert _view(stream)["version"] == 5
+
+    def test_a_state_fetch_that_fails_calls_onRefused_with_status_zero(self, stream):
+        _open(stream)
+        stream.evaluate("() => { window.fetch = async () => { throw new TypeError('network'); }; }")
+        _emit(stream, "change", {"boot": "b1", "version": 9, "resync": True, "parts": [], "data": {}})
+        assert _log(stream)[-1] == ["refused", 0, "unreachable"]
 
     def test_an_access_event_reaches_onAccess(self, stream):
         _open(stream)

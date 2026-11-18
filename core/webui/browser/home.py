@@ -13,7 +13,7 @@ import logging
 
 from typing import Optional
 
-from autostream_appliances import get_all_appliances
+from autostream_appliances import get_all_appliances, resolve
 from autostream_state.live import get_setting
 from autostream_players import SETTING_START_BUFFER_MS, SETTING_START_BUFFER_MS_DEFAULT
 import autostream_rpi as rpi
@@ -31,6 +31,7 @@ from webui.assets import (
     INFO_MODAL_HTML,
 )
 from webui.common import (
+    appliance_selector_entries,
     build_appliance_selector_html,
     build_page_html,
     build_top_banner_html,
@@ -40,6 +41,7 @@ from webui import common
 from webui import session_state
 import re
 from webui.browser import equaliser
+from webui.peer import relay
 
 
 # Wall-clock tolerance, in seconds, for transient emptiness of the backend's
@@ -130,9 +132,12 @@ def send_airplay_page(
     state: WebUIState,
     auth,
     error: Optional[str] = None,
+    peer=None,
 ) -> None:
     """Render the main AirPlay control page: the shell the browser fills from
-    the state it starts with and the change stream (the page-data island)."""
+    the state it starts with and the change stream (the page-data island).
+    With *peer* (an appliance.resolve result for another appliance) the shell
+    is that appliance's: its state, and the relay's routes as its base."""
     try:
         parsed = common._config_snapshot(state)
     except Exception:
@@ -184,7 +189,7 @@ def send_airplay_page(
 
     owntone_base_url = parsed.owntone.base_url
     show_master_volume = parsed.webui.show_master_volume
-    show_input_detail = parsed.webui.show_input_detail
+    show_input_detail = parsed.webui.show_input_detail and peer is None
     show_hostname_on_home = parsed.webui.show_hostname_on_home
     effective_control = show_hostname_on_home and parsed.webui.control_other_appliances
 
@@ -197,15 +202,20 @@ def send_airplay_page(
     except Exception:
         vu_delay_ms = SETTING_START_BUFFER_MS_DEFAULT
 
-    lic_html, lic_spacer = build_top_banner_html()
+    snap = peer.client.snapshot() if peer is not None else None
+    if snap is None:
+        lic_html, lic_spacer = build_top_banner_html()
+    else:
+        lic_html, lic_spacer = build_top_banner_html(entries=(snap.parts.get("warnings") or {}).get("entries") or [])
     csrf_token = getattr(handler, "_csrf_token", None) or auth.get_csrf_token(handler.headers) or ""
     preset_volume = max(0, min(100, int(parsed.owntone.volume_percent or 20)))
     _local_id = str(rpi.get_appliance_id() or "")
-    if show_hostname_on_home:
+    _selector = appliance_selector_entries(_local_id, get_system_hostname())
+    if peer is not None:
+        _top_right_html = build_appliance_selector_html(_selector, peer.sighting.id, "home")
+    elif show_hostname_on_home:
         _top_right_html = build_appliance_selector_html(
-            _build_appliances_for_selector(), _local_id, "home",
-            display_only=not effective_control,
-        )
+            _selector, _local_id, "home", display_only=not effective_control)
     else:
         _top_right_html = ""
     csrf_meta = (
@@ -214,7 +224,10 @@ def send_airplay_page(
     ) + static.script_tag("page/csrf_recovery.js")
 
     _island = static.page_data_island({
-        "state": state_for_page(),
+        "state": state_for_page() if peer is None else relay.state_body(snap),
+        "base": "/api/v1" if peer is None else f"/api/v1/peers/{peer.sighting.id}",
+        "own": peer is None,
+        "selector": _selector,
         "csrf": csrf_token,
         "prefs": {
             "show_master_volume": bool(show_master_volume),
@@ -293,7 +306,7 @@ def send_airplay_page(
         + "<div id='outputs-list'></div>"
     )
     html_body = build_page_html(
-        "autostream",
+        "autostream" if peer is None else "autostream — " + peer.sighting.hostname,
         _body_html,
         style_files=_HOME_PAGE_STYLE_FILES,
         head_extra=_head_extra,
@@ -302,8 +315,9 @@ def send_airplay_page(
         lic_html=lic_html,
         lic_spacer=lic_spacer,
         active_tab="home",
-        service_severity=common.service_severity(),
+        service_severity=common.service_severity() if peer is None else None,
         dark_mode=parsed.webui.dark_mode,
+        remote_id="" if peer is None else peer.sighting.id,
     )
     try:
         common.send_html(handler, 200, html_body)
@@ -516,6 +530,13 @@ def _route_get_home(handler, state):
     send_airplay_page(handler, state, session_state.AUTH)
 
 
+def _redirect(handler, location: str) -> None:
+    handler.send_response(302)
+    handler.send_header("Location", location)
+    handler.send_header("Content-Length", "0")
+    handler.end_headers()
+
+
 def _route_get_remote_page(handler, state):
     path = handler._normalized_path()
     tail = path[len(_REMOTE_PAGE_PREFIX):]
@@ -528,17 +549,14 @@ def _route_get_remote_page(handler, state):
     local_id = rpi.get_appliance_id() or ""
     if aid == local_id:
         # Canonical redirect for bound appliance
-        location = "/equaliser" if sub == "equaliser" else "/"
-        handler.send_response(302)
-        handler.send_header("Location", location)
-        handler.send_header("Content-Length", "0")
-        handler.end_headers()
+        _redirect(handler, "/equaliser" if sub == "equaliser" else "/")
     elif not common._effective_control_other_appliances(state):
-        handler.send_response(302)
-        handler.send_header("Location", "/")
-        handler.send_header("Content-Length", "0")
-        handler.end_headers()
-    elif sub == "equaliser":
-        equaliser.send_remote_equaliser_page(handler, state, aid)
+        _redirect(handler, "/")
     else:
-        send_remote_home_page(handler, state, aid)
+        peer = resolve(aid)
+        if peer.kind != "remote" or not peer.client.snapshot().protocol_ok or peer.client.snapshot().boot is None:
+            _redirect(handler, "/")
+        elif sub == "equaliser":
+            equaliser.send_equaliser_page(handler, state, peer=peer)
+        else:
+            send_airplay_page(handler, state, session_state.AUTH, peer=peer)

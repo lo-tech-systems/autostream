@@ -568,19 +568,19 @@ STATIC = stub.REPO_ROOT / "nginx" / "static"
 # file under nginx/static -> the most lines it may have. Growth past a ceiling
 # needs a reason, so it is a decision, not drift.
 CEILINGS = {
-    "shared/state_stream.js": 160,
+    "shared/state_stream.js": 166,
     "shared/state_view.js": 250,
-    "shared/texts.js": 50,
+    "shared/texts.js": 60,
     "shared/pending.js": 35,
-    "page/home/home_main.js": 50,
+    "page/home/home_main.js": 54,
     "page/home/home_intents.js": 30,
-    "page/home/home_speakers.js": 380,
+    "page/home/home_speakers.js": 376,
     "page/home/home_now_playing.js": 170,
     "page/home/home_repeat.js": 110,
     "page/home/home_warnings.js": 80,
     "page/home/home_autostart.js": 45,
-    "page/selector_menu.js": 55,
-    "page/equaliser.js": 120,
+    "page/selector_menu.js": 65,
+    "page/equaliser.js": 124,
 }
 
 
