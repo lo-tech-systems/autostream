@@ -28,6 +28,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -79,7 +80,7 @@ struct FifoFixture
     std::string path;
     int         reader_fd = -1;
 
-    FifoFixture()
+    explicit FifoFixture(bool with_reader = true)
     {
         char dir_template[] = "/tmp/test_fifo_writer_XXXXXX";
         char* d = ::mkdtemp(dir_template);
@@ -91,18 +92,33 @@ struct FifoFixture
 
         // Open the reader end first, non-blocking, so FifoWriter's own
         // open() below never blocks or sees ENXIO -- same ordering OwnTone
-        // provides in production.
-        reader_fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK);
-        CHECK(reader_fd >= 0, "reader open succeeded");
+        // provides in production. A test of the no-reader path asks for
+        // the fixture without one and opens it later.
+        if (with_reader)
+            open_reader();
     }
 
     ~FifoFixture()
     {
-        if (reader_fd >= 0)
-            ::close(reader_fd);
+        close_reader();
         ::unlink(path.c_str());
         if (!dir.empty())
             ::rmdir(dir.c_str());
+    }
+
+    void open_reader()
+    {
+        reader_fd = ::open(path.c_str(), O_RDONLY | O_NONBLOCK);
+        CHECK(reader_fd >= 0, "reader open succeeded");
+    }
+
+    void close_reader()
+    {
+        if (reader_fd >= 0)
+        {
+            ::close(reader_fd);
+            reader_fd = -1;
+        }
     }
 
     // Non-blocking read of exactly `len` bytes already sitting in the pipe.
@@ -404,16 +420,113 @@ static void test_end_stream_on_a_healthy_writer_changes_nothing()
 }
 
 // ---------------------------------------------------------------------------
+// (6) With no reader on the FIFO, open() fails with ENXIO: the block is
+//     discarded and counted, and the writer recovers once a reader appears.
+// ---------------------------------------------------------------------------
+
+static void test_no_reader_counts_discarded_bytes()
+{
+    FifoFixture fx(/*with_reader=*/false);
+    FifoWriter  writer;
+    writer.set_path(fx.path);
+
+    std::vector<uint8_t> block = make_pattern(4096, /*base=*/5);
+    bool ok = writer.write(block.data(), block.size());
+    CHECK(!ok, "write() reports false while no reader has the FIFO open");
+    CHECK(!writer.is_open(), "the writer stays closed when open() fails with ENXIO");
+
+    FifoWriter::Counters c = writer.counters();
+    CHECK(c.no_reader_bytes == block.size(), "the whole block is counted as discarded for want of a reader");
+    CHECK(c.opens == 0, "no open has succeeded yet");
+    CHECK(c.pipe_bytes == -1, "the pipe size is unknown while not open");
+    CHECK(c.stall_events == 1, "a failed write with no streak in progress starts one");
+    CHECK(c.write_errors == 0 && c.error_bytes == 0, "a missing reader is not a write error");
+
+    fx.open_reader();
+    bool ok2 = writer.write(block.data(), block.size());
+    CHECK(ok2, "write() succeeds once a reader has opened the FIFO");
+    c = writer.counters();
+    CHECK(c.opens == 1, "the first successful open is counted");
+    CHECK(c.no_reader_bytes == block.size(), "the earlier loss is not revised by the later success");
+    CHECK(writer.stalled_seconds() == 0.0, "a successful write clears the stall streak");
+
+    std::vector<uint8_t> got = fx.read_available(block.size());
+    CHECK(got == block, "only the second block reached the pipe; the discarded one is gone");
+    CHECK(fx.nothing_more_available(), "nothing further is queued");
+}
+
+// ---------------------------------------------------------------------------
+// (7) The reader goes away with the pipe full and a tail queued: the next
+//     write sees EPIPE, the fd is closed, the tail and the block are counted
+//     as lost, and the writer reopens cleanly once a reader is back.
+// ---------------------------------------------------------------------------
+
+static void test_broken_pipe_counts_backlog_and_block()
+{
+    FifoFixture fx;
+    FifoWriter  writer;
+    writer.set_path(fx.path);
+
+    {
+        std::vector<uint8_t> priming = make_pattern(16, /*base=*/0);
+        CHECK(writer.write(priming.data(), priming.size()), "priming write succeeds");
+        fx.read_available(priming.size());
+    }
+
+    int pipe_cap = ::fcntl(fx.reader_fd, F_GETPIPE_SZ);
+    CHECK(pipe_cap > 0, "F_GETPIPE_SZ reports the pipe's current capacity");
+
+    const size_t tail_len = 777;
+    std::vector<uint8_t> fill = make_pattern(static_cast<size_t>(pipe_cap) + tail_len, /*base=*/7);
+    CHECK(!writer.write(fill.data(), fill.size()), "the fill write leaves a tail in the backlog");
+    CHECK(writer.counters().backlog_bytes == tail_len, "the tail is queued");
+
+    // The reader goes away with the pipe still full, so the next write's
+    // backlog drain meets EPIPE rather than EAGAIN.
+    fx.close_reader();
+
+    std::vector<uint8_t> block = make_pattern(2048, /*base=*/9);
+    bool ok = writer.write(block.data(), block.size());
+    CHECK(!ok, "write() reports false on a broken pipe");
+    CHECK(!writer.is_open(), "the fd is closed on a hard error");
+
+    FifoWriter::Counters c = writer.counters();
+    CHECK(c.write_errors == 1, "one hard write error");
+    CHECK(c.error_bytes == tail_len + block.size(),
+          "the queued tail and the whole unattempted block are counted as lost");
+    CHECK(c.backlog_bytes == 0, "close() dropped the backlog");
+    CHECK(c.pipe_bytes == -1, "the pipe size is unknown once closed");
+    CHECK(c.opens == 1, "no reopen has happened yet");
+
+    fx.open_reader();
+    std::vector<uint8_t> next = make_pattern(1024, /*base=*/11);
+    CHECK(writer.write(next.data(), next.size()), "write() reopens and succeeds once a reader is back");
+    c = writer.counters();
+    CHECK(c.opens == 2, "the reopen is counted");
+
+    std::vector<uint8_t> got = fx.read_available(next.size() + 1);
+    CHECK(got == next, "only the new block is readable: the old pipe's contents went with its last fd");
+    CHECK(fx.nothing_more_available(), "nothing further is queued");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
 int main()
 {
+    // The broken-pipe test writes to a FIFO whose reader has gone. The
+    // daemon ignores SIGPIPE in its own main(); this binary must too, or
+    // the kernel kills it before FifoWriter ever sees EPIPE.
+    ::signal(SIGPIPE, SIG_IGN);
+
     test_plain_write_byte_exact();
     test_backlog_fills_and_drains_in_order();
     test_backlog_overflow_drops_wholesale();
     test_end_stream_drops_backlog_and_closes_streak();
     test_end_stream_on_a_healthy_writer_changes_nothing();
+    test_no_reader_counts_discarded_bytes();
+    test_broken_pipe_counts_backlog_and_block();
 
     if (g_failed == 0) {
         std::printf("OK  %d/%d tests passed\n", g_tests, g_tests);
