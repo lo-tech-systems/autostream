@@ -66,6 +66,10 @@ CONTROLS_HIDE_SECONDS = 6.0
 REVEAL_ANIMATION_S = 0.55
 REVEAL_FRAME_GAP_S = 0.001
 
+# The small margin added to a wake deadline so the wake lands just past the
+# moment it is aiming at, not a hair before it.
+DEADLINE_PAD_S = 0.005
+
 
 def reveal_ease(t: float) -> float:
     """Smoothstep easing for the artwork-tap reveal: the chrome starts
@@ -230,13 +234,13 @@ class ControlsReveal:
     def hidden_deadline(self, now: float) -> float | None:
         """When the hide window's end must wake the repaint loop, or None."""
         until = self.hidden_until
-        return until + 0.005 if until > now else None
+        return until + DEADLINE_PAD_S if until > now else None
 
     def shown_deadline(self, now: float, compact: bool) -> float | None:
         """When the compact controls window's end must wake the repaint
         loop, or None."""
         until = self.shown_until
-        return until + 0.005 if until > now and compact else None
+        return until + DEADLINE_PAD_S if until > now and compact else None
 
     def reveal_deadline(self, now: float) -> float | None:
         """When the next reveal frame is due, or None with no slide stamped.
@@ -254,7 +258,7 @@ class ControlsReveal:
             return None
         next_frame = max(now, self.frame_at + REVEAL_FRAME_GAP_S)
         end = started + REVEAL_ANIMATION_S
-        return next_frame if next_frame < end else max(now, end + 0.005)
+        return next_frame if next_frame < end else max(now, end + DEADLINE_PAD_S)
 
     # ---- one-shot expiries: repaint thread, lock-free ----------------------
 

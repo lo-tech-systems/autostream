@@ -2857,13 +2857,13 @@ class TestHideControls:
             display.hide_controls()
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.1):
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
         assert display._overlay_signal.is_set()
         assert display._controls.hidden_until == 0.0
         # One-shot: a second call after firing does not re-signal.
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.2):
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
         assert not display._overlay_signal.is_set()
 
     def test_tick_controls_hidden_noop_before_deadline(self):
@@ -2873,7 +2873,7 @@ class TestHideControls:
             display.hide_controls()
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1000.0 + 1.0):
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
         assert not display._overlay_signal.is_set()
 
 
@@ -2927,7 +2927,7 @@ class TestArtworkReveal:
             _repaint(display)
             clock.t += ddc.REVEAL_ANIMATION_S + 0.1
             _repaint(display)
-            display._tick_controls_reveal()
+            display.fire_timer_for_tests("reveal")
         assert display._controls.started_at == 0.0
         return fb.displayed[-1]
 
@@ -3004,7 +3004,7 @@ class TestArtworkReveal:
             # frame is the bare frame again, the last is the controls.
             t_expiry = 1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.1
             clock.t = t_expiry
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
             _repaint(display)
             assert _pixels(fb.displayed[-1]) == _pixels(bare)
             assert display._controls.started_at == t_expiry
@@ -3044,7 +3044,7 @@ class TestArtworkReveal:
             assert _pixels(fb.displayed[-1]) == _pixels(bare)
 
             clock.t = 1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.1
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
             _repaint(display)
             # The session is hidden: no bands come back when the window ends.
             assert _pixels(fb.displayed[-1]) == _pixels(bare)
@@ -3103,7 +3103,7 @@ class TestArtworkReveal:
             _repaint(display)
             bare = _bare_frame(display, fb)
             assert _pixels(fb.displayed[-1]) == _pixels(bare)
-            display._tick_controls_reveal()
+            display.fire_timer_for_tests("reveal")
             assert display._controls.started_at == 0.0
 
             # The reveal tap ends the window; the frame that finds the
@@ -3271,7 +3271,7 @@ class TestArtworkReveal:
             display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.1
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
             _repaint(display)
             assert display._controls.started_at == 0.0
             assert display._controls.last is None
@@ -3319,7 +3319,7 @@ class TestArtworkReveal:
 
             # Once the end-of-slide tick has settled it, only the window's
             # end is left.
-            display._tick_controls_reveal()
+            display.fire_timer_for_tests("reveal")
             assert display._controls.started_at == 0.0
             assert display._next_repaint_deadline() == pytest.approx(1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.005)
 
@@ -3339,19 +3339,19 @@ class TestArtworkReveal:
             # A dismiss slide has no window; the tick must not end it early.
             display._overlay_signal.clear()
             clock.t = 1000.1
-            display._tick_controls_reveal()
+            display.fire_timer_for_tests("reveal")
             assert display._overlay_signal.is_set()
             assert display._controls.started_at == 1000.0
 
             display._overlay_signal.clear()
             clock.t = 1000.0 + ddc.REVEAL_ANIMATION_S + 0.01
-            display._tick_controls_reveal()
+            display.fire_timer_for_tests("reveal")
             assert display._overlay_signal.is_set()
             assert display._controls.started_at == 0.0
 
             display._overlay_signal.clear()
             clock.t = 1000.0 + ddc.REVEAL_ANIMATION_S + 0.05
-            display._tick_controls_reveal()
+            display.fire_timer_for_tests("reveal")
             assert not display._overlay_signal.is_set()
 
     def test_second_tap_starts_a_new_slide_from_zero(self):
@@ -3398,14 +3398,14 @@ class TestArtworkReveal:
             real_lock = display._lock
             display._lock = _Racer()
             try:
-                display._tick_controls_reveal()
+                display.fire_timer_for_tests("reveal")
             finally:
                 display._lock = real_lock
             assert display._controls.started_at == newer
 
             # Undisturbed, the tick still clears a finished slide.
             display._controls.started_at = 1000.0
-            display._tick_controls_reveal()
+            display.fire_timer_for_tests("reveal")
             assert display._controls.started_at == 0.0
 
     def test_screen_change_resets_window_and_slide(self):
@@ -3546,7 +3546,7 @@ class TestArtworkReveal:
         assert display._controls.started_at == 1000.0
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.1):
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
         assert display._controls.hidden_until == 0.0
         assert display._controls.started_at == 1000.0
         assert display._overlay_signal.is_set()
@@ -3671,13 +3671,13 @@ class TestReplayReveal:
             _repaint(display)
             clock.t = 1000.0 + ddc.REVEAL_ANIMATION_S + 0.05
             _repaint(display)
-            display._tick_controls_reveal()
+            display.fire_timer_for_tests("reveal")
             bare = self._bare(display, fb, base)
             painted = display._repeat_line.painted_second
             for step in (1.0, 2.0):
                 clock.t = 1000.6 + step
                 display._overlay_signal.clear()
-                display._tick_repeat_line()
+                display.fire_timer_for_tests("repeat_line")
                 assert display._overlay_signal.is_set()
                 _repaint(display)
                 assert display._repeat_line.painted_second == painted + int(step)
@@ -3720,7 +3720,7 @@ class TestReplayReveal:
             _repaint(display)
             clock.t = 1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.1
             self._seed("replaying", clock.t)
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
             _repaint(display)
             assert display.touch_surface()[0] == "repeat"
 
@@ -3741,7 +3741,7 @@ class TestReplayReveal:
             t_expiry = 1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.1
             clock.t = t_expiry
             self._seed("replaying", clock.t)
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
             _repaint(display)
             assert display._controls.sliding_in is True
             assert display._controls.started_at == t_expiry
@@ -3831,7 +3831,7 @@ class TestReplayReveal:
             _repaint(display)
             clock.t += ddc.CONTROLS_HIDE_SECONDS + 0.1
             self._seed("replaying", clock.t)
-            display._tick_controls_hidden()
+            display.fire_timer_for_tests("controls_hidden")
             _repaint(display)
             assert display._controls.started_at == clock.t
             clock.t += 0.1
@@ -5962,7 +5962,7 @@ class TestRepeatLineInterpolation:
         #            = 5.0 + 1.002 - 2.0 = 4.002 -- just past the 4.0 boundary.
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1001.002):
-            display._tick_repeat_line()
+            display.fire_timer_for_tests("repeat_line")
         assert display._overlay_signal.is_set()
 
     def test_tick_repeat_line_does_not_signal_mid_second(self):
@@ -5975,7 +5975,7 @@ class TestRepeatLineInterpolation:
         # shown(now) = 5.0 + 1.5 - 2.0 = 4.5 -- mid-second, 4 already painted, not due.
         display._overlay_signal.clear()
         with patch("dial_display.time.monotonic", return_value=1001.5):
-            display._tick_repeat_line()
+            display.fire_timer_for_tests("repeat_line")
         assert not display._overlay_signal.is_set()
 
     def test_tick_repeat_line_noop_while_hold(self):
@@ -5990,7 +5990,7 @@ class TestRepeatLineInterpolation:
         assert display._screen == "repeat"
 
         display._overlay_signal.clear()
-        display._tick_repeat_line()
+        display.fire_timer_for_tests("repeat_line")
         assert not display._overlay_signal.is_set()
 
 
@@ -6182,7 +6182,7 @@ class TestRepeatCounterPaintedReference:
             if before_tick is not None:
                 before_tick(clock)
             display._overlay_signal.clear()
-            display._tick_repeat_line()
+            display.fire_timer_for_tests("repeat_line")
             if display._overlay_signal.is_set():
                 painted.append(self._paint(display))
         return painted
@@ -6235,7 +6235,7 @@ class TestRepeatCounterPaintedReference:
             clock.t = 1002.01                       # compose+transmit crossed the 5.0 boundary
             assert display._next_repaint_deadline() == pytest.approx(1002.01)   # owed now
             display._overlay_signal.clear()
-            display._tick_repeat_line()
+            display.fire_timer_for_tests("repeat_line")
             assert display._overlay_signal.is_set()
             assert self._paint(display) == 5
             assert display._next_repaint_deadline() == pytest.approx(1002.01 + 0.99 + 0.005)
@@ -6251,7 +6251,7 @@ class TestRepeatCounterPaintedReference:
             clock.t = 1000.1
             self._resync(clock, -0.4)               # counter now 2.7, below the painted 3
             display._overlay_signal.clear()
-            display._tick_repeat_line()
+            display.fire_timer_for_tests("repeat_line")
             assert not display._overlay_signal.is_set()          # not due: hold
             assert self._line(display, clock).startswith("0:03 / ")  # a signal repaint still reads 3
             assert display._next_repaint_deadline() == pytest.approx(1000.1 + (4 - 2.7) + 0.005)
@@ -6288,7 +6288,7 @@ class TestRepeatCounterPaintedReference:
             self._seed(position=0.0, observed_at=clock.t)
             assert display._next_repaint_deadline() == pytest.approx(clock.t)   # owed now
             display._overlay_signal.clear()
-            display._tick_repeat_line()
+            display.fire_timer_for_tests("repeat_line")
             assert display._overlay_signal.is_set()
             assert self._paint(display) == 0
             assert self._line(display, clock).startswith("0:00 / ")
@@ -6308,7 +6308,7 @@ class TestRepeatCounterPaintedReference:
             clock.t = 1000.5
             self._seed(position=0.0, observed_at=clock.t)
             display._overlay_signal.clear()
-            display._tick_repeat_line()
+            display.fire_timer_for_tests("repeat_line")
             assert self._paint(display) == 0
             assert self._line(display, clock).startswith("0:00 / ")
             assert "hold" not in self._line(display, clock).lower()
@@ -6338,7 +6338,7 @@ class TestRepeatCounterPaintedReference:
             assert painted[-1] == 8
             self._seed(position=5.0, observed_at=clock.t)   # the poll: position unchanged
             display._overlay_signal.clear()
-            display._tick_repeat_line()
+            display.fire_timer_for_tests("repeat_line")
             assert display._overlay_signal.is_set()
             assert self._paint(display) == 3
 
@@ -7938,11 +7938,11 @@ class TestControlsShownDeadlineAndTick:
             display.set_overlay(OverlayState(visible=True))
             clock.t += ddc.CONTROLS_HIDE_SECONDS + 0.1
             display._overlay_signal.clear()
-            display._tick_controls_shown()
+            display.fire_timer_for_tests("controls_shown")
             assert display._overlay_signal.is_set()
             assert display._controls.shown_until == 0.0
             display._overlay_signal.clear()
-            display._tick_controls_shown()
+            display.fire_timer_for_tests("controls_shown")
             assert not display._overlay_signal.is_set()
 
     def test_off_compact_never_signals(self):
@@ -7952,7 +7952,7 @@ class TestControlsShownDeadlineAndTick:
         _poll_with_artwork(display, fb)
         display._controls.shown_until = time.monotonic() - 1.0
         display._overlay_signal.clear()
-        display._tick_controls_shown()
+        display.fire_timer_for_tests("controls_shown")
         assert not display._overlay_signal.is_set()
 
 
@@ -8686,11 +8686,11 @@ class TestNoWifiStateMachine:
     def test_tick_wifi_flash_signals_only_while_flashing(self):
         display, fb = self._idle_display()
         display._overlay_signal.clear()
-        display._tick_wifi_flash()
+        display.fire_timer_for_tests("wifi_flash")
         assert not display._overlay_signal.is_set()
         on_network_view(display, _view(LINK_DOWN))
         display._overlay_signal.clear()
-        display._tick_wifi_flash()
+        display.fire_timer_for_tests("wifi_flash")
         assert display._overlay_signal.is_set()
 
     def test_no_flash_off_the_idle_screen(self):

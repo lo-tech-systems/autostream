@@ -34,6 +34,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable, NamedTuple
 
 from PIL import Image, ImageChops
 
@@ -55,7 +56,7 @@ from dial_display_views import (
     WarningView,
 )
 from dial_display_draw import _unfinish
-from dial_display_controls import ControlsReveal
+from dial_display_controls import DEADLINE_PAD_S, ControlsReveal
 from dial_display_repeat_line import RepeatLine
 from dial_display_image import (
     decode_artwork,
@@ -162,7 +163,7 @@ _PAGE_ORDER = ("main", "repeat", "eq")
 # The idle screen's offline flash: the Wi-Fi glyph alternates grey/red,
 # switching every half period (a 1 Hz cycle). The repaint loop schedules
 # itself onto these boundaries — see _next_repaint_deadline()/
-# _tick_wifi_flash(); nothing else in the process ticks for it.
+# the wifi_flash timer; nothing else in the process ticks for it.
 WIFI_FLASH_HALF_PERIOD_S = 0.5
 
 # The "Restarting..." screen is meant to end when the reboot takes the panel
@@ -279,6 +280,20 @@ class DisplayRuntimeStatus:
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
+
+
+def _no_deadline() -> None:
+    """The deadline of a timer that never schedules a wake of its own."""
+    return None
+
+
+class _Timer(NamedTuple):
+    """One of the repaint loop's timers. *deadline* is when the loop must
+    next wake for it (None: nothing scheduled); *fire* is its work on a
+    timeout wake, and a truthy result asks for a repaint."""
+    name: str
+    deadline: Callable[[], "float | None"]
+    fire: Callable[[], "bool | None"]
 
 
 # Rich/large artist-row fallback text (see _effective_overlay_locked): shown
@@ -600,6 +615,21 @@ class DialDisplay:
         # _touch_activity_pending uses. None means "no pending request".
         self._screen_request: str | None = None
         self._page_request = 0
+
+        # The repaint loop's timers, in the order they run on a timeout wake.
+        # Each row's callables are methods of this display, so they look up
+        # the lock and the collaborators when called.
+        self._timers = (
+            _Timer("secondary_timeout", _no_deadline, self._check_secondary_timeout),
+            _Timer("repeat_line", self._repeat_line_deadline, self._repeat_line_fire),
+            _Timer("controls_hidden", self._controls_hidden_deadline, self._controls_hidden_fire),
+            _Timer("controls_shown", self._controls_shown_deadline, self._controls_shown_fire),
+            _Timer("wifi_flash", self._wifi_flash_deadline, self._wifi_flashing),
+            _Timer("due_status", _no_deadline, self._request_due_status),
+            _Timer("reveal", self._reveal_deadline, self._reveal_fire),
+            # Last: its deadline drops a timer that has run out.
+            _Timer("replay_timer", self._replay_timer_next, self._replay_timer_fire),
+        )
 
     # ---- lifecycle -------------------------------------------------------
 
@@ -998,8 +1028,8 @@ class DialDisplay:
         while hidden is the ordinary reveal (on_reveal_overlay ->
         set_overlay(visible=True)), which ends the window early (see
         set_overlay()). The window's own expiry is woken by the repaint
-        loop's deadline scheduling (_next_repaint_deadline/
-        _tick_controls_hidden).
+        loop's deadline scheduling (_next_repaint_deadline, the
+        controls_hidden timer).
 
         On the rich and large tiers the bands do not vanish at once: the
         first repaint that finds them due to go starts a short slide (see
@@ -1850,21 +1880,29 @@ class DialDisplay:
             if self._repaint_stop_event.is_set():
                 break
             if not signaled:
-                # Plain timeout — nothing to do beyond the selector/picker's
-                # own inactivity check and the Replaying line's once-a-
-                # second tick, then go back to waiting. This periodic wake
-                # exists only so stop() is noticed promptly even if no
-                # overlay signal ever arrives.
-                self._check_secondary_timeout()
-                self._tick_repeat_line()
-                self._tick_controls_hidden()
-                self._tick_controls_shown()
-                self._tick_wifi_flash()
-                self._request_due_status()
-                self._tick_controls_reveal()
-                self._tick_replay_timer()
+                # Plain timeout — nothing to do beyond the timers' own
+                # work, then go back to waiting. This periodic wake exists
+                # only so stop() is noticed promptly even if no overlay
+                # signal ever arrives.
+                self._run_timers()
                 continue
             self._repaint_once()
+
+    def _run_timers(self) -> None:
+        """The timeout branch: every timer's work, in row order, then one
+        repaint request if any of them asked for one."""
+        wake = False
+        for timer in self._timers:
+            if timer.fire():
+                wake = True
+        if wake:
+            self._overlay_signal.set()
+
+    def fire_timer_for_tests(self, name: str) -> None:
+        """Test hook: run one timer's work, as the timeout branch does."""
+        timer = {t.name: t for t in self._timers}[name]
+        if timer.fire():
+            self._overlay_signal.set()
 
     def _repaint_once(self) -> None:
         """One wake of the repaint loop that something signalled."""
@@ -2753,33 +2791,40 @@ class DialDisplay:
             with self._lock:
                 self._close_secondary_locked()
 
-    def _tick_repeat_line(self) -> None:
-        """Recompose the repeat screen whenever the replaying counter's
-        current second is not the one last painted, so the line counts up
-        between polls without skipping or repeating a value. Called from
-        the repeat thread's own timeout branch (see _repaint_run), which
-        sizes its wait to land just after the next second boundary; but
-        due-ness is decided against the painted second, never against
-        where within the second this wake landed, so a late wake, a status
-        re-sync that moved the interpolated clock, or a signal repaint that
-        straddled the boundary all still paint the second actually owed.
-        A housekeeping wake that lands with the painted second still
-        current (the wait capped at a second when something else is
-        scheduled sooner, or the plain fallback timeout) is not due and
-        must not force an off-boundary repaint. No HTTP call: the
-        interpolation is purely local (see dial_repeat_store.interpolated_position())
-        and the next poll always corrects any drift. A no-op while asleep
-        or when the repeat screen is not the one on screen.
-        """
+    def _repeat_line_deadline(self) -> "float | None":
+        """When the replaying counter next needs a paint: the repeat
+        screen's line, while it is the screen showing. Lock-free plain
+        reads; reads the core's published snapshot."""
+        if self._screen == "repeat" and self._repeat_screen is not None:
+            now = time.monotonic()
+            return self._repeat_line.counter_due(self._repeat_record(self._repeat_screen.appliance_id), now)
+        return None
+
+    def _repeat_line_fire(self) -> bool:
+        """Whether the repeat screen is due a recompose because the
+        replaying counter's current second is not the one last painted, so
+        the line counts up between polls without skipping or repeating a
+        value. The repaint loop sizes its wait to land just after the next
+        second boundary; but due-ness is decided against the painted
+        second, never against where within the second this wake landed, so
+        a late wake, a status re-sync that moved the interpolated clock, or
+        a signal repaint that straddled the boundary all still paint the
+        second actually owed. A housekeeping wake that lands with the
+        painted second still current (the wait capped at a second when
+        something else is scheduled sooner, or the plain fallback timeout)
+        is not due and must not force an off-boundary repaint. No HTTP call:
+        the interpolation is purely local (see
+        dial_repeat_store.interpolated_position()) and the next poll always
+        corrects any drift. False while the repeat screen is not the one on
+        screen."""
         if self._screen != "repeat":
-            return
+            return False
         screen = self._repeat_screen
         if screen is None:
-            return
+            return False
         now = time.monotonic()
         due = self._repeat_line.counter_due(self._repeat_record(screen.appliance_id), now)
-        if due is not None and due <= now:
-            self._overlay_signal.set()
+        return due is not None and due <= now
 
     def _replay_timer_deadline(self, now: float) -> "float | None":
         """When the main page's replay timer line next needs a paint (see
@@ -2790,102 +2835,88 @@ class DialDisplay:
             return None
         return self._repeat_line.timer_deadline(now, self._repeat_record)
 
-    def _tick_replay_timer(self) -> None:
-        """Repaint thread's own 1s-timeout branch: signal a repaint when the
-        main page's replay timer line is due one (see
+    def _replay_timer_next(self) -> "float | None":
+        """The replay timer line's deadline at the current time."""
+        return self._replay_timer_deadline(time.monotonic())
+
+    def _replay_timer_fire(self) -> bool:
+        """Whether the main page's replay timer line is due a repaint (see
         _replay_timer_deadline())."""
         now = time.monotonic()
         deadline = self._replay_timer_deadline(now)
         if deadline is not None and deadline <= now:
             self._repeat_line.timer_fired(now)
-            self._overlay_signal.set()
+            return True
+        return False
 
     def _next_repaint_deadline(self) -> "float | None":
         """The earliest monotonic time something on screen must change on
-        its own: the replaying counter's next second (now, when a paint is
-        already owed, see _tick_repeat_line()), the end
-        of a controls-hide window (see hide_controls()), the next frame of
-        an artwork-tap reveal (see ControlsReveal.animating()), or the offline
-        flash's next half-period boundary. None when nothing
-        is scheduled — the caller then falls back to its own housekeeping
-        cadence. Lock-free plain reads, the same discipline
-        _check_secondary_timeout() uses; reads the core's published
-        snapshot, as _tick_repeat_line() does.
-        """
+        its own: the earliest deadline of the timers, in row order. None
+        when nothing is scheduled; the caller then falls back to its own
+        housekeeping cadence. Lock-free plain reads, the same discipline
+        _check_secondary_timeout() uses."""
         deadlines = []
-        if self._screen == "repeat" and self._repeat_screen is not None:
-            now = time.monotonic()
-            due = self._repeat_line.counter_due(self._repeat_record(self._repeat_screen.appliance_id), now)
+        for timer in self._timers:
+            due = timer.deadline()
             if due is not None:
                 deadlines.append(due)
-        due = self._controls.hidden_deadline(time.monotonic())
-        if due is not None:
-            deadlines.append(due)
-        due = self._controls.reveal_deadline(time.monotonic())
-        if due is not None:
-            deadlines.append(due)
-        due = self._controls.shown_deadline(time.monotonic(), self._compact_tier())
-        if due is not None:
-            deadlines.append(due)
-        if self._wifi_flashing():
-            now = time.monotonic()
-            half = WIFI_FLASH_HALF_PERIOD_S
-            deadlines.append((math.floor(now / half) + 1) * half + 0.005)
-        timer_due = self._replay_timer_deadline(time.monotonic())
-        if timer_due is not None:
-            deadlines.append(timer_due)
         return min(deadlines) if deadlines else None
 
+    def _controls_hidden_deadline(self) -> "float | None":
+        """When an artwork-tap hide window ends and the bands must come back."""
+        return self._controls.hidden_deadline(time.monotonic())
 
-    def _tick_controls_hidden(self) -> None:
+    def _controls_hidden_fire(self) -> bool:
         """Wake the repaint loop exactly when an artwork-tap hide window
         (see hide_controls()) has just ended, so the bands reappear on
-        their own without waiting for an unrelated touch or poll — called
-        from the repeat thread's own timeout branch, the same cadence
-        _tick_repeat_line() uses. One-shot: resets the deadline to 0.0 (its
-        "not hidden" value) once fired, so this does not keep re-signalling
-        every housekeeping tick after expiry."""
+        their own without waiting for an unrelated touch or poll. One-shot:
+        resets the deadline to 0.0 (its "not hidden" value) once fired, so
+        this does not keep re-signalling every housekeeping tick after
+        expiry. The slide is the painters' to start and end; the repaint
+        this wakes finds the controls back and slides them in."""
         controls = self._controls
-        if controls.hidden_until and controls.expire_hidden(time.monotonic()):
-            # The slide is the painters' to start and end; the repaint this
-            # wakes finds the controls back and slides them in.
-            self._overlay_signal.set()
+        return bool(controls.hidden_until and controls.expire_hidden(time.monotonic()))
 
-    def _tick_controls_reveal(self) -> None:
+    def _controls_shown_deadline(self) -> "float | None":
+        """When a compact screen's own controls window ends and the bands
+        must step aside."""
+        return self._controls.shown_deadline(time.monotonic(), self._compact_tier())
+
+    def _controls_shown_fire(self) -> bool:
+        """Wake the repaint loop exactly when a compact screen's own
+        controls window (see ControlsReveal.show_compact()) has just lapsed,
+        so the bands step aside on their own without waiting for an
+        unrelated touch or poll. One-shot: resets the deadline to 0.0 once
+        fired, the same "already in the past" value
+        _compact_controls_hidden() reads as hidden, so this does not keep
+        re-signalling every housekeeping tick after expiry. False off the
+        compact tier."""
+        controls = self._controls
+        return bool(controls.shown_until and controls.expire_shown(time.monotonic(), self._compact_tier()))
+
+    def _reveal_deadline(self) -> "float | None":
+        """When the next frame of a reveal slide, or its settled frame, is due."""
+        return self._controls.reveal_deadline(time.monotonic())
+
+    def _reveal_fire(self) -> bool:
         """Wake the repaint loop for the next frame of a reveal slide while
         one is running, and once more the moment it has ended (its duration
         ran out) so the settled frame is painted at once rather than on the
-        next unrelated signal.
-        Called from the repaint thread's own timeout branch, whose wait
-        _next_repaint_deadline() has already sized onto the next frame.
-        One-shot at the end: resets the start to 0.0 so this does not keep
-        signalling every housekeeping tick afterwards. The reset is a
-        compare-and-clear under self._lock, which the repaint thread does not
-        hold at this point (the loop takes it only around the repaint), so a
-        slide the poll thread stamped since the start was read is left
-        alone."""
+        next unrelated signal. The loop's wait has already been sized onto
+        the next frame. One-shot at the end: resets the start to 0.0 so this
+        does not keep signalling every housekeeping tick afterwards. The
+        reset is a compare-and-clear under self._lock, which the repaint
+        thread does not hold at this point (the loop takes it only around
+        the repaint), so a slide the painters stamped since the start was
+        read is left alone."""
         controls = self._controls
         started = controls.started_at
         if not started:
-            return
+            return False
         if controls.slide_over(started, time.monotonic()):
             with self._lock:
                 controls.clear_slide_if(started)
-        self._overlay_signal.set()
-
-    def _tick_controls_shown(self) -> None:
-        """Wake the repaint loop exactly when a compact screen's own
-        controls window (see ControlsReveal.show_compact()) has just lapsed, so
-        the bands step aside on their own without waiting for an unrelated
-        touch or poll — called from the repeat thread's own timeout branch,
-        the same cadence _tick_controls_hidden() uses. One-shot: resets the
-        deadline to 0.0 once fired, the same "already in the past" value
-        _compact_controls_hidden() reads as hidden, so this does not keep
-        re-signalling every housekeeping tick after expiry. A no-op off the
-        compact tier."""
-        controls = self._controls
-        if controls.shown_until and controls.expire_shown(time.monotonic(), self._compact_tier()):
-            self._overlay_signal.set()
+        return True
 
     def _carried_paging_locked(self, prev, row_count: int) -> tuple[int, float]:
         """(page, opened_at) to keep across a row rebuild: the previous page
@@ -3441,13 +3472,14 @@ class DialDisplay:
             return
         self._overlay_signal.set()
 
-    def _tick_wifi_flash(self) -> None:
-        """Wake the repaint loop for the flash's next half-period while the
-        idle screen is flashing — called from the repaint thread's own
-        timeout branch (see _repaint_run), whose wait _next_repaint_
-        deadline() has already sized onto the boundary."""
-        if self._wifi_flashing():
-            self._overlay_signal.set()
+    def _wifi_flash_deadline(self) -> "float | None":
+        """The idle screen's next flash boundary while it is flashing, so the
+        repaint loop wakes onto it."""
+        if not self._wifi_flashing():
+            return None
+        now = time.monotonic()
+        half = WIFI_FLASH_HALF_PERIOD_S
+        return (math.floor(now / half) + 1) * half + DEADLINE_PAD_S
 
     def _display_idle_locked(self) -> None:
         """Compose and push the idle-screen frame — the "replay available"

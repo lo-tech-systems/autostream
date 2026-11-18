@@ -272,7 +272,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "check_timeout":
         d._check_secondary_timeout()
     elif kind == "tick_repeat_line":
-        d._tick_repeat_line()
+        d.fire_timer_for_tests("repeat_line")
     elif kind == "tick_warnings":
         # The core's warning housekeeping, then the view's own tick that
         # raises a status that was due while another page was up.
@@ -326,9 +326,9 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
     elif kind == "hide_controls":
         d.hide_controls()
     elif kind == "tick_controls_hidden":
-        d._tick_controls_hidden()
+        d.fire_timer_for_tests("controls_hidden")
     elif kind == "tick_controls_reveal":
-        d._tick_controls_reveal()
+        d.fire_timer_for_tests("reveal")
     elif kind == "network":
         # ("network", link, bars) -- feeds the poller's callback directly,
         # the same shape the worker calls it with after a poll.
@@ -344,7 +344,7 @@ def _apply_step(ctx: _Ctx, step: tuple) -> None:
         cell = next(i for i, (_, a) in enumerate(card.buttons) if a == action)
         d.card_button_tap(CARD_BUTTON_ZONES[cell])
     elif kind == "tick_wifi_flash":
-        d._tick_wifi_flash()
+        d.fire_timer_for_tests("wifi_flash")
     elif kind == "sd_health_view":
         # ("sd_health_view", status, percent) -- feeds the SD health
         # reader's callback directly, the same shape dial_sdhealth.tick()

@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import math
 
+from dial_display_controls import DEADLINE_PAD_S
 from dial_display_views import format_mmss
 from dial_repeat_store import heard_position
 
@@ -127,7 +128,7 @@ class RepeatLine:
         painted = self.painted_second
         if self.counter_second(value) != painted:
             return now
-        return now + (painted + 1.0 - value) + 0.005
+        return now + (painted + 1.0 - value) + DEADLINE_PAD_S
 
     def position_line(self, rec, now: float) -> "tuple[str, int | None] | None":
         """The replay position line for repeat-store record *rec* and the
@@ -198,7 +199,7 @@ class RepeatLine:
         elif elapsed >= REPLAY_TIMER_SHOW_S:
             due = max(now, self.timer_frame_at + REPLAY_TIMER_FADE_GAP_S)
         else:
-            due = shown + REPLAY_TIMER_SHOW_S + 0.005
+            due = shown + REPLAY_TIMER_SHOW_S + DEADLINE_PAD_S
             counter_due = self.counter_due(rec, now)
             if counter_due is not None:
                 due = min(due, counter_due)
