@@ -103,11 +103,7 @@ def _fit_image_to_panel(image, width: int, height: int):
         from PIL import Image
 
         img = image.convert("RGB")
-        try:
-            resample = Image.Resampling.LANCZOS
-        except AttributeError:
-            resample = Image.LANCZOS
-        img.thumbnail((width, height), resample)
+        img.thumbnail((width, height), Image.Resampling.LANCZOS)
         canvas = Image.new("RGB", (width, height), _BACKGROUND_RGB)
         canvas.paste(img, ((width - img.width) // 2, (height - img.height) // 2))
         logging.warning(

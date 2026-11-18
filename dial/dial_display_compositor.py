@@ -85,14 +85,8 @@ from dial_touch_layout import (
     zone_rects_for,
 )
 
-# Pillow renamed the resample enum in recent versions; fall back for older
-# installs, the same guard dial_display_image.py uses for its own resizes.
-try:
-    _LANCZOS = Image.Resampling.LANCZOS
-    _BOX = Image.Resampling.BOX
-except AttributeError:
-    _LANCZOS = Image.LANCZOS
-    _BOX = Image.BOX
+_LANCZOS = Image.Resampling.LANCZOS
+_BOX = Image.Resampling.BOX
 
 _logger = logging.getLogger(__name__)
 

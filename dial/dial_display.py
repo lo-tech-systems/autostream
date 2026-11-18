@@ -273,15 +273,8 @@ class ScreenPolicy:
     replay_surface: tuple[str, bool, bool, bool] | None = None
 
 
-# Pillow renamed these resample enums in recent versions; fall back for
-# older installs, the same guard dial_display_image.py/dial_display_
-# compositor.py use for their own resizes.
-try:
-    _RESAMPLE_BOX = Image.Resampling.BOX
-    _RESAMPLE_NEAREST = Image.Resampling.NEAREST
-except AttributeError:  # Pillow < 9.1
-    _RESAMPLE_BOX = Image.BOX
-    _RESAMPLE_NEAREST = Image.NEAREST
+_RESAMPLE_BOX = Image.Resampling.BOX
+_RESAMPLE_NEAREST = Image.Resampling.NEAREST
 
 
 def _resample_filter(source: tuple[int, int], target: tuple[int, int]):

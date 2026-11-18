@@ -82,10 +82,7 @@ BACKDROP_DARKEN_PERCENT = 35
 BACKDROP_WIDTH, BACKDROP_HEIGHT = 320, 240
 BACKDROP_JPEG_QUALITY = 80
 
-try:
-    _RESAMPLE = Image.Resampling.LANCZOS
-except AttributeError:  # Pillow < 9.1
-    _RESAMPLE = Image.LANCZOS
+_RESAMPLE = Image.Resampling.LANCZOS
 
 
 def resize_supersampled(img: Image.Image, size: tuple[int, int]) -> Image.Image:
