@@ -22,7 +22,7 @@ from dial_warnings import WarningManager, WarningStore
 ACTION_METHODS = (
     "set_focus", "set_output", "step_output_volume", "set_eq", "step_eq", "reset_eq",
     "start_replay", "restart_replay", "stop_replay", "set_repeat_armed", "dismiss_warning",
-    "volume_step", "volume_set", "mute_toggle",
+    "volume_step", "volume_set", "mute_toggle", "dismiss_start_failure",
 )
 
 

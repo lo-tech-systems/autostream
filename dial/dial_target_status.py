@@ -165,6 +165,7 @@ def _base_record(target: "PlayingTarget") -> dict:
         "track_id": None,
         "repeat": None,
         "input": None,
+        "start_failure": None,
         "status_error": None,
         "appliance_id": None,
     }
@@ -349,6 +350,8 @@ def fetch_target_status(
     record["track_id"] = track_id
     record["repeat"] = raw_repeat if isinstance(raw_repeat, dict) else None
     record["input"] = _parse_input(data)
+    raw_failure = data.get("start_failure")
+    record["start_failure"] = raw_failure if isinstance(raw_failure, dict) else None
     record["appliance_id"] = _parse_appliance_id(data)
     return record
 

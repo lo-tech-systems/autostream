@@ -62,10 +62,12 @@ from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, APPLIANCE_WARNING_ID_RE, APPLIANCE_WARNINGS_MAX, EQ_LIMIT_DB,
     DERIVED_EQ_IDS, EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, OUTPUTS_REFRESH_S,
     ActionResult, ApplianceWarning, Artwork, CoreSnapshot, DialInfo, EqState, FocusState,
-    NowPlaying, OutputsState, input_label_from_record, outputs_tap, PIN_RE, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
+    FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN, START_FAILURE_HOLD_S,
+    NowPlaying, OutputsState, StartFailureNotice, input_label_from_record, outputs_tap, PIN_RE, pin_capable_outputs, POWER_IDLE, PowerState, TickContext, TransportRequest, WarningState, _roster_entry,
     appliance_states, artwork_key, attribute_appliance_warnings, choose_pin, dots_active,
-    eq_available, eq_gain, idle_affordance, outputs_available, reporting_for, resolve_focus,
-    six_band, started_refused, validate_appliance_warnings, visible_targets, walk_order,
+    eq_available, eq_gain, idle_affordance, outputs_available, parse_start_failure,
+    reopen_for_pin, reporting_for, resolve_focus, six_band, start_failure_action,
+    started_refused, validate_appliance_warnings, visible_targets, walk_order,
     with_accepted_replay,
 )
 from dial_eq import _EqTarget
@@ -187,13 +189,15 @@ class _CoreState:
     sd_low: bool                        # the SD health incident latch (with hysteresis)
     appliance_warnings: dict            # appliance id -> its validated, attributed warnings
     statuses: dict                      # appliance id -> (status_error, master_volume, muted) from the last tick
+    start_failure: object | None        # the raised StartFailureNotice, published
+    start_failure_seen: dict            # appliance id -> (boot, seq) handled; private
 
 
 # Held in the state for the core's own use, never published as such.
 _PRIVATE_FIELDS = (
     "roster", "repeats", "eq_optimistic",
     "outputs_refresh_at", "outputs_watch", "eq_watch",
-    "wifi_down_streak", "sd_low", "appliance_warnings", "statuses",
+    "wifi_down_streak", "sd_low", "appliance_warnings", "statuses", "start_failure_seen",
 )
 
 _SNAPSHOT_FIELDS = tuple(
@@ -284,6 +288,17 @@ class OutputsEffect:
     outcome: str
     error: str | None
     token: float = 0.0
+    late: bool = False   # a PIN request that arrived after the switch's reply
+
+
+@dataclass(frozen=True)
+class StartFailureEffect:
+    """A raised notice, queued for a view: the appliance, the notice's key,
+    the speaker's name and the reason."""
+    appliance_id: str
+    key: str
+    name: str
+    reason: str
 
 
 def _number_of(request, key: str) -> float | None:
@@ -346,6 +361,8 @@ def _initial_state(dial_id: str) -> _CoreState:
         sd_low=False,
         appliance_warnings={},
         statuses={},
+        start_failure=None,
+        start_failure_seen={},
     )
 
 
@@ -436,6 +453,7 @@ class DialCore:
         self._prev_playing_ids: set[str] = set()
         self._focus_cleared = False
         self._tick_statuses: dict = {}
+        self._tick_failures: dict = {}
         self._idle_focus_found = False
         self._effects: list = []
         # What the dial says about itself: read again on the housekeeping
@@ -533,6 +551,7 @@ class DialCore:
         tick: "TickContext | None | object" = _UNSET,
         statuses: "dict | object" = _UNSET,
         volume_readout: "tuple | object" = _UNSET,
+        start_failures: "dict | object" = _UNSET,
     ) -> CoreSnapshot:
         """Publish the end of one poll tick. Fields passed are stored as
         given; fields left out keep the value the writers (the poll's own
@@ -548,9 +567,17 @@ class DialCore:
         *volume_readout* ((service, shown volume)) is the readout as the
         tick's own observations left it: the poll moves the volume worker's
         store without a volume reply, and the reporting appliance can change,
-        so a tick's end brings the published readout back in step."""
+        so a tick's end brings the published readout back in step.
+        *start_failures* (appliance id to the validated start_failure the
+        tick read, or None) is turned into a notice or a reopened PIN
+        request, once per failure."""
+        effects: list = []
+        lines: list = []
+
         def mutate(state: _CoreState) -> None:
             state.polling = polling
+            if start_failures is not _UNSET:
+                self._fold_start_failures_locked(state, start_failures, effects, lines)
             if visible_playing is not _UNSET:
                 state.visible_playing = visible_playing
             if tick is not _UNSET:
@@ -579,7 +606,12 @@ class DialCore:
                 state.volume_readout = volume_readout
             if repeats is not _UNSET or statuses is not _UNSET:
                 state.appliances = self._derive_appliances_locked(state)
-        return self._publish(mutate)
+        snap = self._publish(mutate)
+        for line in lines:
+            logging.info("dial core: %s", line)
+        for effect in effects:
+            self._queue_effects(effect)
+        return snap
 
     # ---- field writes ------------------------------------------------------
 
@@ -2047,6 +2079,7 @@ class DialCore:
         to the warnings is queued for a view and the subscribers are told."""
         effects = self.tick_housekeeping(now)
         self.refresh_watched(now)
+        self._expire_start_failure(now)
         self._refresh_capabilities(now)
         self._refresh_appliance_warnings(now)
         self._refresh_dial_info(now)
@@ -2249,6 +2282,7 @@ class DialCore:
         self._focus_cleared = False
         self._idle_focus_found = False
         self._tick_statuses = {}
+        self._tick_failures = {}
         polling = self._polling
         if polling:
             visible_ids = self._poll_tick()
@@ -2273,7 +2307,72 @@ class DialCore:
         self.publish_tick(
             polling=polling, repeats=repeats, visible_playing=visible_ids, tick=tick,
             statuses=statuses, volume_readout=self._readout_now(),
+            start_failures=dict(self._tick_failures),
         )
+
+    def _fold_start_failures_locked(self, state: _CoreState, failures: dict, effects: list, lines: list) -> None:
+        """Decide each appliance's start failure read this tick (see
+        `start_failure_action`) and record what it means: remembered, a
+        notice raised, or the dial's accepted output request reopened as one
+        that asks for a PIN. Effects and log lines are collected for the
+        caller to queue once the lock is released."""
+        now = self._clock()
+        for appliance_id, report in failures.items():
+            action = start_failure_action(
+                report, state.start_failure_seen.get(appliance_id),
+                appliance_id=appliance_id, request=state.outputs_request,
+            )
+            if action == FAILURE_SEEN or action == FAILURE_DEFER:
+                continue
+            state.start_failure_seen[appliance_id] = (report.boot, report.seq)
+            name = self._appliance_label(state, appliance_id)
+            if action == FAILURE_NOTICE:
+                key = f"{appliance_id}:{report.boot}:{report.seq}"
+                state.start_failure = StartFailureNotice(
+                    appliance_id, key, report.unit_id, report.name, report.reason, now,
+                )
+                effects.append(StartFailureEffect(appliance_id, key, report.name, report.reason))
+                lines.append(f"{name} could not start {report.name} ({report.reason})")
+            elif action == FAILURE_PIN:
+                request = state.outputs_request
+                state.outputs_request = reopen_for_pin(request, now)
+                effects.append(OutputsEffect(
+                    appliance_id, request.output_id or "", "output_set", "rejected",
+                    "pin_required", request.requested_at, True,
+                ))
+                lines.append(f"{name} could not start {report.name} ({report.reason})")
+
+    @staticmethod
+    def _appliance_label(state: _CoreState, appliance_id: str) -> str:
+        """The roster's display name for *appliance_id*, else the id."""
+        for r in state.roster:
+            if getattr(r, "appliance_id", "") == appliance_id:
+                return getattr(r, "name", "") or appliance_id
+        return appliance_id
+
+    def dismiss_start_failure(self, key: str) -> ActionResult:
+        """Answer the raised notice whose key is *key*: it leaves the snapshot for
+        every view. Accepted whether or not it was still raised (a second view, or
+        one racing the hold, answers a notice already gone)."""
+        def mutate(state: _CoreState) -> "bool | None":
+            held = state.start_failure
+            if held is None or held.key != key:
+                return False
+            state.start_failure = None
+        self._publish(mutate)
+        return ActionResult(True)
+
+    def _expire_start_failure(self, now: float) -> None:
+        """Drop a notice raised START_FAILURE_HOLD_S or more ago (housekeeping)."""
+        held = self._state.start_failure
+        if held is None or now - held.raised_at < START_FAILURE_HOLD_S:
+            return
+        def mutate(state: _CoreState) -> "bool | None":
+            current = state.start_failure
+            if current is None or current.key != held.key:
+                return False
+            state.start_failure = None
+        self._publish(mutate)
 
     def _note_status(self, service_name: str, result: dict) -> None:
         """Remember what a status fetch this tick said about *service_name*:
@@ -2283,6 +2382,9 @@ class DialCore:
         if error:
             self._tick_statuses[service_name] = (str(error), None, None)
             return
+        appliance_id = result.get("appliance_id")
+        if isinstance(appliance_id, str) and appliance_id:
+            self._tick_failures[appliance_id] = parse_start_failure(result.get("start_failure"))
         volume = result.get("master_volume")
         muted = result.get("muted")
         self._tick_statuses[service_name] = (

@@ -1112,3 +1112,120 @@ def test_six_band():
 
 def test_pin_capable_outputs():
     assert [cs.pin_capable_outputs(v) for v in (0, 1, 2, 3)] == [False, False, True, True]
+
+
+def _failure(**fields):
+    base = {"seq": 3, "boot": "b1", "unit_id": "1001", "name": "Speaker A",
+            "reason": "refused", "mine": True, "age_s": 4}
+    base.update(fields)
+    return base
+
+
+class TestParseStartFailure:
+    def test_a_good_object(self):
+        assert cs.parse_start_failure(_failure()) == cs.StartFailureReport(
+            "b1", 3, "1001", "Speaker A", "refused", True, 4)
+
+    @pytest.mark.parametrize("raw", [
+        None, "x", [], {},
+        _failure(seq=0), _failure(seq=True), _failure(seq="3"), _failure(seq=None),
+        _failure(age_s=-1), _failure(age_s=True), _failure(age_s=1.5), _failure(age_s=None),
+        _failure(reason="x" * 33), _failure(reason="Refused"), _failure(reason=""), _failure(reason=3),
+        _failure(boot="has space"), _failure(boot=""), _failure(boot=None), _failure(boot="b" * 65),
+        _failure(unit_id="a/b"), _failure(unit_id=7),
+        _failure(mine="yes"), _failure(name=None), _failure(name=5),
+    ])
+    def test_a_malformed_object_is_none(self, raw):
+        assert cs.parse_start_failure(raw) is None
+
+    def test_mine_absent_reads_false(self):
+        raw = _failure()
+        del raw["mine"]
+        assert cs.parse_start_failure(raw).mine is False
+
+    def test_a_long_name_is_cleaned_and_capped(self):
+        report = cs.parse_start_failure(_failure(name="  A‮B\u0007" + "x" * 200))
+        assert len(report.name) <= cs.START_FAILURE_NAME_MAX
+        assert "‮" not in report.name and "\u0007" not in report.name
+
+
+def _report(**fields):
+    return cs.parse_start_failure(_failure(**fields))
+
+
+def _set_request(state, output_id="1001", appliance_id="a" * 20, kind="output_set"):
+    return cs.TransportRequest(appliance_id, kind, 100.0, state, 100.0, None, output_id, 0)
+
+
+def _action(report, seen=None, request=None):
+    return cs.start_failure_action(report, seen, appliance_id="a" * 20, request=request)
+
+
+class TestStartFailureAction:
+    def test_no_report_is_seen(self):
+        assert _action(None) == cs.FAILURE_SEEN
+
+    def test_the_same_boot_at_or_above_the_seq_is_seen(self):
+        assert _action(_report(), ("b1", 3)) == cs.FAILURE_SEEN
+        assert _action(_report(), ("b1", 7)) == cs.FAILURE_SEEN
+
+    def test_a_new_boot_is_not_seen_whatever_the_seq(self):
+        assert _action(_report(seq=1), ("b0", 7)) == cs.FAILURE_NOTICE
+
+    def test_a_higher_seq_is_not_seen(self):
+        assert _action(_report(seq=4), ("b1", 3)) == cs.FAILURE_NOTICE
+
+    def test_another_clients_failure_is_marked(self):
+        assert _action(_report(mine=False)) == cs.FAILURE_MARK
+        assert _action(_report(mine=False, reason="pin_required"),
+                       request=_set_request("accepted")) == cs.FAILURE_MARK
+
+    def test_a_pin_request_after_an_accepted_reply_reopens(self):
+        assert _action(_report(reason="pin_required"),
+                       request=_set_request("accepted")) == cs.FAILURE_PIN
+
+    def test_a_pin_request_has_no_age_rule(self):
+        assert _action(_report(reason="pin_required", age_s=500),
+                       request=_set_request("accepted")) == cs.FAILURE_PIN
+
+    def test_a_pin_request_while_the_reply_is_pending_defers(self):
+        assert _action(_report(reason="pin_required"),
+                       request=_set_request("pending")) == cs.FAILURE_DEFER
+
+    def test_a_pin_request_the_reply_already_asked_is_marked(self):
+        assert _action(_report(reason="pin_required"),
+                       request=_set_request("rejected")) == cs.FAILURE_MARK
+
+    @pytest.mark.parametrize("request_", [
+        None,
+        _set_request("accepted", output_id="1002"),
+        _set_request("accepted", appliance_id="b" * 20),
+        _set_request("accepted", kind="output_pin"),
+        _set_request("accepted", kind="seek"),
+    ])
+    def test_a_pin_request_for_another_request_is_marked(self, request_):
+        assert _action(_report(reason="pin_required"), request=request_) == cs.FAILURE_MARK
+
+    def test_a_wrong_pin_is_marked(self):
+        assert _action(_report(reason="pin_invalid"),
+                       request=_set_request("accepted")) == cs.FAILURE_MARK
+
+    def test_an_old_failure_is_marked(self):
+        assert _action(_report(age_s=cs.START_FAILURE_MAX_AGE_S)) == cs.FAILURE_NOTICE
+        assert _action(_report(age_s=cs.START_FAILURE_MAX_AGE_S + 1)) == cs.FAILURE_MARK
+
+    def test_a_fresh_failure_of_the_dials_own_raises_the_notice(self):
+        assert _action(_report()) == cs.FAILURE_NOTICE
+        assert _action(_report(reason="mystery")) == cs.FAILURE_NOTICE
+
+
+def test_reopen_for_pin_keeps_the_identity_and_moves_the_window():
+    request = cs.TransportRequest("a" * 20, "output_set", 100.0, "accepted", 101.0, None, "1001", 0,
+                                  (True, 40))
+    reopened = cs.reopen_for_pin(request, 150.0)
+    assert (reopened.state, reopened.error, reopened.changed_at, reopened.shown) == (
+        "rejected", "pin_required", 150.0, None)
+    assert (reopened.requested_at, reopened.output_id, reopened.appliance_id, reopened.kind) == (
+        100.0, "1001", "a" * 20, "output_set")
+    assert cs.awaiting_pin(reopened, 150.0 + cs.PIN_WINDOW_S - 1)
+    assert not cs.awaiting_pin(reopened, 150.0 + cs.PIN_WINDOW_S)

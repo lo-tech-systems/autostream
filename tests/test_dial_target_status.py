@@ -914,3 +914,29 @@ class TestContentTypeValidation:
         with _mock_conn(_ok_response(), content_type="Application/JSON"):
             result = enrich_targets([t], "dial-id")
         assert result[0]["status_error"] is None
+
+
+class TestStartFailureFieldPassthrough:
+    def test_absent_start_failure_is_none_and_every_other_field_as_before(self):
+        t = _target()
+        with _mock_conn(_ok_response()):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["start_failure"] is None
+        assert record["playing"] is not None
+
+    def test_the_object_is_passed_through_verbatim(self):
+        t = _target()
+        failure = {"seq": 2, "boot": "b", "unit_id": "1", "name": "Speaker A",
+                   "reason": "refused", "mine": True, "age_s": 3}
+        with _mock_conn({**_ok_response(), "start_failure": failure}):
+            record = fetch_target_status(t, "dial-id")
+        assert record["start_failure"] == failure
+
+    @pytest.mark.parametrize("raw", ["nope", 5, None, [1]])
+    def test_a_non_object_is_none_and_still_a_good_200(self, raw):
+        t = _target()
+        with _mock_conn({**_ok_response(), "start_failure": raw}):
+            record = fetch_target_status(t, "dial-id")
+        assert record["status_error"] is None
+        assert record["start_failure"] is None

@@ -321,6 +321,130 @@ def outputs_tap(snapshot) -> tuple | None:
     return (request.output_id, request.shown[0], request.shown[1], request.requested_at)
 
 
+# ---- a speaker that could not start ---------------------------------------
+
+# A failed start older than this when the dial first reads it is not news.
+START_FAILURE_MAX_AGE_S = 30
+# How long a raised notice stays on the snapshot for a view that has not answered it.
+START_FAILURE_HOLD_S = 60.0
+START_FAILURE_NAME_MAX = 40
+_START_FAILURE_REASON_RE = re.compile(r"[a-z_]{1,32}")
+_START_FAILURE_TOKEN_RE = re.compile(r"[A-Za-z0-9_.:-]{1,64}")   # boot and unit id
+
+
+@dataclass(frozen=True)
+class StartFailureReport:
+    """One status reply's start_failure, validated."""
+    boot: str
+    seq: int
+    unit_id: str         # the speaker row id the dial sent as output_id
+    name: str            # cleaned, at most START_FAILURE_NAME_MAX characters
+    reason: str
+    mine: bool           # this dial asked for the start
+    age_s: int
+
+
+@dataclass(frozen=True)
+class StartFailureNotice:
+    """A failure the screens show: "Could not start <name>"."""
+    appliance_id: str
+    key: str             # "<appliance_id>:<boot>:<seq>", what a view dismisses it by
+    unit_id: str
+    name: str
+    reason: str
+    raised_at: float     # the core's clock
+
+
+def _whole_number(value, minimum: int) -> int | None:
+    """*value* when it is an int (not a bool) of at least *minimum*, else None."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        return None
+    return value
+
+
+def parse_start_failure(raw) -> StartFailureReport | None:
+    """The status reply's start_failure object, or None when it is absent or
+    not well formed: seq a positive int, age_s a non-negative int (bools
+    refused), boot and unit_id short tokens, reason a short lower-case id,
+    mine a bool (absent reads as False), name a string. Never raises."""
+    try:
+        if not isinstance(raw, dict):
+            return None
+        seq = _whole_number(raw.get("seq"), 1)
+        age_s = _whole_number(raw.get("age_s"), 0)
+        boot, unit_id = raw.get("boot"), raw.get("unit_id")
+        reason, name = raw.get("reason"), raw.get("name")
+        mine = raw.get("mine", False)
+        if seq is None or age_s is None or not isinstance(mine, bool):
+            return None
+        if not (isinstance(boot, str) and _START_FAILURE_TOKEN_RE.fullmatch(boot)):
+            return None
+        if not (isinstance(unit_id, str) and _START_FAILURE_TOKEN_RE.fullmatch(unit_id)):
+            return None
+        if not (isinstance(reason, str) and _START_FAILURE_REASON_RE.fullmatch(reason)):
+            return None
+        if not isinstance(name, str):
+            return None
+        return StartFailureReport(
+            boot, seq, unit_id, _clean_text(name, START_FAILURE_NAME_MAX), reason, mine, age_s,
+        )
+    except Exception:
+        return None
+
+
+# What a failure means for this dial (start_failure_action's answers).
+FAILURE_SEEN = "seen"        # already handled: nothing
+FAILURE_MARK = "mark"        # remember it, show nothing
+FAILURE_DEFER = "defer"      # look again at the next reading, remember nothing
+FAILURE_NOTICE = "notice"    # remember it and raise the notice
+FAILURE_PIN = "pin"          # remember it and reopen the output request for a PIN
+
+
+def start_failure_action(
+    report: StartFailureReport | None, seen: tuple[str, int] | None, *,
+    appliance_id: str, request: TransportRequest | None,
+) -> str:
+    """The first rule that applies:
+    1. no report, or seen holds the same boot and a seq at or above it: SEEN;
+    2. not report.mine: MARK;
+    3. reason "pin_required": if request is not None and
+       request.appliance_id == appliance_id and request.kind == "output_set"
+       and request.output_id == report.unit_id, then
+         state "pending": DEFER (its own reply is on the way);
+         state "accepted": PIN;
+         state "rejected": MARK (the reply already asked);
+       otherwise MARK. No age or focus rule applies here;
+    4. reason "pin_invalid": MARK (the keypad re-asks from the PIN reply);
+    5. report.age_s > START_FAILURE_MAX_AGE_S: MARK;
+    6. otherwise: NOTICE."""
+    if report is None or (seen is not None and seen[0] == report.boot and seen[1] >= report.seq):
+        return FAILURE_SEEN
+    if not report.mine:
+        return FAILURE_MARK
+    if report.reason == "pin_required":
+        if (request is None or request.appliance_id != appliance_id
+                or request.kind != "output_set" or request.output_id != report.unit_id):
+            return FAILURE_MARK
+        if request.state == "pending":
+            return FAILURE_DEFER
+        return FAILURE_PIN if request.state == "accepted" else FAILURE_MARK
+    if report.reason == "pin_invalid":
+        return FAILURE_MARK
+    if report.age_s > START_FAILURE_MAX_AGE_S:
+        return FAILURE_MARK
+    return FAILURE_NOTICE
+
+
+def reopen_for_pin(request: TransportRequest, now: float) -> TransportRequest:
+    """The accepted output request as one that ended asking for a PIN now:
+    state "rejected", error "pin_required", changed_at now (so the PIN window
+    runs from now), shown None. Everything else kept, the token
+    (requested_at) and output_id included."""
+    return replace(
+        request, state="rejected", error="pin_required", changed_at=now, shown=None,
+    )
+
+
 @dataclass(frozen=True)
 class ActionResult:
     """The outcome of a request made of the core: accepted means the request
@@ -389,6 +513,7 @@ class CoreSnapshot:
     auth_promotions: int = 0            # appliances a pushed auth change has confirmed as newly authorised
     outputs_request: TransportRequest | None = None  # the latest output request and its outcome
     power: PowerState = POWER_IDLE      # whether a requested power-off is in hand or did not happen
+    start_failure: "StartFailureNotice | None" = None   # the raised "could not start" notice, until answered or held out
 
     def appliance(self, appliance_id: str | None) -> ApplianceState | None:
         if appliance_id is None:
