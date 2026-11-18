@@ -675,10 +675,22 @@ def validate_appliance_warnings(body, appliance_id: str) -> tuple[ApplianceWarni
         entries = body.get("warnings")
         if not isinstance(entries, list):
             return ()
+        return appliance_warning_entries(entries, APPLIANCE_WARNINGS_MAX)
+    except Exception:
+        return ()
+
+
+def appliance_warning_entries(entries, limit: int) -> tuple[ApplianceWarning, ...]:
+    """The usable warnings among *entries*, at most *limit* of them: an entry
+    that is not an object, has an invalid or repeated id, or has no title once
+    cleaned is dropped; over-long text is truncated; severity and dismissal
+    fall back to their defaults. At most four times *limit* entries are
+    examined. Never raises."""
+    try:
         out: list[ApplianceWarning] = []
         seen: set[str] = set()
-        for entry in entries[:APPLIANCE_WARNINGS_MAX_SCAN]:
-            if len(out) >= APPLIANCE_WARNINGS_MAX:
+        for entry in list(entries)[:4 * limit]:
+            if len(out) >= limit:
                 break
             if not isinstance(entry, dict):
                 continue
