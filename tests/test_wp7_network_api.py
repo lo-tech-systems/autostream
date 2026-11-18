@@ -838,7 +838,7 @@ class TestRouteWiring:
             "autostream_webui_common", "autostream_webui_dials",
             "autostream_webui_page_about", "autostream_webui_page_equaliser",
             "autostream_webui_page_airplay", "autostream_webui_page_logs",
-            "autostream_webui_page_owntone", "autostream_webui_page_setup",
+            "autostream_webui_page_owntone", "webui.browser.setup.page",
             "autostream_webui_page_first_boot",
         ]
         for name in stubs:

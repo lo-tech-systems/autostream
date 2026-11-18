@@ -146,6 +146,19 @@ class TestFirstUpgrade:
         assert (dest / "__pycache__" / "autostream_kept.cpython-313.pyc").exists()
         assert "autostream_old.py" in result.stdout
 
+    def test_the_first_upgrade_removes_the_flat_web_modules_but_not_the_entry_script(self, trees):
+        src, dest = trees
+        _touch(src, "core/autostream_webui.py")
+        _touch(src, "core/webui/server.py")
+        for name in ("autostream_webui.py", "autostream_webui_api.py", "autostream_webui_routes.py"):
+            _touch(dest, name)
+        _touch(dest, "webui/server.py")
+        _prune(src, dest)
+        assert (dest / "autostream_webui.py").exists()
+        assert not (dest / "autostream_webui_api.py").exists()
+        assert not (dest / "autostream_webui_routes.py").exists()
+        assert (dest / "webui/server.py").exists()
+
     def test_keeps_everything_that_is_not_a_stale_top_level_module(self, trees):
         src, dest = trees
         _touch(dest, "autostream_old.py")
@@ -242,6 +255,24 @@ class TestWithManifest:
         _prune(src, dest)
         assert not (dest / "pkg").exists()
         assert dest.is_dir()
+
+    def test_a_package_moved_from_flat_modules_replaces_them(self, trees):
+        src, dest = trees
+        self._manifest(dest, "autostream_webui_page_setup.py", "autostream_kept.py")
+        _touch(dest, "autostream_webui_page_setup.py")
+        _touch(dest, "__pycache__/autostream_webui_page_setup.cpython-313.pyc")
+        _touch(dest, "autostream_kept.py")
+        # The release copy has already added the package files beside the flat ones.
+        _touch(src, "core/webui/browser/setup/page.py")
+        _touch(dest, "webui/browser/setup/page.py")
+        _prune(src, dest)
+        assert not (dest / "autostream_webui_page_setup.py").exists()
+        assert not (dest / "__pycache__" / "autostream_webui_page_setup.cpython-313.pyc").exists()
+        assert (dest / "webui/browser/setup/page.py").exists()
+        assert (dest / "autostream_kept.py").exists()
+        _run(f'deploy_manifest_write "{dest.as_posix()}" "{src.as_posix()}"')
+        assert "webui/browser/setup/page.py" in (dest / ".core-manifest").read_text(
+            encoding="utf-8").splitlines()
 
     def test_a_listed_path_that_is_already_gone_is_not_an_error(self, trees):
         src, dest = trees
@@ -384,6 +415,15 @@ class TestShippedNames:
         for entry in CORE.iterdir():
             if entry.is_dir() and entry.name in modules:
                 pytest.fail(f"core/{entry.name}/ shadows the module of the same name")
+
+
+@bash_capable
+def test_the_entry_script_ships_from_core():
+    # The service starts this file by path, and the first-upgrade rule keeps
+    # whatever the new release lists, so it must stay in core/.
+    assert (CORE / "autostream_webui.py").is_file()
+    listed = _run(f'deploy_manifest_list "{REPO_ROOT.as_posix()}"').stdout.splitlines()
+    assert "autostream_webui.py" in listed
 
 
 @shellcheck_available

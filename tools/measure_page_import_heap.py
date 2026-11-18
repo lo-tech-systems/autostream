@@ -41,7 +41,7 @@ PAGE_MODULES = (
     "autostream_webui_page_owntone",
     "autostream_webui_page_rebooting",
     "autostream_webui_page_service",
-    "autostream_webui_page_setup",
+    "webui.browser.setup.page",
 )
 
 

@@ -10,7 +10,7 @@ panels are not inlined into the initial /setup response -- each panel
 renders as an empty `id="panel-body-<key>"` placeholder that the browser
 fills in lazily via `GET /api/setup/card/<key>` the first time it's opened
 (see `_setup_build_ctx()`/`handle_setup_card_get()` in
-`autostream_webui_page_setup.py`). The collapsed summary rows (the only
+`webui/browser/setup/page.py`). The collapsed summary rows (the only
 per-card state visible on initial load) are unchanged byte-for-byte; only
 the nine detail-panel bodies moved out of this response. The golden file
 tracks that summary-rows-plus-empty-panels shape -- a deliberate wire
@@ -181,7 +181,7 @@ def _normalise(html: str) -> str:
 
 
 def _render_full_page(tmp_path: Path) -> str:
-    from autostream_webui_page_setup import send_setup_page
+    from webui.browser.setup.page import send_setup_page
     from autostream_settings import SettingsStore
     from autostream_webui_state import WebUIState
 
@@ -235,7 +235,7 @@ def _render_card_detail(tmp_path: Path, key: str) -> str:
     `GET /api/setup/card/<key>` returns, matching `_render_full_page()`'s
     fixed config/mocks so the two goldens describe the same appliance
     state."""
-    from autostream_webui_page_setup import handle_setup_card_get
+    from webui.browser.setup.page import handle_setup_card_get
     from autostream_settings import SettingsStore
     from autostream_webui_state import WebUIState
 
@@ -311,7 +311,7 @@ class TestSetupPageBrokenConfigFailurePath:
     function is split into per-card pieces."""
 
     def test_broken_config_redirects_to_home(self, tmp_path: Path):
-        from autostream_webui_page_setup import send_setup_page
+        from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
 
@@ -324,7 +324,7 @@ class TestSetupPageBrokenConfigFailurePath:
         auth = MagicMock()
 
         with patch(
-            "autostream_webui_page_setup._config_snapshot",
+            "webui.browser.setup.context._config_snapshot",
             side_effect=RuntimeError("broken config for characterisation test"),
         ):
             send_setup_page(handler, state, auth, flash_msg="")

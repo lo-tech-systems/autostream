@@ -289,7 +289,7 @@ def test_the_routes_that_carry_the_setup_island_and_cards_need_a_full_sign_in():
 
 def test_the_setup_island_holds_the_values_the_old_substitutions_did():
     from autostream_webui_assets import ICON_PADLOCK_LOCKED, ICON_PADLOCK_UNLOCKED  # noqa: PLC0415
-    from autostream_webui_page_setup import BLUETOOTH_LOOPBACK_HW  # noqa: PLC0415
+    from webui.browser.setup.cards_bluetooth import BLUETOOTH_LOOPBACK_HW  # noqa: PLC0415
     island = _source_text.page_data(_render("setup"))
     assert island["icons"] == {"padlock_locked": ICON_PADLOCK_LOCKED, "padlock_unlocked": ICON_PADLOCK_UNLOCKED}
     assert island["bt_loopback_hw"] == BLUETOOTH_LOOPBACK_HW

@@ -53,6 +53,7 @@ import autostream_repeat as repeat
 import autostream_input_status as input_status
 import autostream_session
 import autostream_audio_monitor as audio_monitor
+import webui.browser.setup.context as setup_context
 
 
 # ---------------------------------------------------------------------------
@@ -2730,18 +2731,18 @@ class TestSetupPageMarkup:
         core_path = str(Path(__file__).parent.parent / "core")
         if core_path not in sys.path:
             sys.path.insert(0, core_path)
-        import autostream_webui_page_setup as setup_mod
+        import webui.browser.setup.page  # noqa: F401  (registers the cards)
         import inspect
         # List rows are now built from one shared template
         # (_setup_list_row_html(), used by every registered card including
         # factory-reset) rather than one hand-written <div> per card --
         # check the template's onclick attribute is well-formed instead of
         # grepping for a now-nonexistent hardcoded literal.
-        source = inspect.getsource(setup_mod)
+        source = inspect.getsource(setup_context)
         assert "onclick=\"openPanel('{card.key}')\">" in source, \
             "Setup list-row template's card tag is missing closing '>'"
         assert "onclick=\"openPanel('{card.key}')\"\n" not in source, \
             "Setup list-row template's card tag has a bare newline where '>' should be"
         # Confirm the factory-reset card is actually registered through
         # that shared template (not some special-cased path).
-        assert any(c.key == "factory-reset" for c in setup_mod.CARDS)
+        assert any(c.key == "factory-reset" for c in setup_context.CARDS)

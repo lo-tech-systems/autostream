@@ -166,7 +166,7 @@ from autostream_webui_page_first_boot import (
 )
 from autostream_webui_page_rebooting import send_rebooting_page
 from autostream_webui_page_service import send_service_page
-from autostream_webui_page_setup import handle_setup_card_get, send_setup_page
+from webui.browser.setup.page import handle_setup_card_get, send_setup_page
 from autostream_webui_post_handlers import (
     handle_factory_reset_post,
     handle_live_input_eq_update,

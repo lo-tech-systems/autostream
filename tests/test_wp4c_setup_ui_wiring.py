@@ -128,7 +128,7 @@ class TestAudioControlsCardHtml:
     contains the oninput=syncGain/syncEq wiring."""
 
     def _card(self, input_index: int = 1) -> str:
-        from autostream_webui_page_setup import _audio_controls_card_html
+        from webui.browser.setup.cards_inputs import _audio_controls_card_html
         return _audio_controls_card_html(
             input_index=input_index,
             gain_db=0.0,
@@ -503,7 +503,7 @@ class TestInput1EnableToggle:
 class TestSetupPageLiveEnabled:
     def test_live_enabled_always_true(self, tmp_path):
         """The setup page always has liveEnabled=true; first-boot uses dedicated pages."""
-        from autostream_webui_page_setup import send_setup_page
+        from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult
@@ -547,7 +547,7 @@ class TestPlaybackPanelCardSplit:
         return html.split('id="panel-playback"', 1)[1].split('id="panel-track-id"', 1)[0]
 
     def test_four_cards_render_in_playback_panel(self, tmp_path):
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=True):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         # Four distinct settings_card_html() divs (identified by their
@@ -558,7 +558,7 @@ class TestPlaybackPanelCardSplit:
         assert 'id="general_audio_path"' in panel
 
     def test_owntone_button_moved_below_cards(self, tmp_path):
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=True):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         # The button must appear after the Audio Path select in document
@@ -573,7 +573,7 @@ class TestPlaybackPanelCardSplit:
         # not depend on what (if anything) answers on the backend port.
         caps = MagicMock()
         caps.can_set_output_offset = True
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True), \
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=True), \
              patch("autostream_player_service.get_capabilities", return_value=caps):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
@@ -587,7 +587,7 @@ class TestPlaybackPanelCardSplit:
     def test_align_button_hidden_without_offset_support(self, tmp_path):
         caps = MagicMock()
         caps.can_set_output_offset = False
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True), \
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=True), \
              patch("autostream_player_service.get_capabilities", return_value=caps):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
@@ -595,7 +595,7 @@ class TestPlaybackPanelCardSplit:
         assert "More Owntone Settings" in panel
 
     def test_audio_path_dropdown_offers_maximum_quality_on_high_perf(self, tmp_path):
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=True):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
@@ -604,7 +604,7 @@ class TestPlaybackPanelCardSplit:
         assert "Fast (lowest CPU use, fine for most sources)" in select_html
 
     def test_audio_path_dropdown_omits_maximum_quality_on_small_hardware(self, tmp_path):
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=False):
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=False):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
@@ -648,14 +648,14 @@ class TestPlaybackPanelCardSplit:
         assert "selected" in fast_option
 
     def test_audio_path_onchange_wired_to_settings_save_field(self, tmp_path):
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=True):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         select_html = panel.split('id="general_audio_path"', 1)[1].split('</select>', 1)[0]
         assert "settingsSaveField('general.audio_path', this.value)" in select_html
 
     def test_helptext_present(self, tmp_path):
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=True):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         assert "Applies immediately" in panel
@@ -665,7 +665,7 @@ class TestPlaybackPanelCardSplit:
         """Structural-only split: every id the pre-existing wiring tests
         depend on (repeat toggle, buffer target select, notes, volume
         slider) must still be present and inside the panel."""
-        with patch("autostream_webui_page_setup.is_high_performance_pi", return_value=True):
+        with patch("webui.browser.setup.cards_playback.is_high_performance_pi", return_value=True):
             html = _SetupRenderer().render(tmp_path)
         panel = self._playback_panel(html)
         for expected_id in (
@@ -700,7 +700,7 @@ class TestDevicePauseChoice:
         import autostream_config
         from autostream_backend_events import ConnectInfo
         from autostream_state.outputs import get_authority
-        from autostream_webui_page_setup import _setup_customise_card_html
+        from webui.browser.setup.cards_customise import _setup_customise_card_html
         from fake_store import FakeStore
         from output_fakes import homepods_row, row
 

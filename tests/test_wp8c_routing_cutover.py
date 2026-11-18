@@ -227,7 +227,7 @@ class TestFirstBootPinRedirect:
 @_skip
 class TestSetupPageNoInitialSetupMode:
     def _render(self, tmp_path) -> str:
-        from autostream_webui_page_setup import send_setup_page
+        from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult

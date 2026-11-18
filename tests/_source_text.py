@@ -129,7 +129,7 @@ def page_data(html: str) -> dict:
 # For each page: the module names and the glob patterns under nginx/static that
 # together hold its markup, scripts and styles.
 PAGE_SOURCES = {
-    "setup": (("autostream_webui_page_setup",), ("page/setup_*.js", "page/setup.css")),
+    "setup": (("webui.browser.setup",), ("page/setup_*.js", "page/setup.css")),
 }
 
 

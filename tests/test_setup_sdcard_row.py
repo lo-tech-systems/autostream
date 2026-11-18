@@ -22,14 +22,14 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_webui_page_setup as setup
-from autostream_webui_page_setup import _dial_card_html
+from webui.browser.setup.cards_dials import _dial_card_html
+import webui.browser.setup.cards_bluetooth as cards_bluetooth
 
 
 class TestSdcardHealthStatusLine:
     def test_tool_absent(self):
         sd_health = {"tool_present": False, "timer_enabled": True, "check": "passed", "health_percent": 80}
-        assert setup._sdcard_health_status_line(sd_health) == "Tool not installed"
+        assert cards_bluetooth._sdcard_health_status_line(sd_health) == "Tool not installed"
 
     def test_timer_disabled_with_check_passed_and_percent(self):
         # Monitoring is off: a leftover "passed" check and percent from
@@ -38,35 +38,35 @@ class TestSdcardHealthStatusLine:
             "tool_present": True, "timer_enabled": False,
             "check": "passed", "health_percent": 80, "last_sampled_at": "2026-01-01T00:00:00Z",
         }
-        assert setup._sdcard_health_status_line(sd_health) == "Not monitored"
+        assert cards_bluetooth._sdcard_health_status_line(sd_health) == "Not monitored"
 
     def test_timer_enabled_with_percent(self):
         sd_health = {
             "tool_present": True, "timer_enabled": True,
             "check": "passed", "health_percent": 80, "last_sampled_at": "2026-01-01T00:00:00Z",
         }
-        line = setup._sdcard_health_status_line(sd_health)
+        line = cards_bluetooth._sdcard_health_status_line(sd_health)
         assert line.startswith("Monitored, 80 % ")
 
     def test_timer_enabled_without_a_passed_reading(self):
         sd_health = {"tool_present": True, "timer_enabled": True, "check": "none", "health_percent": None}
-        assert setup._sdcard_health_status_line(sd_health) == "Not monitored"
+        assert cards_bluetooth._sdcard_health_status_line(sd_health) == "Not monitored"
 
 
 class TestSdcardHealthCardLine:
     def test_with_likely_supported(self):
         sd_health = {"card": {"name": "SD64G", "manfid": 0x03, "likely_supported": True}}
-        line = setup._sdcard_health_card_line(sd_health)
+        line = cards_bluetooth._sdcard_health_card_line(sd_health)
         assert line == "SD64G, manufacturer 0x03, likely supported"
 
     def test_without_likely_supported(self):
         sd_health = {"card": {"name": "SD64G", "manfid": 0x99, "likely_supported": False}}
-        line = setup._sdcard_health_card_line(sd_health)
+        line = cards_bluetooth._sdcard_health_card_line(sd_health)
         assert line == "SD64G, manufacturer 0x99"
 
     def test_missing_card_identity(self):
         sd_health = {"card": {"name": "", "manfid": None, "likely_supported": False}}
-        assert setup._sdcard_health_card_line(sd_health) == "support unknown"
+        assert cards_bluetooth._sdcard_health_card_line(sd_health) == "support unknown"
 
 
 class TestDialCardSdHealthRow:

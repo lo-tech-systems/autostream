@@ -20,7 +20,7 @@ _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
     sys.path.insert(0, _CORE)
 
-import autostream_webui_page_setup as setup
+import webui.browser.setup.cards_dials as cards_dials
 
 _SRC = _source_text.page_source("setup")
 
@@ -85,7 +85,7 @@ def test_panel_open_failure_line_is_age_limited():
 
 
 def test_card_has_progress_bar_markup_and_style():
-    html = setup._dial_card_html(uuid="u1", authorized=True, online=True)
+    html = cards_dials._dial_card_html(uuid="u1", authorized=True, online=True)
     assert "dial-update-bar" in html
     assert "dial-update-bar-fill" in html
     assert ".dial-update-bar-fill" in _SRC

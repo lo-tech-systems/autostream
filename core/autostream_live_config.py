@@ -648,7 +648,7 @@ def _validate_audio_path(value: object) -> str:
     if v == "max" and not is_high_performance_pi():
         # Defends against a stale browser tab (the Best tier is filtered
         # out of the rendered options on this hardware, see settings_card_html
-        # in autostream_webui_page_setup.py) or a hand-crafted request.
+        # in autostream_webui_common.py) or a hand-crafted request.
         raise ValueError("Best quality is only available on Pi 4/5-class hardware")
     return v
 
@@ -692,7 +692,7 @@ def _validate_capture_device(value: object) -> str:
     # pump feeds, never a valid capture-device value -- a stale saved value
     # or a hand-crafted request could otherwise resurface it (see the Setup
     # page's synthetic "(not currently detected)" option, build_opts in
-    # autostream_webui_page_setup.py). Only rejected when the Bluetooth-input
+    # webui/browser/setup/cards_inputs.py). Only rejected when the Bluetooth-input
     # subsystem is installed, so appliances without it see byte-identical
     # validator behaviour.
     if bluetooth_installed() and is_loopback_playback(v):

@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
+import _source_text  # noqa: E402
 from conftest import bash_can_run_script_at_windows_path  # noqa: E402
 
 REPO_ROOT = Path(__file__).parent.parent
@@ -186,7 +187,7 @@ class TestPageImportHeap:
         module = self._module()
         assert len(module.PAGE_MODULES) == 14
         for name in module.PAGE_MODULES:
-            assert (REPO_ROOT / "core" / f"{name}.py").is_file(), name
+            assert _source_text.module_path(name).is_file(), name
 
     def test_it_prints_one_line_of_four_columns(self, capsys, monkeypatch):
         module = self._module()

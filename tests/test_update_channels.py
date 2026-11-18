@@ -866,7 +866,6 @@ class TestSetupPageChannelToggle:
 
     def _render(self, tmp_path, channel="stable", auto_update=False):
         """Call the actual page renderer and return the rendered HTML."""
-        import autostream_webui_page_setup as _page
         from _setup_card_test_helpers import render_full_setup_with_cards
 
         config_path = self._make_config(tmp_path, channel, auto_update)

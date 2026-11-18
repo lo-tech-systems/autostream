@@ -25,9 +25,9 @@ from fake_store import fake_levels, fake_outputs, fake_playback, fake_playback_m
 import autostream_appliance_models as models
 from autostream_state import store
 import autostream_dials as dials
-import autostream_webui_page_setup as setup
 from autostream_webui_api import send_status_json
 from autostream_webui_page_airplay import send_airplay_page
+import webui.browser.setup.cards_dials as cards_dials
 
 _BANNER = "Dial updates required"
 _BANNER_OPEN = "<a id='dial-update-warning-banner' href='/setup#dials' style='display:"
@@ -232,27 +232,27 @@ class TestHomePage:
 
 class TestDialCardFlag:
     def test_flag_and_update_button_for_protocol_update(self):
-        html = setup._dial_card_html(
+        html = cards_dials._dial_card_html(
             uuid="u1", authorized=True, online=True, needs_update_protocol=True)
         assert "dial-badge-update" in html
         assert ">Needs update<" in html
         assert 'data-dial-action="update"' in html
 
     def test_no_flag_without_protocol_update(self):
-        html = setup._dial_card_html(
+        html = cards_dials._dial_card_html(
             uuid="u1", authorized=True, online=True, needs_update_protocol=False)
         assert "dial-badge-update" not in html
         assert "Needs update" not in html
         assert 'data-dial-action="update"' not in html
 
     def test_no_flag_for_offline_dial(self):
-        html = setup._dial_card_html(
+        html = cards_dials._dial_card_html(
             uuid="u1", authorized=True, online=False, needs_update_protocol=True)
         assert "dial-badge-update" not in html
         assert 'data-dial-action="update"' not in html
 
     def test_version_update_alone_has_button_but_no_flag(self):
-        html = setup._dial_card_html(
+        html = cards_dials._dial_card_html(
             uuid="u1", authorized=True, online=True, needs_update=True)
         assert 'data-dial-action="update"' in html
         assert "dial-badge-update" not in html
@@ -267,10 +267,10 @@ class _Entry:
 
 
 def _cards(sightings, entries):
-    with patch("autostream_webui_page_setup._get_dial_sightings", return_value=sightings), \
-         patch("autostream_webui_page_setup.parse_dial_entries", return_value=entries), \
-         patch("autostream_webui_page_setup.get_app_version", return_value="1.0.0"):
-        return setup._setup_dial_cards_html()
+    with patch("webui.browser.setup.cards_dials._get_dial_sightings", return_value=sightings), \
+         patch("webui.browser.setup.cards_dials.parse_dial_entries", return_value=entries), \
+         patch("autostream_webui_common.get_app_version", return_value="1.0.0"):
+        return cards_dials._setup_dial_cards_html()
 
 
 class TestDialCardsHtml:
@@ -312,4 +312,4 @@ class TestDeepLink:
         assert "openPanel('dials')" in src
 
     def test_dials_panel_target_exists(self):
-        assert '_register_card("dials"' in self._src()
+        assert 'register_card("dials"' in self._src()

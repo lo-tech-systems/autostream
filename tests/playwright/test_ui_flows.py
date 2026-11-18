@@ -3,7 +3,7 @@
 Covers: page rendering, navigation cards, panel interaction, accessibility.
 
 The stub server started by the ``base_url`` fixture serves HTML produced by
-the real ``send_setup_page()`` renderer (core/autostream_webui_page_setup.py)
+the real ``send_setup_page()`` renderer (core/webui/browser/setup/page.py)
 through ``_page_stub``, with hardware dependencies mocked out.  Changes to the
 page template, its embedded CSS, or its JavaScript therefore break these tests,
 not just changes to hand-written HTML.
@@ -190,7 +190,7 @@ def base_url():
 # Setup page — structure and navigation cards
 #
 # Markup comes from the real renderer; selectors must match
-# core/autostream_webui_page_setup.py exactly.
+# core/webui/browser/setup/ exactly.
 #   <title>autostream</title>                          (build_page_html arg)
 #   <html data-theme="light|dark">                     (build_page_html arg)
 #   <div class="eq-page-header"><h1>Setup</h1></div>  (_setup_page_header)

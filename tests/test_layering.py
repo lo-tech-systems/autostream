@@ -37,7 +37,7 @@ _L3 = """
 appliance_gateway appliance_models webui_api webui_assets webui_common
 webui_components webui_dials webui_page_about webui_page_airplay
 webui_page_align webui_page_auth webui_page_equaliser webui_page_first_boot webui_page_logs
-webui_page_owntone webui_page_rebooting webui_page_service webui_page_setup
+webui_page_owntone webui_page_rebooting webui_page_service
 webui_post_handlers webui_routes webui_service_schema webui_state webui_static
 """.split()
 
@@ -48,6 +48,7 @@ LAYERS: dict[str, str] = {
     "autostream_intents": "L1b",
     **{f"autostream_{n}": "L2" for n in _L2},
     **{f"autostream_{n}": "L3" for n in _L3},
+    "webui": "L3",
     "autostream_core": "L4",
     "autostream_webui": "L4",
 }

@@ -214,7 +214,7 @@ class TestBluetoothDisabledGating:
     def test_render_matches_pre_feature_baseline(self, tmp_path):
         """Regression guard: disabled output must match a render with the
         Bluetooth helper entirely absent (ImportError fallback path)."""
-        from autostream_webui_page_setup import send_setup_page
+        from webui.browser.setup.page import send_setup_page
         from autostream_settings import SettingsStore
         from autostream_webui_state import WebUIState
         from autostream_players import ListOutputsResult

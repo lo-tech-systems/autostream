@@ -251,8 +251,8 @@ class TestDeepLink:
 
     def test_input_panel_targets_exist(self):
         src = self._src()
-        assert '_register_card("input1"' in src
-        assert '_register_card("input2"' in src
+        assert 'register_card("input1"' in src
+        assert 'register_card("input2"' in src
 
 
 # ---------------------------------------------------------------------------

@@ -469,6 +469,11 @@ def retarget_source(data: bytes, entries: list[Entry], check_only: bool = False)
     counts = {e: 0 for e in entries}
     references = {e: 0 for e in entries}
     unhandled: list[tuple[int, str]] = []
+    # Every form names the old module, so an entry whose module the file never
+    # mentions has nothing to find; skipping it keeps a large map fast.
+    entries = [e for e in entries if e.old_module.encode("utf-8") in data]
+    if not entries:
+        return FileResult(data, counts, unhandled, references)
     if check_only:
         tree = ast.parse(data)
         for entry in entries:

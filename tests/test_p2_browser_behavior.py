@@ -35,6 +35,7 @@ import pytest
 import _source_text
 from _setup_card_test_helpers import setup_page_mocks
 from fake_store import fake_outputs
+import webui.browser.setup.page as setup_page
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -92,16 +93,6 @@ def _load_dial_webui() -> ModuleType:
     mod = importlib.util.module_from_spec(loader)
     loader.loader.exec_module(mod)
     return mod
-
-
-def _load_page_setup() -> ModuleType:
-    """Load autostream_webui_page_setup with external deps stubbed."""
-    sys.path.insert(0, str(REPO_ROOT / "core"))
-    try:
-        import autostream_webui_page_setup as m
-        return m
-    except ImportError:
-        pytest.skip("Could not import autostream_webui_page_setup")
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +310,7 @@ class TestDialCardHtmlEscaping:
 
     def test_new_dial_card_escapes_uuid(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid='<script>bad</script>', name="safe", authorized=False, online=True
         )
@@ -328,7 +319,7 @@ class TestDialCardHtmlEscaping:
 
     def test_new_dial_card_escapes_name(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         for payload in XSS_PAYLOADS:
             result = _dial_card_html(
                 uuid="safe-uuid", name=payload, authorized=False, online=True
@@ -340,7 +331,7 @@ class TestDialCardHtmlEscaping:
 
     def test_offline_dial_card_escapes_name(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="safe-uuid",
             name='<img src=x onerror=alert(1)>',
@@ -352,7 +343,7 @@ class TestDialCardHtmlEscaping:
 
     def test_online_dial_card_escapes_name(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="safe-uuid",
             name='"><script>xss</script>',
@@ -701,8 +692,6 @@ def _render_setup_page() -> str:
     import io
     from unittest.mock import MagicMock
 
-    m = _load_page_setup()
-
     buf = io.BytesIO()
     handler = MagicMock()
     handler.wfile = buf
@@ -724,7 +713,7 @@ def _render_setup_page() -> str:
     with setup_page_mocks(_config_snapshot=parsed, get_system_hostname="test-host",
                           get_ap_ssid="test-ssid"), \
          fake_outputs([], connected=False):
-        m.send_setup_page(handler, state, auth)
+        setup_page.send_setup_page(handler, state, auth)
 
     return buf.getvalue().decode("utf-8", errors="replace")
 
@@ -792,38 +781,38 @@ class TestDialCardHtmlStructure:
 
     def test_authorized_card_has_data_authorized_true(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'data-authorized="true"' in result
 
     def test_unauthorized_card_has_data_authorized_false(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="New Dial", authorized=False, online=False)
         assert 'data-authorized="false"' in result
 
     def test_online_card_has_data_online_true(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'data-online="true"' in result
 
     def test_offline_card_has_data_online_false(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=False)
         assert 'data-online="false"' in result
 
     def test_unauthorized_card_has_data_new(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="", authorized=False, online=False)
         assert "data-new" in result
 
     def test_authorized_card_dial_config_not_hidden(self):
         """Authorized cards must have .dial-config visible (no display:none)."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         # Find .dial-config section and confirm display:none is not on it
         idx = result.find("dial-config")
@@ -836,7 +825,7 @@ class TestDialCardHtmlStructure:
     def test_unauthorized_card_dial_config_is_hidden(self):
         """Unauthorized cards must have .dial-config hidden (display:none)."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="", authorized=False, online=False)
         idx = result.find("dial-config")
         assert idx >= 0, ".dial-config not found in unauthorized card"
@@ -847,7 +836,7 @@ class TestDialCardHtmlStructure:
     def test_dial_name_input_present_in_all_cards(self):
         """The .dial-name input must appear in both authorized and unauthorized cards."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         for auth in (True, False):
             result = _dial_card_html(uuid="u1", name="Test", authorized=auth, online=False)
             assert "dial-name" in result, f"dial-name missing for authorized={auth}"
@@ -855,7 +844,7 @@ class TestDialCardHtmlStructure:
     def test_allow_toggle_present_in_all_cards(self):
         """The .dial-allow toggle must appear in every card."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         for auth in (True, False):
             result = _dial_card_html(uuid="u1", name="Test", authorized=auth, online=False)
             assert "dial-allow" in result, f"dial-allow missing for authorized={auth}"
@@ -1002,7 +991,7 @@ class TestDialCardHtmlStructure:
     def test_no_revoke_button_in_dial_config(self):
         """The Revoke button must not appear in .dial-config; toggle is the only revoke path."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         # data-dial-action="revoke" must not appear in the config area
         assert 'data-dial-action="revoke"' not in result
@@ -1011,7 +1000,7 @@ class TestDialCardHtmlStructure:
 
     def test_screen_fitted_toggle_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert "dial-screen-fitted" in result
         assert "Has Screen Fitted" in result
@@ -1019,7 +1008,7 @@ class TestDialCardHtmlStructure:
     def test_screen_fitted_toggle_inside_locked_section(self):
         """The screen toggle must live inside the existing locked settings card area."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         locked_idx = result.find("dial-locked-section")
         screen_idx = result.find("dial-screen-fitted")
@@ -1052,7 +1041,7 @@ class TestDialCardHtmlStructure:
 
     def test_screen_rotate_toggle_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert "dial-screen-rotate" in result
         assert "Rotate Screen" in result
@@ -1060,7 +1049,7 @@ class TestDialCardHtmlStructure:
     def test_screen_rotate_toggle_inside_locked_section(self):
         """The rotate toggle must live inside the existing locked settings card area."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         locked_idx = result.find("dial-locked-section")
         rotate_idx = result.find("dial-screen-rotate")
@@ -1071,7 +1060,7 @@ class TestDialCardHtmlStructure:
     def test_screen_rotate_toggle_after_fitted_toggle(self):
         """The rotate row must appear after the fitted row in the HTML string."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         fitted_idx = result.find("dial-screen-fitted")
         rotate_idx = result.find("dial-screen-rotate")
@@ -1281,7 +1270,7 @@ class TestDialCardHtmlStructure:
 
     def test_screen_bgr_toggle_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert "dial-screen-bgr" in result
         assert "Swap Red/Blue (BGR)" in result
@@ -1289,7 +1278,7 @@ class TestDialCardHtmlStructure:
 
     def test_screen_type_select_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert '<select class="dial-screen-type" data-dial-action="save-screen" disabled></select>' in result
 
@@ -1297,7 +1286,7 @@ class TestDialCardHtmlStructure:
         """Both new rows must live in the locked section, after the rotate row,
         and before the Change Dial PIN button."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         locked_idx = result.find("dial-locked-section")
         rotate_idx = result.find("dial-screen-rotate")
@@ -1310,7 +1299,7 @@ class TestDialCardHtmlStructure:
     def test_screen_bgr_and_type_rows_hidden_by_default(self):
         """Both new rows must be hidden until the dial publishes `supported`."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         bgr_row_idx = result.find("dial-screen-bgr-row")
         type_row_idx = result.find("dial-screen-type-row")
@@ -1399,7 +1388,7 @@ class TestDialCardHtmlStructure:
 
     def test_touch_select_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert '<select class="dial-screen-touch" data-dial-action="save-screen" disabled></select>' in result
 
@@ -1407,7 +1396,7 @@ class TestDialCardHtmlStructure:
         """The touch row must live in the locked section, after the
         screen-type row, and before the Change Dial PIN button."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         locked_idx = result.find("dial-locked-section")
         type_idx = result.find("dial-screen-type-row")
@@ -1420,7 +1409,7 @@ class TestDialCardHtmlStructure:
         """The touch row must be hidden until the dial publishes
         `supported_touch`."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         touch_row_idx = result.find("dial-screen-touch-row")
         assert touch_row_idx >= 0
@@ -1485,7 +1474,7 @@ class TestDialCardHtmlStructure:
 
     def test_always_controls_toggle_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'class="dial-screen-always-controls"' in result
         assert "Always show on-screen controls" in result
@@ -1494,7 +1483,7 @@ class TestDialCardHtmlStructure:
 
     def test_panel_off_toggle_present_in_card_after_the_sleep_row(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'class="dial-screen-panel-off"' in result
         assert "Switch the panel off when asleep" in result
@@ -1545,7 +1534,7 @@ class TestDialCardHtmlStructure:
         """The controls row must live in the locked section, after the
         touch-panel row, and before the Change Dial PIN button."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         locked_idx = result.find("dial-locked-section")
         touch_idx = result.find("dial-screen-touch-row")
@@ -1558,7 +1547,7 @@ class TestDialCardHtmlStructure:
         """The row must be hidden until the dial publishes
         `always_show_controls` in GET /screen/settings."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         controls_row_idx = result.find("dial-screen-controls-row")
         assert controls_row_idx >= 0
@@ -1622,7 +1611,7 @@ class TestDialCardHtmlStructure:
 
     def test_scope_selects_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'class="dial-volume-scope"' in result
         assert 'class="dial-mute-scope"' in result
@@ -1635,7 +1624,7 @@ class TestDialCardHtmlStructure:
         """Both new rows must live in the locked section, after the
         controls row, and before the Change Dial PIN button."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         locked_idx = result.find("dial-locked-section")
         controls_idx = result.find("dial-screen-controls-row")
@@ -1650,7 +1639,7 @@ class TestDialCardHtmlStructure:
         """Both rows must be hidden until the dial publishes BOTH
         volume_scope and mute_scope in GET /screen/settings."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         idx = 0
         seen = 0
@@ -1743,7 +1732,7 @@ class TestDialCardHtmlStructure:
 
     def test_screen_size_input_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'class="dial-screen-size"' in result
         assert 'type="number"' in result
@@ -1755,7 +1744,7 @@ class TestDialCardHtmlStructure:
         """The size row must live directly after the screen-type row (and
         before the touch row), per the setup card's field order."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         type_idx = result.find("dial-screen-type-row")
         size_idx = result.find("dial-screen-size-row")
@@ -1765,7 +1754,7 @@ class TestDialCardHtmlStructure:
 
     def test_screen_size_row_hidden_by_default(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         size_row_idx = result.find("dial-screen-size-row")
         assert size_row_idx >= 0
@@ -1829,13 +1818,13 @@ class TestDialCardHtmlStructure:
 
     def test_screen_layout_select_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'class="dial-screen-layout"' in result
 
     def test_screen_layout_row_after_size_row_before_touch_row(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         size_idx = result.find("dial-screen-size-row")
         layout_idx = result.find("dial-screen-layout-row")
@@ -1845,7 +1834,7 @@ class TestDialCardHtmlStructure:
 
     def test_screen_layout_row_hidden_by_default(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         row_idx = result.find("dial-screen-layout-row")
         assert row_idx >= 0
@@ -1910,7 +1899,7 @@ class TestDialCardHtmlStructure:
 
     def test_layout_note_and_touch_warning_present_after_layout_row_before_touch_row(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         layout_idx = result.find("dial-screen-layout-row")
         note_idx = result.find("dial-screen-layout-note")
@@ -1921,7 +1910,7 @@ class TestDialCardHtmlStructure:
 
     def test_layout_note_and_touch_warning_hidden_by_default(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         for cls in ("dial-screen-layout-note", "dial-screen-touch-warning"):
             idx = result.find(cls)
@@ -1931,7 +1920,7 @@ class TestDialCardHtmlStructure:
 
     def test_layout_note_and_touch_warning_carry_ctl_row_class(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         for cls in ("dial-screen-layout-note", "dial-screen-touch-warning"):
             idx = result.find(cls)
@@ -2011,14 +2000,14 @@ class TestDialCardHtmlStructure:
 
     def test_mute_all_toggle_present_in_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'class="dial-mute-all"' in result
         assert "Mute all playing devices" in result
 
     def test_mute_all_row_after_prerelease_before_screen_fitted(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         chan_idx = result.find("dial-channel")
         mute_all_idx = result.find("dial-mute-all-row")
@@ -2028,7 +2017,7 @@ class TestDialCardHtmlStructure:
 
     def test_mute_all_row_hidden_by_default(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         row_idx = result.find("dial-mute-all-row")
         assert row_idx >= 0
@@ -2273,7 +2262,7 @@ class TestDialCardHtmlStructure:
     def test_new_card_fw_update_btn_inside_dial_config(self):
         """Unauthorized cards with a pending update must have Update firmware in .dial-config."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="New Dial", authorized=False, online=True,
             fw_version="1.0.0", needs_update=True,
@@ -2285,7 +2274,7 @@ class TestDialCardHtmlStructure:
 
     def test_authorized_card_fw_update_btn_present(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True,
             fw_version="1.0.0", needs_update=True,
@@ -2294,7 +2283,7 @@ class TestDialCardHtmlStructure:
 
     def test_no_fw_update_btn_when_not_needed(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True,
             fw_version="2.0.0", needs_update=False,
@@ -2303,7 +2292,7 @@ class TestDialCardHtmlStructure:
 
     def test_no_fw_update_btn_when_offline(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=False,
             fw_version="1.0.0", needs_update=True,
@@ -2314,7 +2303,7 @@ class TestDialCardHtmlStructure:
 
     def test_online_card_with_ip_shows_ip_row_after_current_name(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True, ip="10.0.0.23",
         )
@@ -2327,7 +2316,7 @@ class TestDialCardHtmlStructure:
     def test_offline_card_with_ip_shows_no_ip_row(self):
         """An offline dial's last-known address is not live, so nothing is shown."""
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=False, ip="10.0.0.23",
         )
@@ -2336,7 +2325,7 @@ class TestDialCardHtmlStructure:
 
     def test_new_online_card_with_ip_shows_ip_row(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="New Dial", authorized=False, online=True, ip="192.168.1.50",
         )
@@ -2344,7 +2333,7 @@ class TestDialCardHtmlStructure:
 
     def test_online_card_with_empty_ip_shows_no_ip_row(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True, ip="",
         )
@@ -2353,7 +2342,7 @@ class TestDialCardHtmlStructure:
 
     def test_ip_row_escapes_hostile_value(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True,
             ip='"><script>alert(1)</script>',
@@ -2364,26 +2353,26 @@ class TestDialCardHtmlStructure:
 
     def test_show_screen_btn_present_when_online(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert 'data-dial-action="show-screen"' in result
         assert "Show dial screen" in result
 
     def test_show_screen_btn_absent_when_offline(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=False)
         assert 'data-dial-action="show-screen"' not in result
 
     def test_show_screen_btn_absent_for_unauthorized_offline_new_card(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="", authorized=False, online=False)
         assert 'data-dial-action="show-screen"' not in result
 
     def test_show_screen_btn_appears_before_fw_update_btn(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True,
             fw_version="1.0.0", needs_update=True,
@@ -2395,7 +2384,7 @@ class TestDialCardHtmlStructure:
 
     def test_show_screen_btn_appears_before_reset_pin_btn(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         screen_idx = result.find('data-dial-action="show-screen"')
         pin_idx = result.find('data-dial-action="recover-pin"')
@@ -2404,7 +2393,7 @@ class TestDialCardHtmlStructure:
 
     def test_show_screen_btn_inside_dial_config(self):
         self._setup_stubs()
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         config_idx = result.find("dial-config")
         screen_idx = result.find('data-dial-action="show-screen"')
@@ -2561,7 +2550,7 @@ class TestDialPinControlsGatedOnCanConfirmPresence:
 
     def test_explanatory_message_element_in_card_html(self):
         sys.path.insert(0, str(REPO_ROOT / "core"))
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert "dial-pin-no-confirm-msg" in result
         assert "could not be reset" in result
@@ -2765,7 +2754,7 @@ class TestDialCardRecoveryBadge:
 
     def test_badge_renders_when_pin_recovery_true(self):
         sys.path.insert(0, str(REPO_ROOT / "core"))
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True, pin_recovery=True
         )
@@ -2773,7 +2762,7 @@ class TestDialCardRecoveryBadge:
 
     def test_badge_absent_when_pin_recovery_false(self):
         sys.path.insert(0, str(REPO_ROOT / "core"))
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True, pin_recovery=False
         )
@@ -2783,13 +2772,13 @@ class TestDialCardRecoveryBadge:
     def test_badge_defaults_to_absent(self):
         """pin_recovery defaults to False when a caller omits it."""
         sys.path.insert(0, str(REPO_ROOT / "core"))
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(uuid="u1", name="My Dial", authorized=True, online=True)
         assert "Recovery Active" not in result
 
     def test_badge_has_shared_and_variant_class(self):
         sys.path.insert(0, str(REPO_ROOT / "core"))
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True, pin_recovery=True
         )
@@ -2819,7 +2808,7 @@ class TestDialCardRecoveryBadge:
 
     def test_badge_coexists_with_online_badge(self):
         sys.path.insert(0, str(REPO_ROOT / "core"))
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=True, pin_recovery=True
         )
@@ -2834,7 +2823,7 @@ class TestDialCardRecoveryBadge:
         pin_recovery=True for it in practice, and the render path itself
         must not surface the badge for an offline card."""
         sys.path.insert(0, str(REPO_ROOT / "core"))
-        from autostream_webui_page_setup import _dial_card_html
+        from webui.browser.setup.cards_dials import _dial_card_html
         result = _dial_card_html(
             uuid="u1", name="My Dial", authorized=True, online=False, pin_recovery=False
         )

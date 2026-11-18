@@ -349,7 +349,7 @@ def _setup_session(*, bt_enabled=False, bt_status=None, dial_sightings=(), dial_
 
 def _render_setup(*, bt_enabled: bool = False, bt_status: dict | None = None,
                   dial_sightings=(), dial_entries=(), outputs=(), **_fakes) -> bytes:
-    from autostream_webui_page_setup import send_setup_page  # noqa: PLC0415
+    from webui.browser.setup.page import send_setup_page  # noqa: PLC0415
 
     handler, chunks = _handler("/setup")
     with _setup_session(bt_enabled=bt_enabled, bt_status=bt_status, dial_sightings=dial_sightings,
@@ -362,7 +362,8 @@ def setup_card_json(*, bt_enabled: bool = False, bt_status: dict | None = None,
                     dial_sightings=(), dial_entries=(), outputs=()) -> dict[str, bytes]:
     """Render every Setup card's lazy ``GET /api/setup/card/<key>`` reply, keyed
     by card key, as the stub server hands them to the page."""
-    from autostream_webui_page_setup import CARDS, handle_setup_card_get  # noqa: PLC0415
+    from webui.browser.setup.page import handle_setup_card_get
+    from webui.browser.setup.context import CARDS  # noqa: PLC0415
 
     replies: dict[str, bytes] = {}
     with _setup_session(bt_enabled=bt_enabled, bt_status=bt_status, dial_sightings=dial_sightings,

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+import _source_text
 
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
@@ -233,7 +234,5 @@ class TestTrackIdStoredSection:
 
     def test_setup_page_card_describes_track_change_detection(self):
         """Setup page card text must describe the track-change / re-identification behaviour."""
-        import inspect
-        import autostream_webui_page_setup as m
-        src = inspect.getsource(m)
+        src = _source_text.module_text("webui.browser.setup")
         assert "re-identif" in src.lower() or "track change" in src.lower(),             "Setup card text should describe track-change re-identification behaviour"

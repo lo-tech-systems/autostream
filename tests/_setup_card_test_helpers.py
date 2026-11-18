@@ -29,17 +29,17 @@ import _source_text
 # Each name the Setup page reads from outside, and the module it is looked up
 # in at render time.
 _SETUP_MOCK_HOMES = {
-    "get_system_hostname": "autostream_webui_page_setup",
-    "get_ap_ssid": "autostream_webui_page_setup",
-    "get_app_version": "autostream_webui_page_setup",
-    "_get_dial_sightings": "autostream_webui_page_setup",
-    "parse_dial_entries": "autostream_webui_page_setup",
-    "build_top_banner_html": "autostream_webui_page_setup",
-    "is_high_performance_pi": "autostream_webui_page_setup",
-    "_bluetooth_installed": "autostream_webui_page_setup",
-    "_bluetooth_services_enabled": "autostream_webui_page_setup",
-    "_bluetooth_onboard_enabled": "autostream_webui_page_setup",
-    "_config_snapshot": "autostream_webui_page_setup",
+    "get_system_hostname": "webui.browser.setup.context",
+    "get_ap_ssid": "webui.browser.setup.cards_factory_reset",
+    "get_app_version": "autostream_webui_common",
+    "_get_dial_sightings": "webui.browser.setup.cards_dials",
+    "parse_dial_entries": "webui.browser.setup.cards_dials",
+    "build_top_banner_html": "webui.browser.setup.page",
+    "is_high_performance_pi": "webui.browser.setup.cards_playback",
+    "_bluetooth_installed": "webui.browser.setup.cards_bluetooth",
+    "_bluetooth_services_enabled": "webui.browser.setup.cards_bluetooth",
+    "_bluetooth_onboard_enabled": "webui.browser.setup.cards_bluetooth",
+    "_config_snapshot": "webui.browser.setup.context",
 }
 
 # What a render sees unless a test says otherwise. The names left out are not
@@ -85,7 +85,8 @@ def render_full_setup_with_cards(handler, state, auth, **kwargs) -> str:
     whether it is inline or in a file. ``handler`` must already have
     ``wfile`` set to an ``io.BytesIO()`` -- this function reads it after
     calling ``send_setup_page()``."""
-    from autostream_webui_page_setup import CARDS, handle_setup_card_get, send_setup_page
+    from webui.browser.setup.page import handle_setup_card_get, send_setup_page
+    from webui.browser.setup.context import CARDS
 
     send_setup_page(handler, state, auth, **kwargs)
     html = handler.wfile.getvalue().decode("utf-8", errors="replace")
