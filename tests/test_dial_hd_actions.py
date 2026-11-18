@@ -715,7 +715,7 @@ class TestSettings:
     def test_the_two_servers_apply_one_at_a_time(self, server, management, saved):
         inside = []
         overlap = []
-        real = management._apply_screen_settings_locked
+        real = management._screen._apply_locked
 
         def tracked(screen):
             inside.append(1)
@@ -727,7 +727,7 @@ class TestSettings:
             finally:
                 inside.pop()
 
-        management._apply_screen_settings_locked = tracked
+        management._screen._apply_locked = tracked
         threads = [
             threading.Thread(target=post, args=(server.port, "/api/v1/settings", {"brightness": 20 + i}))
             for i in range(4)

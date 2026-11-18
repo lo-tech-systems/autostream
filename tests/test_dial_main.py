@@ -541,7 +541,7 @@ class TestDialFinalCleanup:
         control must not depend on the display stack being importable."""
         import builtins
         import dial_main as dm
-        from dial_http_server import NoOpDisplayStatusProvider
+        from dial_screen_settings import NoOpDisplayStatusProvider
 
         cfg = _make_cfg()
         mock_http = MagicMock()
@@ -1056,6 +1056,7 @@ class TestScreenSettingsLiveApply:
         from dial_display import DialDisplay
         from dial_display_backend import NoOpBackend
         from dial_http_server import DialHTTPServer
+        from dial_screen_settings import ScreenSettingsService
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
         display = DialDisplay(
@@ -1066,10 +1067,11 @@ class TestScreenSettingsLiveApply:
         server = DialHTTPServer.__new__(DialHTTPServer)
         server._cfg = cfg
         server._cfg_lock = __import__("threading").Lock()
-        server._display_status = display
         server._recovery_window = MagicMock()
-        server._touch_source = None
-        server._touch_runtime = ''
+        server._screen = ScreenSettingsService(
+            config=server.config_snapshot, update_cfg=server.update_cfg,
+            display_status=display,
+        )
 
         assert display.get_status()["fitted"] is False
 
@@ -1087,6 +1089,7 @@ class TestScreenSettingsLiveApply:
         from dial_display import DialDisplay
         from dial_display_backend import NoOpBackend
         from dial_http_server import DialHTTPServer
+        from dial_screen_settings import ScreenSettingsService
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, rotate=False))
         display = DialDisplay(
@@ -1098,10 +1101,11 @@ class TestScreenSettingsLiveApply:
         server = DialHTTPServer.__new__(DialHTTPServer)
         server._cfg = cfg
         server._cfg_lock = __import__("threading").Lock()
-        server._display_status = display
         server._recovery_window = MagicMock()
-        server._touch_source = None
-        server._touch_runtime = ''
+        server._screen = ScreenSettingsService(
+            config=server.config_snapshot, update_cfg=server.update_cfg,
+            display_status=display,
+        )
 
         assert display.get_status()["rotate"] is False
 
@@ -1121,6 +1125,7 @@ class TestScreenSettingsLiveApply:
         from dial_display import DialDisplay
         from dial_display_backend import NoOpBackend
         from dial_http_server import DialHTTPServer
+        from dial_screen_settings import ScreenSettingsService
 
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, bgr=False))
         display = DialDisplay(
@@ -1132,10 +1137,11 @@ class TestScreenSettingsLiveApply:
         server = DialHTTPServer.__new__(DialHTTPServer)
         server._cfg = cfg
         server._cfg_lock = __import__("threading").Lock()
-        server._display_status = display
         server._recovery_window = MagicMock()
-        server._touch_source = None
-        server._touch_runtime = ''
+        server._screen = ScreenSettingsService(
+            config=server.config_snapshot, update_cfg=server.update_cfg,
+            display_status=display,
+        )
 
         assert display.get_status()["bgr"] is False
         assert display.get_status()["screen_type"] == "st7735s_160x128"
@@ -1860,7 +1866,7 @@ class TestVolumeTargetsResolver:
 
     def test_noop_display_status_provider_has_no_accessor_falls_back_to_oldest(self):
         import dial_main as dm
-        from dial_http_server import NoOpDisplayStatusProvider
+        from dial_screen_settings import NoOpDisplayStatusProvider
 
         targets = self._targets()
         display = NoOpDisplayStatusProvider()
@@ -2563,7 +2569,7 @@ class TestInfoProviderWiring:
         actually has one — the NoOpDisplayStatusProvider fallback (a Pillow/
         display-stack import failure) has no screen at all."""
         import dial_main as dm
-        from dial_http_server import NoOpDisplayStatusProvider
+        from dial_screen_settings import NoOpDisplayStatusProvider
 
         noop = NoOpDisplayStatusProvider()
         assert not hasattr(noop, "set_info_provider")
@@ -2636,7 +2642,7 @@ class TestBootSplashWiring:
         assert order.index("mdns") < order.index("start")
 
     def test_noop_display_has_no_show_starting_and_main_still_boots(self):
-        from dial_http_server import NoOpDisplayStatusProvider
+        from dial_screen_settings import NoOpDisplayStatusProvider
         assert not hasattr(NoOpDisplayStatusProvider(), "show_starting")
         # _run_main_patched(...) with the display import forced to fail is
         # already covered by the existing fallback test elsewhere in this
@@ -2659,6 +2665,7 @@ class TestPresenceConfirmationWiring:
     def _real_server(self):
         import dial_http_server as dhs
         from dial_config import DialConfig
+        from dial_screen_settings import NoOpDisplayStatusProvider, ScreenSettingsService
 
         cfg = DialConfig(uuid="x", pin="1234")
         server = dhs.DialHTTPServer.__new__(dhs.DialHTTPServer)
@@ -2666,7 +2673,10 @@ class TestPresenceConfirmationWiring:
         server._cfg_lock = threading.Lock()
         server._recovery_window = dhs.RecoveryWindow(lambda add: None)
         server._can_confirm_presence = False
-        server._display_status = dhs.NoOpDisplayStatusProvider()
+        server._screen = ScreenSettingsService(
+            config=server.config_snapshot, update_cfg=server.update_cfg,
+            display_status=NoOpDisplayStatusProvider(),
+        )
         server._server = MagicMock()
         return server
 

@@ -957,7 +957,7 @@ _RESTART_DIAL_TIMEOUT_SECONDS = 30.0
 def restart_dial_service() -> bool:
     """Restart autostream_dial.service (touch-panel reconfiguration).
 
-    Invoked by dial_http_server.py's self-restart trigger after a Touch
+    Invoked by the dial's screen settings restart trigger after a Touch
     Panel change is persisted, so the new touch_type takes effect on the
     next process start. The unit name is a hardcoded literal here and is
     never derived from caller input — this verb takes zero arguments.

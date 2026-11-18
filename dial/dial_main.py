@@ -33,7 +33,6 @@ from dial_hd_server import HdServer
 from dial_http_server import (
     VERSION,
     DialHTTPServer,
-    NoOpDisplayStatusProvider,
     _announce_self,
 )
 from dial_info import current_ipv4, gather_dial_info
@@ -45,6 +44,7 @@ from dial_mdns import (
 )
 from dial_network import latest as network_latest
 from dial_network import start_network_worker
+from dial_screen_settings import NoOpDisplayStatusProvider
 import dial_sdhealth
 import autostream_logging as log_setup
 from autostream_peer_client import PeerClient, PeerPool

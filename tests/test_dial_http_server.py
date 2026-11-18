@@ -27,8 +27,11 @@ import dial_admin
 import dial_http_common
 import dial_pin_guard as pg
 import dial_http_server as dhs
+import dial_screen_settings as dss
+import dial_touch_controllers
 from dial_config import DEFAULT_PROFILE_KEY, DEFAULT_TOUCH_KEY, DialConfig, DialDisplayConfig
-from dial_http_server import DialHTTPServer, NoOpDisplayStatusProvider, RecoveryWindow
+from dial_http_server import DialHTTPServer, RecoveryWindow
+from dial_screen_settings import NoOpDisplayStatusProvider
 
 
 # ---------------------------------------------------------------------------
@@ -39,11 +42,16 @@ class FakeDialServer(dhs.DialHTTPServer):
     """A DialHTTPServer built without its HTTP socket, so the handler's logic
     runs against the real methods with the announcement recorded."""
 
-    def __init__(self, cfg: DialConfig) -> None:
+    def __init__(self, cfg: DialConfig, display_status=None) -> None:
         self._cfg           = cfg
         self._cfg_lock      = threading.Lock()
-        self._display_status = NoOpDisplayStatusProvider()
-        self._display_status.update_config(cfg.display)
+        if display_status is None:
+            display_status = NoOpDisplayStatusProvider()
+            display_status.update_config(cfg.display)
+        self._screen = dss.ScreenSettingsService(
+            config=self.config_snapshot, update_cfg=self.update_cfg,
+            display_status=display_status,
+        )
         self._recovery_window = MagicMock(spec=RecoveryWindow)
         self._recovery_window._active           = False
         self._recovery_window._volume_confirmed = False
@@ -55,10 +63,6 @@ class FakeDialServer(dhs.DialHTTPServer):
             "recovery_remaining_ms": rw._recovery_remaining_ms,
         }
         self._can_confirm_presence = False
-        self._touch_source = None
-        self._touch_runtime = ''
-        self._touch_restart_lock = threading.Lock()
-        self._last_touch_restart_monotonic: float | None = None
         self._announce_calls: list = []
         self._sdmon_lock = threading.Lock()
         self._sdmon_probe: dict = {"running": False, "outcome": None, "reason": "", "finished_at": None}
@@ -1004,7 +1008,7 @@ class TestScreenSettingsGet:
     def test_runtime_touch_type_reports_running_controller(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
         handler_cls, server = _make_handler_cls(cfg)
-        server._touch_runtime = "xpt2046"
+        server.set_touch_runtime("xpt2046")
         result = {}
         h = object.__new__(handler_cls)
         h.path           = "/screen/settings"
@@ -1016,7 +1020,7 @@ class TestScreenSettingsGet:
     def test_runtime_touch_type_none_when_disabled(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, touch_type="none"))
         handler_cls, server = _make_handler_cls(cfg)
-        server._touch_runtime = "none"
+        server.set_touch_runtime("none")
         result = {}
         h = object.__new__(handler_cls)
         h.path           = "/screen/settings"
@@ -1028,7 +1032,7 @@ class TestScreenSettingsGet:
     def test_runtime_touch_type_failed_when_construction_raised(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True, touch_type="xpt2046"))
         handler_cls, server = _make_handler_cls(cfg)
-        server._touch_runtime = "failed"
+        server.set_touch_runtime("failed")
         result = {}
         h = object.__new__(handler_cls)
         h.path           = "/screen/settings"
@@ -1047,7 +1051,7 @@ class TestScreenSettingsGet:
             fitted=True, touch_type="xpt2046",
         ))
         handler_cls, server = _make_handler_cls(cfg)
-        server._touch_runtime = "ft6206"
+        server.set_touch_runtime("ft6206")
         result = {}
         h = object.__new__(handler_cls)
         h.path           = "/screen/settings"
@@ -1368,7 +1372,7 @@ class TestScreenSettingsPost:
                           body={"screen": {"fitted": True}},
                           setup_server=server)
         assert r["status"] == 200
-        assert server._display_status.get_status()["fitted"] is True
+        assert server._screen.display_status.get_status()["fitted"] is True
 
     def test_post_with_both_scopes_persists_and_echoes(self):
         r = _call_handler(
@@ -1398,8 +1402,7 @@ class TestScreenSettingsPost:
             fitted=False, screen_type="st7735s_160x128",
             volume_scope="all", mute_scope="current",
         ))
-        server = FakeDialServer(cfg)
-        server._display_status = _FailingDisplayStatusProvider()
+        server = FakeDialServer(cfg, display_status=_FailingDisplayStatusProvider())
         r = _call_handler(
             "/screen/settings",
             body={"screen": {
@@ -1438,8 +1441,7 @@ class _FrameStatusProvider:
 class TestScreenImageGet:
     def test_returns_png_with_headers_when_frame_available(self):
         png_bytes = _PNG_SIGNATURE + b"rest-of-a-fake-encoded-frame"
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        server._display_status = _FrameStatusProvider(frame_png=png_bytes)
+        server = FakeDialServer(DialConfig(uuid="test-uuid"), display_status=_FrameStatusProvider(frame_png=png_bytes))
         r = _call_handler("/screen/image", method="GET", setup_server=server)
         assert r["status"] == 200
         assert r["content_type"] == "image/png"
@@ -1447,15 +1449,13 @@ class TestScreenImageGet:
         assert r["body"].startswith(_PNG_SIGNATURE)
 
     def test_none_frame_returns_404_no_frame(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        server._display_status = _FrameStatusProvider(frame_png=None)
+        server = FakeDialServer(DialConfig(uuid="test-uuid"), display_status=_FrameStatusProvider(frame_png=None))
         r = _call_handler("/screen/image", method="GET", setup_server=server)
         assert r["status"] == 404
         assert r["data"] == {"ok": False, "error": "no_frame"}
 
     def test_raising_accessor_returns_404_not_500(self):
-        server = FakeDialServer(DialConfig(uuid="test-uuid"))
-        server._display_status = _FrameStatusProvider(raises=RuntimeError("boom"))
+        server = FakeDialServer(DialConfig(uuid="test-uuid"), display_status=_FrameStatusProvider(raises=RuntimeError("boom")))
         r = _call_handler("/screen/image", method="GET", setup_server=server)
         assert r["status"] == 404
         assert r["data"] == {"ok": False, "error": "no_frame"}
@@ -1515,10 +1515,11 @@ class TestLayoutSizeSetting:
     def test_post_offered_size_persists_appears_and_remaps_touch(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
         server = FakeDialServer(cfg)
-        orig_update_config = server._display_status.update_config
+        orig_update_config = server._screen.display_status.update_config
         mock_update_config = MagicMock(side_effect=orig_update_config)
-        server._display_status.update_config = mock_update_config
-        server._touch_source = MagicMock()
+        server._screen.display_status.update_config = mock_update_config
+        touch = MagicMock()
+        server.set_touch_source(touch)
 
         r = _call_handler(
             "/screen/settings",
@@ -1537,8 +1538,8 @@ class TestLayoutSizeSetting:
         applied_display = mock_update_config.call_args[0][0]
         assert applied_display.layout_size == "large"
 
-        server._touch_source.display_config_changed.assert_called_once()
-        args, kwargs = server._touch_source.display_config_changed.call_args
+        touch.display_config_changed.assert_called_once()
+        args, kwargs = touch.display_config_changed.call_args
         assert args == (False,)
         assert kwargs["layout"].logical_size == (640, 480)
 
@@ -1679,11 +1680,11 @@ class TestLayoutReportHelper:
             screen_size_inches=screen_size_inches,
             layout_size=layout_size,
         )
-        assert dhs._layout_report_for(cfg) == expected
+        assert dss._layout_report_for(cfg) == expected
 
     def test_every_value_is_int_bool_or_str_never_none(self):
         for screen_type in ("st7735s_160x128", "st7789_240x240", "no-such-profile"):
-            report = dhs._layout_report_for(DialDisplayConfig(screen_type=screen_type))
+            report = dss._layout_report_for(DialDisplayConfig(screen_type=screen_type))
             for key, value in report.items():
                 assert value is not None, f"{key} is None for {screen_type}"
                 assert isinstance(value, (int, bool, str)), (
@@ -1695,14 +1696,14 @@ class TestLayoutReportWiring:
     def test_get_layout_matches_helper_for_default_config(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
         r = _call_handler("/screen/settings", method="GET", cfg=cfg)
-        assert r["data"]["layout"] == dhs._layout_report_for(cfg.display)
+        assert r["data"]["layout"] == dss._layout_report_for(cfg.display)
 
     def test_get_layout_matches_helper_for_large_configured_display(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(
             fitted=False, screen_type="st7789_320x240", layout_size="large",
         ))
         r = _call_handler("/screen/settings", method="GET", cfg=cfg)
-        assert r["data"]["layout"] == dhs._layout_report_for(cfg.display)
+        assert r["data"]["layout"] == dss._layout_report_for(cfg.display)
 
     def test_get_layout_present_alongside_unchanged_runtime_keys(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
@@ -1738,18 +1739,17 @@ class TestLayoutReportWiring:
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(
             fitted=False, screen_type="st7735s_160x128",
         ))
-        server = FakeDialServer(cfg)
-        server._display_status = _FailingDisplayStatusProvider()
+        server = FakeDialServer(cfg, display_status=_FailingDisplayStatusProvider())
         r = _call_handler(
             "/screen/settings",
             body={"screen": {"fitted": True, "screen_type": "st7789_240x240"}},
             setup_server=server,
         )
         assert r["data"]["error"] == "screen_apply_failed"
-        assert r["data"]["layout"] == dhs._layout_report_for(cfg.display)
+        assert r["data"]["layout"] == dss._layout_report_for(cfg.display)
         # The rejected request's screen_type report differs — proves this
         # isn't accidentally matching both.
-        assert r["data"]["layout"] != dhs._layout_report_for(
+        assert r["data"]["layout"] != dss._layout_report_for(
             DialDisplayConfig(fitted=True, screen_type="st7789_240x240")
         )
 
@@ -1956,9 +1956,8 @@ class TestTouchTypeRestartRequired:
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(
             fitted=False, screen_type="st7735s_160x128",
         ))
-        server = FakeDialServer(cfg)
-        server._display_status = _FailingDisplayStatusProvider()
-        server._touch_runtime = "ft6206"
+        server = FakeDialServer(cfg, display_status=_FailingDisplayStatusProvider())
+        server.set_touch_runtime("ft6206")
         r = _call_handler(
             "/screen/settings",
             body={"screen": {"fitted": True, "screen_type": "st7789_240x240"}},
@@ -1971,7 +1970,7 @@ class TestTouchTypeRestartRequired:
         """Same dead pattern, success branch."""
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
         server = FakeDialServer(cfg)
-        server._touch_runtime = "ft6206"
+        server.set_touch_runtime("ft6206")
         r = _call_handler(
             "/screen/settings",
             body={"screen": {"fitted": True}},
@@ -1989,7 +1988,7 @@ class TestTouchTypeSelfRestart:
     restart-dial-service` when touch_type actually changes, fired
     fire-and-forget (Popen, never waited on) strictly after the HTTP
     response has been sent, and rate-limited to at most once per
-    dhs._TOUCH_RESTART_COOLDOWN_SECONDS since POST /screen/settings is
+    dss._TOUCH_RESTART_COOLDOWN_SECONDS since POST /screen/settings is
     unauthenticated on a PIN-less dial."""
 
     def _post_touch_change(self, server, touch_type):
@@ -2082,12 +2081,12 @@ class TestTouchTypeSelfRestart:
             fitted=True, touch_type=DEFAULT_TOUCH_KEY,
         ))
         server = FakeDialServer(cfg)
-        with patch("dial_http_server.time.monotonic", return_value=1000.0):
+        with patch("dial_screen_settings.time.monotonic", return_value=1000.0):
             r1 = self._post_touch_change(server, "xpt2046")
         assert r1["data"]["restarting"] is True
         assert r1["popen_mock"].call_count == 1
 
-        with patch("dial_http_server.time.monotonic", return_value=1010.0), \
+        with patch("dial_screen_settings.time.monotonic", return_value=1010.0), \
              caplog.at_level("WARNING"):
             r2 = self._post_touch_change(server, "ft6206")
         assert r2["data"]["restart_required"] is True
@@ -2100,11 +2099,11 @@ class TestTouchTypeSelfRestart:
             fitted=True, touch_type=DEFAULT_TOUCH_KEY,
         ))
         server = FakeDialServer(cfg)
-        with patch("dial_http_server.time.monotonic", return_value=1000.0):
+        with patch("dial_screen_settings.time.monotonic", return_value=1000.0):
             self._post_touch_change(server, "xpt2046")
         with patch(
-            "dial_http_server.time.monotonic",
-            return_value=1000.0 + dhs._TOUCH_RESTART_COOLDOWN_SECONDS + 1,
+            "dial_screen_settings.time.monotonic",
+            return_value=1000.0 + dss._TOUCH_RESTART_COOLDOWN_SECONDS + 1,
         ):
             r2 = self._post_touch_change(server, "ft6206")
         assert r2["data"]["restarting"] is True
@@ -2116,8 +2115,7 @@ class TestScreenSettingsApplyThenPersist:
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(
             fitted=False, screen_type="st7735s_160x128",
         ))
-        server = FakeDialServer(cfg)
-        server._display_status = _FailingDisplayStatusProvider()
+        server = FakeDialServer(cfg, display_status=_FailingDisplayStatusProvider())
         r = _call_handler(
             "/screen/settings",
             body={"screen": {"fitted": True, "screen_type": "st7789_240x240"}},
@@ -2141,8 +2139,7 @@ class TestScreenSettingsApplyThenPersist:
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(
             fitted=True, rotate=False, screen_type="st7735s_160x128",
         ))
-        server = FakeDialServer(cfg)
-        server._display_status = _FailingDisplayStatusProvider()
+        server = FakeDialServer(cfg, display_status=_FailingDisplayStatusProvider())
         r = _call_handler(
             "/screen/settings",
             body={"screen": {
@@ -2160,8 +2157,7 @@ class TestScreenSettingsApplyThenPersist:
 
     def test_failed_apply_does_not_call_update_cfg(self):
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=False))
-        server = FakeDialServer(cfg)
-        server._display_status = _FailingDisplayStatusProvider()
+        server = FakeDialServer(cfg, display_status=_FailingDisplayStatusProvider())
         original_update_cfg = server.update_cfg
         calls = []
         server.update_cfg = lambda c: (calls.append(c), original_update_cfg(c))
@@ -2177,8 +2173,7 @@ class TestScreenSettingsApplyThenPersist:
         provider is (unrealistically) reporting a stale backend_open_failed,
         disabling must still succeed and persist normally."""
         cfg = DialConfig(uuid="x", display=DialDisplayConfig(fitted=True))
-        server = FakeDialServer(cfg)
-        server._display_status = _FailingDisplayStatusProvider()
+        server = FakeDialServer(cfg, display_status=_FailingDisplayStatusProvider())
         r = _call_handler(
             "/screen/settings",
             body={"screen": {"fitted": False}},
@@ -2422,7 +2417,6 @@ class TestCanConfirmPresenceAndRemainingMs:
         server._cfg_lock       = threading.Lock()
         server._recovery_window = RecoveryWindow(on_announce=lambda add: None)
         server._can_confirm_presence = False
-        server._display_status = NoOpDisplayStatusProvider()
 
         with patch("threading.Timer") as mock_timer_cls, \
              patch("time.monotonic", return_value=2000.0):
@@ -2453,14 +2447,15 @@ class TestCanConfirmPresenceAndRemainingMs:
         assert server._can_confirm_presence is False
 
     def test_set_touch_runtime_updates_real_server(self):
+        service = dss.ScreenSettingsService(
+            config=lambda: DialConfig(uuid="x"), update_cfg=lambda cfg: None,
+            display_status=NoOpDisplayStatusProvider(),
+        )
         server = DialHTTPServer.__new__(DialHTTPServer)
-        server._touch_runtime = ''
-        server.set_touch_runtime("xpt2046")
-        assert server._touch_runtime == "xpt2046"
-        server.set_touch_runtime("none")
-        assert server._touch_runtime == "none"
-        server.set_touch_runtime("failed")
-        assert server._touch_runtime == "failed"
+        server._screen = service
+        for value in ("xpt2046", "none", "failed"):
+            server.set_touch_runtime(value)
+            assert service.settings_reply()["runtime"]["touch_type"] == value
 
     def test_recovery_not_confirmed_403_unchanged_by_new_fields(self):
         """Sanity check: the existing 403 recovery_not_confirmed behaviour is
@@ -3084,8 +3079,8 @@ class TestApplyScreenSettings:
 
     def test_a_touch_type_change_reports_restarting_for_the_caller_to_fire(self):
         server = FakeDialServer(DialConfig(uuid="x"))
-        server._touch_restart_allowed = lambda: True
-        other = next(k for k in dhs.list_controllers() if k["key"] != DEFAULT_TOUCH_KEY)["key"]
+        server._screen._touch_restart_allowed = lambda: True
+        other = next(k for k in dial_touch_controllers.list_controllers() if k["key"] != DEFAULT_TOUCH_KEY)["key"]
         screen = server.screen_report()
         screen["touch_type"] = other
         with patch("dial_config.save_config"):
@@ -3097,7 +3092,7 @@ class TestApplyScreenSettings:
     def test_applies_are_serialised(self):
         server = FakeDialServer(DialConfig(uuid="x"))
         inside, overlap = [], []
-        real = server._apply_screen_settings_locked
+        real = server._screen._apply_locked
 
         def tracked(screen):
             inside.append(1)
@@ -3108,7 +3103,7 @@ class TestApplyScreenSettings:
             finally:
                 inside.pop()
 
-        server._apply_screen_settings_locked = tracked
+        server._screen._apply_locked = tracked
         with patch("dial_config.save_config"):
             threads = [threading.Thread(target=server.apply_screen_settings, args=({"fitted": True},))
                        for _ in range(4)]

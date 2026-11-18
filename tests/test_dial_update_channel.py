@@ -477,13 +477,9 @@ class TestDialHttpConfigureApi:
             # Set once at startup by dial_main from the inputs it actually
             # constructed; this fake never builds any, so it reports False.
             _can_confirm_presence = False
-            _touch_source = None
-            _touch_runtime = ''
-            _last_touch_restart_monotonic = None
 
             def __init__(self, initial):
                 self._cfg = initial
-                self._touch_restart_lock = __import__('threading').Lock()
 
             def update_cfg(self, new_cfg):
                 self._cfg = new_cfg

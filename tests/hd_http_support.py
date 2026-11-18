@@ -88,6 +88,7 @@ def management_baseline(server) -> dict:
         "attrs": dict(vars(server)),
         "cfg": copy.deepcopy(server._cfg),
         "window": dict(vars(server._recovery_window)),
+        "screen": dict(vars(server._screen)),
     }
 
 
@@ -99,12 +100,14 @@ def restore_management(server, baseline: dict) -> None:
     window.complete()
     vars(window).clear()
     vars(window).update(baseline["window"])
+    vars(server._screen).clear()
+    vars(server._screen).update(baseline["screen"])
     attrs = vars(server)
     for name in [n for n in attrs if n not in baseline["attrs"]]:
         del attrs[name]
     attrs.update(baseline["attrs"])
     server._cfg = copy.deepcopy(baseline["cfg"])
-    server._display_status.update_config(server._cfg.display)
+    server._screen.display_status.update_config(server._cfg.display)
 
 
 def write_static(root: Path) -> Path:
