@@ -58,6 +58,7 @@ import dial_core_state
 import dial_repeat_store
 from dial_core import DialCore
 import dial_display as dd
+import dial_display_state as dds
 import dial_warning_text as dwt
 import dial_display_compositor as dd_compositor
 import dial_display_draw as dd_draw
@@ -3581,7 +3582,7 @@ class TestReplayReveal:
         base = Image.linear_gradient("L").resize((fb.width, fb.height)).convert("RGB")
         with display._lock:
             display._screen = "repeat"
-            display._repeat_screen = dd.ApplianceScreenState(
+            display._repeat_screen = dds.ApplianceScreenState(
                 appliance_id=self.AID, service_name="Kitchen", opened_at=at,
             )
             display._current_base_image = base
@@ -4626,8 +4627,8 @@ class TestSelectorUnauthorizedRows:
             lounge,
         ])
         rows = display._selector.rows
-        assert dd._selector_list_row(rows[1]) == ("Lounge", False, dd_views.NOT_AUTHORISED_TEXT)
-        assert dd._selector_list_row(rows[0])[2] is dd.PLAY_GLYPH
+        assert dds.selector_list_row(rows[1]) == ("Lounge", False, dd_views.NOT_AUTHORISED_TEXT)
+        assert dds.selector_list_row(rows[0])[2] is dd_views.PLAY_GLYPH
 
     def test_selector_pick_on_unauthorized_opens_hint(self):
         display = self._display()
@@ -4681,7 +4682,7 @@ class TestSelectorUnauthorizedRows:
         from dial_touch_layout import info_value_layout_for
 
         metrics = metrics_for(width, height, mm_per_px)
-        label, text = dd._unauthorised_hint(name)
+        label, text = dds.unauthorised_hint(name)
         layout = info_value_layout_for(width, height, metrics=metrics)
         draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
         lines, font = dd_draw._fit_value_lines(
@@ -5057,89 +5058,89 @@ class TestLayoutMetricsLockFree:
 
 class TestClampPageAndPageSlice:
     def test_clamp_page_empty_rows_is_zero(self):
-        assert dd._clamp_page(3, 0, 3) == 0
+        assert dds.clamp_page(3, 0, 3) == 0
 
     def test_clamp_page_beyond_last_clamps(self):
-        assert dd._clamp_page(10, 5, 3) == 1  # 5 rows at 3/page -> pages 0, 1
+        assert dds.clamp_page(10, 5, 3) == 1  # 5 rows at 3/page -> pages 0, 1
 
     def test_clamp_page_exact_multiple_has_no_extra_trailing_page(self):
-        assert dd._clamp_page(2, 6, 3) == 1  # 6 rows at 3/page -> pages 0, 1 only
+        assert dds.clamp_page(2, 6, 3) == 1  # 6 rows at 3/page -> pages 0, 1 only
 
     def test_clamp_page_negative_clamps_to_zero(self):
-        assert dd._clamp_page(-1, 5, 3) == 0
+        assert dds.clamp_page(-1, 5, 3) == 0
 
     def test_page_slice_returns_start_and_rows(self):
         rows = tuple(range(5))
-        start, page_rows = dd._page_slice(rows, 1, 3)
+        start, page_rows = dds.page_slice(rows, 1, 3)
         assert start == 3
         assert page_rows == (3, 4)
 
     def test_page_slice_stale_page_yields_empty_tuple(self):
         rows = tuple(range(5))
-        _, page_rows = dd._page_slice(rows, 5, 3)  # well past the last page
+        _, page_rows = dds.page_slice(rows, 5, 3)  # well past the last page
         assert page_rows == ()
 
 
 class TestListStateForHelper:
     def test_none_state_gives_placeholder(self):
-        state = dd._list_state_for(None, 3, "No rows", lambda r: (r, False))
+        state = dds.list_state_for(None, 3, "No rows", lambda r: (r, False))
         assert state.rows == (("No rows", False),)
         assert state.has_prev is False
         assert state.has_next is False
 
     def test_empty_state_gives_placeholder(self):
-        selector = dd.ListScreenState(rows=(), page=0, opened_at=0.0)
-        state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
+        selector = dds.ListScreenState(rows=(), page=0, opened_at=0.0)
+        state = dds.list_state_for(selector, 3, "No devices", dds.selector_list_row)
         assert state.rows == (("No devices", False),)
         assert state.has_prev is False
         assert state.has_next is False
 
     def test_playing_selector_row_maps_to_play_glyph_triple(self):
-        rows = (dd.SelectorRow(appliance_id="a", label="A", current=False, playing=True),)
-        selector = dd.ListScreenState(rows=rows, page=0, opened_at=0.0)
-        state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
-        assert state.rows == (("A", False, dd.PLAY_GLYPH),)
+        rows = (dial_core_state.SelectorRow(appliance_id="a", label="A", current=False, playing=True),)
+        selector = dds.ListScreenState(rows=rows, page=0, opened_at=0.0)
+        state = dds.list_state_for(selector, 3, "No devices", dds.selector_list_row)
+        assert state.rows == (("A", False, dd_views.PLAY_GLYPH),)
 
     def test_non_playing_selector_row_maps_to_pair(self):
-        rows = (dd.SelectorRow(appliance_id="a", label="A", current=True, playing=False),)
-        selector = dd.ListScreenState(rows=rows, page=0, opened_at=0.0)
-        state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
+        rows = (dial_core_state.SelectorRow(appliance_id="a", label="A", current=True, playing=False),)
+        selector = dds.ListScreenState(rows=rows, page=0, opened_at=0.0)
+        state = dds.list_state_for(selector, 3, "No devices", dds.selector_list_row)
         assert state.rows == (("A", True),)
 
     def test_picker_row_maps_to_label_and_formatted_duration(self):
-        rows = (dd.PickerRow(appliance_id="a", service_name="A", ip="1.2.3.4", port=80,
+        rows = (dial_core_state.PickerRow(appliance_id="a", service_name="A", ip="1.2.3.4", port=80,
                               label="A", seconds=90.0),)
-        picker = dd.ListScreenState(rows=rows, page=0, opened_at=0.0)
-        state = dd._list_state_for(picker, 3, "Nothing to replay", dd._picker_list_row)
+        picker = dds.ListScreenState(rows=rows, page=0, opened_at=0.0)
+        state = dds.list_state_for(picker, 3, "Nothing to replay", dds.picker_list_row)
         assert state.rows == (("A", False, "1:30"),)
 
     def test_has_next_true_only_when_rows_remain_after_the_page(self):
         rows = tuple(
-            dd.SelectorRow(appliance_id=str(i), label=str(i), current=False)
+            dial_core_state.SelectorRow(appliance_id=str(i), label=str(i), current=False)
             for i in range(4)
         )
-        first_page = dd._list_state_for(
-            dd.ListScreenState(rows=rows, page=0, opened_at=0.0), 3, "No devices", dd._selector_list_row,
+        first_page = dds.list_state_for(
+            dds.ListScreenState(rows=rows, page=0, opened_at=0.0), 3, "No devices", dds.selector_list_row,
         )
         assert first_page.has_next is True
-        second_page = dd._list_state_for(
-            dd.ListScreenState(rows=rows, page=1, opened_at=0.0), 3, "No devices", dd._selector_list_row,
+        second_page = dds.list_state_for(
+            dds.ListScreenState(rows=rows, page=1, opened_at=0.0), 3, "No devices", dds.selector_list_row,
         )
         assert second_page.has_next is False
 
     def test_pressed_defaults_to_none(self):
-        selector = dd.ListScreenState(
-            rows=(dd.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
+        selector = dds.ListScreenState(
+            rows=(dial_core_state.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
         )
-        state = dd._list_state_for(selector, 3, "No devices", dd._selector_list_row)
+        state = dds.list_state_for(selector, 3, "No devices", dds.selector_list_row)
         assert state.pressed is None
 
     def test_pressed_passes_through_unchanged(self):
-        selector = dd.ListScreenState(
-            rows=(dd.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
+        selector = dds.ListScreenState(
+            rows=(dial_core_state.SelectorRow(appliance_id="a", label="A", current=False),), page=0, opened_at=0.0,
         )
-        state = dd._list_state_for(
-            selector, 3, "No devices", dd._selector_list_row, pressed=(TouchZone.LIST_ROW, 1),
+        state = dds.list_state_for(
+            selector, 3, "No devices", dds.selector_list_row, pressed=(TouchZone.LIST_ROW, 1),
         )
         assert state.pressed == (TouchZone.LIST_ROW, 1)
 
@@ -5147,19 +5148,19 @@ class TestListStateForHelper:
 class TestCurrentPageRows:
     def test_selector_state_page_one(self):
         display, fb, gt = make_display(targets=[])
-        rows = tuple(dd.SelectorRow(appliance_id=str(i), label=str(i), current=False) for i in range(5))
-        selector = dd.ListScreenState(rows=rows, page=1, opened_at=0.0)
+        rows = tuple(dial_core_state.SelectorRow(appliance_id=str(i), label=str(i), current=False) for i in range(5))
+        selector = dds.ListScreenState(rows=rows, page=1, opened_at=0.0)
         page_rows = display._current_page_rows(selector)
         assert [r.appliance_id for r in page_rows] == ["3", "4"]
 
     def test_picker_state_page_one(self):
         display, fb, gt = make_display(targets=[])
         rows = tuple(
-            dd.PickerRow(appliance_id=str(i), service_name=str(i), ip="1.2.3.4", port=80,
+            dial_core_state.PickerRow(appliance_id=str(i), service_name=str(i), ip="1.2.3.4", port=80,
                          label=str(i), seconds=float(i))
             for i in range(5)
         )
-        picker = dd.ListScreenState(rows=rows, page=1, opened_at=0.0)
+        picker = dds.ListScreenState(rows=rows, page=1, opened_at=0.0)
         page_rows = display._current_page_rows(picker)
         assert [r.appliance_id for r in page_rows] == ["3", "4"]
 
@@ -5935,7 +5936,7 @@ class TestRepeatLineInterpolation:
         fully controlled by the test."""
         with display._lock:
             display._screen = "repeat"
-            display._repeat_screen = dd.ApplianceScreenState(
+            display._repeat_screen = dds.ApplianceScreenState(
                 appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
             )
 
@@ -6004,7 +6005,7 @@ class TestNextRepaintDeadline:
         display.enable()
         with display._lock:
             display._screen = "repeat"
-            display._repeat_screen = dd.ApplianceScreenState(
+            display._repeat_screen = dds.ApplianceScreenState(
                 appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
             )
         return display
@@ -6070,7 +6071,7 @@ class TestRepeatCounterFloors:
         aid = "20" * 10
         display, fb, gt = make_display(targets=[])
         display.enable()
-        screen = dd.ApplianceScreenState(
+        screen = dds.ApplianceScreenState(
             appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
         )
         for position, expected in [(2.0, "0:00"), (2.9, "0:00"), (3.0, "0:01"), (3.9, "0:01")]:
@@ -6088,7 +6089,7 @@ class TestRepeatCounterFloors:
         aid = "22" * 10
         display, fb, gt = make_display(targets=[])
         display.enable()
-        screen = dd.ApplianceScreenState(
+        screen = dds.ApplianceScreenState(
             appliance_id=aid, service_name="Kitchen", opened_at=1000.0,
         )
         # (latency, reported position, expected counter)
@@ -6132,7 +6133,7 @@ class TestRepeatCounterPaintedReference:
         display.enable()
         with display._lock:
             display._screen = "repeat"
-            display._repeat_screen = dd.ApplianceScreenState(
+            display._repeat_screen = dds.ApplianceScreenState(
                 appliance_id=self.AID, service_name="Kitchen", opened_at=1000.0,
             )
         return display
@@ -6818,7 +6819,7 @@ class TestOnRepeatResultOnScreen:
 
 class TestOfferableOutputs:
     def test_remote_in_use_row_dropped(self):
-        rows = dd._offerable(outputs_rows({"ok": True, "outputs": [
+        rows = dds.offerable(outputs_rows({"ok": True, "outputs": [
             {"id": "1", "name": "Bedroom", "selected": False, "volume": 0, "remote_in_use": True},
             {"id": "2", "name": "Kitchen", "selected": True, "volume": 50, "remote_in_use": False},
         ]}))
@@ -6834,7 +6835,7 @@ class TestOnOutputsResult:
         """A display with the outputs screen up for *appliance_id* and the
         core holding *rows* for it (nothing when *held* is False)."""
         display, fb, gt = make_display(targets=[])
-        display._outputs = dd.ApplianceScreenState(
+        display._outputs = dds.ApplianceScreenState(
             appliance_id=appliance_id, service_name="Kitchen",
             page=page, opened_at=time.monotonic(),
         )
@@ -6863,7 +6864,7 @@ class TestOnOutputsResult:
         display = self._outputs_display(
             rows=(OutputRow(id="1", name="Bedroom", selected=True, volume=40),), loaded=True,
         )
-        display._output_detail = dd.OutputDetailState(
+        display._output_detail = dds.OutputDetailState(
             appliance_id="a" * 20, output_id="1", opened_at=time.monotonic(),
         )
         display._screen = "output"
@@ -6873,7 +6874,7 @@ class TestOnOutputsResult:
     def test_detail_row_still_present_leaves_screen_request_alone(self):
         row = OutputRow(id="1", name="Bedroom", selected=True, volume=40)
         display = self._outputs_display(rows=(row,), loaded=True)
-        display._output_detail = dd.OutputDetailState(
+        display._output_detail = dds.OutputDetailState(
             appliance_id="a" * 20, output_id="1", opened_at=time.monotonic(),
         )
         display._screen = "output"
@@ -7068,7 +7069,7 @@ class TestOutputsOpener:
         assert display._screen == "outputs"
         assert display._outputs.appliance_id == "a" * 20
         assert display._rows_of(display._outputs) == ()
-        assert dd._held_outputs(display.core.snapshot(), display._outputs) is None
+        assert dds.held_outputs(display.core.snapshot(), display._outputs) is None
 
     def test_keeps_rows_on_reopen_for_the_same_appliance(self):
         display = _make_outputs_display()
@@ -7078,7 +7079,7 @@ class TestOutputsOpener:
         display._screen = "main"
         display._open_outputs_locked()
         assert display._rows_of(display._outputs) == rows
-        assert dd._held_outputs(display.core.snapshot(), display._outputs).loaded is True
+        assert dds.held_outputs(display.core.snapshot(), display._outputs).loaded is True
 
     def test_resets_rows_for_a_different_appliance(self):
         display = _make_outputs_display(appliance_id="a" * 20)
@@ -7091,7 +7092,7 @@ class TestOutputsOpener:
         display._open_outputs_locked()
         assert display._outputs.appliance_id == "b" * 20
         assert display._rows_of(display._outputs) == ()
-        assert dd._held_outputs(display.core.snapshot(), display._outputs) is None
+        assert dds.held_outputs(display.core.snapshot(), display._outputs) is None
 
 
 class TestOutputDetailOpener:
@@ -7168,7 +7169,7 @@ class TestOutputsTouchEntries:
         display._open_outputs_locked()
         row = OutputRow(id="1", name="Bedroom", selected=selected, volume=volume)
         seed_outputs(display, (row,), loaded=False)
-        display._output_detail = dd.OutputDetailState(
+        display._output_detail = dds.OutputDetailState(
             appliance_id=display._outputs.appliance_id, output_id="1", opened_at=1000.0,
         )
         display._screen = "output"
@@ -7199,7 +7200,7 @@ class TestOutputsTouchEntries:
     def test_output_toggle_tap_noop_without_row(self):
         display = _make_outputs_display()
         display._open_outputs_locked()
-        display._output_detail = dd.OutputDetailState(
+        display._output_detail = dds.OutputDetailState(
             appliance_id=display._outputs.appliance_id, output_id="missing", opened_at=1000.0,
         )
         with patch("dial_core.DialCore._send") as mock_set:
@@ -7279,7 +7280,7 @@ class TestEqOpener:
         assert display._open_eq_locked() is True
         assert display._screen == "eq"
         assert display._eq.appliance_id == "a" * 20
-        assert dd._held_eq(display.core.snapshot(), display._eq) is None
+        assert dds.held_eq(display.core.snapshot(), display._eq) is None
 
     def test_keeps_values_on_reopen_for_the_same_appliance(self):
         display = _make_eq_display()
@@ -7287,10 +7288,10 @@ class TestEqOpener:
         seed_eq(display, bass_db=2, treble_db=-1, loaded=True)
         display._screen = "main"
         display._open_eq_locked()
-        held = dd._held_eq(display.core.snapshot(), display._eq)
+        held = dds.held_eq(display.core.snapshot(), display._eq)
         assert dd.eq_gain(held.bands, "bass") == 2
         assert dd.eq_gain(held.bands, "treble") == -1
-        assert dd._eq_loaded(held) is True
+        assert dds.eq_loaded(held) is True
 
     def test_resets_values_for_a_different_appliance(self):
         display = _make_eq_display(appliance_id="a" * 20)
@@ -7302,7 +7303,7 @@ class TestEqOpener:
         update_availability(display)
         display._open_eq_locked()
         assert display._eq.appliance_id == "b" * 20
-        assert dd._held_eq(display.core.snapshot(), display._eq) is None
+        assert dds.held_eq(display.core.snapshot(), display._eq) is None
 
 
 class TestEqStep:
@@ -7340,10 +7341,10 @@ class TestOnEqResult:
     def _reading(display):
         """(bass, treble, loaded) the EQ page's appliance shows from the
         core's snapshot."""
-        held = dd._held_eq(display.core.snapshot(), display._eq)
+        held = dds.held_eq(display.core.snapshot(), display._eq)
         if held is None:
             return None, None, False
-        return dd.eq_gain(held.bands, "bass"), dd.eq_gain(held.bands, "treble"), dd._eq_loaded(held)
+        return dd.eq_gain(held.bands, "bass"), dd.eq_gain(held.bands, "treble"), dds.eq_loaded(held)
 
     def test_a_new_reading_repaints_the_page_and_the_screen_reads_it(self):
         display = self._opened()
@@ -7508,26 +7509,26 @@ class TestEqPageClosing:
 
 class TestOutputsPaintBuilders:
     def test_list_row_enabled_shows_volume_right_aligned_slot(self):
-        assert dd._output_list_row(
+        assert dds.output_list_row(
             OutputRow(id="1", name="Bedroom", selected=True, volume=42),
         ) == ("Bedroom", False, "42", "")
 
     def test_list_row_disabled_shows_blank(self):
-        assert dd._output_list_row(
+        assert dds.output_list_row(
             OutputRow(id="1", name="Bedroom", selected=False, volume=0),
         ) == ("Bedroom", False, "", "")
 
     def test_output_list_row_marks_the_default_output(self):
-        assert dd._output_list_row(
+        assert dds.output_list_row(
             OutputRow(id="1", name="Bedroom", selected=True, volume=42, is_default=True),
         ) == ("Bedroom", False, "42", DEFAULT_MARK)
-        assert dd._output_list_row(
+        assert dds.output_list_row(
             OutputRow(id="2", name="Study", selected=True, volume=42),
         )[3] == ""
 
     def test_output_list_row_shows_the_level_only_when_selected(self):
-        on = dd._output_list_row(OutputRow(id="1", name="A", selected=True, volume=7, is_default=True))
-        off = dd._output_list_row(OutputRow(id="1", name="A", selected=False, volume=7, is_default=True))
+        on = dds.output_list_row(OutputRow(id="1", name="A", selected=True, volume=7, is_default=True))
+        off = dds.output_list_row(OutputRow(id="1", name="A", selected=False, volume=7, is_default=True))
         assert (on[2], off[2]) == ("7", "")
 
     def test_loading_placeholder_before_first_fetch(self):
@@ -7586,7 +7587,7 @@ class TestOutputsPaintBuilders:
         display._open_outputs_locked()
         row = OutputRow(id="1", name="Bedroom", selected=selected, volume=volume)
         seed_outputs(display, (row,))
-        display._output_detail = dd.OutputDetailState(
+        display._output_detail = dds.OutputDetailState(
             appliance_id=display._outputs.appliance_id, output_id="1", opened_at=1000.0,
         )
         return display
@@ -8203,7 +8204,7 @@ class TestInfoPage:
         display.enable()
         self._opened(display)
         assert display._screen == "info"
-        assert display._info.rows == dd.INFO_PLACEHOLDER_ROWS
+        assert display._info.rows == dds.INFO_PLACEHOLDER_ROWS
 
     def test_gather_fills_in_the_providers_rows(self):
         display, fb, gt = make_display(targets=[])
@@ -8223,14 +8224,14 @@ class TestInfoPage:
         display.set_info_provider(MagicMock(side_effect=RuntimeError("boom")))
         seq = self._opened(display)
         display._gather_info(seq)
-        assert display._info.rows == dd.INFO_PLACEHOLDER_ROWS
+        assert display._info.rows == dds.INFO_PLACEHOLDER_ROWS
 
     def test_missing_provider_yields_placeholders(self):
         display, fb, gt = make_display(targets=[])
         display.enable()
         seq = self._opened(display)
         display._gather_info(seq)
-        assert display._info.rows == dd.INFO_PLACEHOLDER_ROWS
+        assert display._info.rows == dds.INFO_PLACEHOLDER_ROWS
 
     def test_stale_gather_after_close_reopen_is_dropped(self):
         display, fb, gt = make_display(targets=[])
@@ -8243,7 +8244,7 @@ class TestInfoPage:
         fresh_seq = self._opened(display)
         assert fresh_seq != stale_seq
         display._gather_info(stale_seq)
-        assert display._info.rows == dd.INFO_PLACEHOLDER_ROWS
+        assert display._info.rows == dds.INFO_PLACEHOLDER_ROWS
 
     def test_result_after_close_is_dropped(self):
         display, fb, gt = make_display(targets=[])
@@ -9608,13 +9609,13 @@ class TestOutputsHeldByTheCore:
 
     def test_the_filtered_rows_equal_what_the_screen_always_parsed(self):
         body = self._body(("1", "Bedroom", True, 40, False), ("2", "Study", True, 10, True))
-        assert dd._offerable(outputs_rows(body)) == (OutputRow("1", "Bedroom", True, 40),)
+        assert dds.offerable(outputs_rows(body)) == (OutputRow("1", "Bedroom", True, 40),)
 
     def test_a_detail_row_taken_elsewhere_counts_as_vanished(self):
         display = _make_outputs_display()
         display._open_outputs_locked()
         on_outputs_result(display, "fetch", self.AID, 200, self._body(("1", "Bedroom", True, 40, False)), {})
-        display._output_detail = dd.OutputDetailState(
+        display._output_detail = dds.OutputDetailState(
             appliance_id=self.AID, output_id="1", opened_at=time.monotonic(),
         )
         display._screen = "output"
@@ -9634,7 +9635,7 @@ class TestOutputsHeldByTheCore:
         display = _make_outputs_display()
         display._open_outputs_locked()
         on_outputs_result(display, "fetch", self.AID, 200, self._body(("1", "Bedroom", True, 40, False)), {})
-        display._output_detail = dd.OutputDetailState(
+        display._output_detail = dds.OutputDetailState(
             appliance_id=self.AID, output_id="1", opened_at=time.monotonic(),
         )
         display._screen = "output"
@@ -9666,8 +9667,8 @@ class TestEqHeldByTheCore:
 
     @staticmethod
     def _reading(display):
-        held = dd._held_eq(display.core.snapshot(), display._eq)
-        return dd.eq_gain(held.bands, "bass"), dd.eq_gain(held.bands, "treble"), dd._eq_loaded(held)
+        held = dds.held_eq(display.core.snapshot(), display._eq)
+        return dd.eq_gain(held.bands, "bass"), dd.eq_gain(held.bands, "treble"), dds.eq_loaded(held)
 
     def test_the_fold_holds_the_bands_with_bass_and_treble_as_two_more(self):
         display = self._opened()
@@ -9951,7 +9952,7 @@ class TestPairInAutostreamPage:
         display._open_outputs_locked()
         row = OutputRow(id="1", name="Apple TV", selected=selected, volume=0, needs_auth_key=needs_auth_key)
         seed_outputs(display, (row,), loaded=False)
-        display._output_detail = dd.OutputDetailState(
+        display._output_detail = dds.OutputDetailState(
             appliance_id=self.AID, output_id="1", opened_at=time.monotonic(),
         )
         display._screen = "output"
@@ -9970,7 +9971,7 @@ class TestPairInAutostreamPage:
         self._fold(display)
 
     def test_pairing_hint_text(self):
-        label, text = dd._pairing_hint("Lounge")
+        label, text = dds.pairing_hint("Lounge")
         assert label == dd_views.PAIR_IN_AUTOSTREAM_TEXT == "Pair in Autostream"
         assert text == "Enter the PIN in Lounge's web UI"
 
@@ -9981,7 +9982,7 @@ class TestPairInAutostreamPage:
         from dial_touch_layout import info_value_layout_for
 
         metrics = metrics_for(width, height, mm_per_px)
-        label, text = dd._pairing_hint(name)
+        label, text = dds.pairing_hint(name)
         layout = info_value_layout_for(width, height, metrics=metrics)
         draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
         lines, font = dd_draw._fit_value_lines(
@@ -10005,7 +10006,7 @@ class TestPairInAutostreamPage:
         profile = get_profile(key)
         width, height = profile.width, profile.height
         metrics = metrics_for(width, height, mm_per_px_for_size(profile.default_diagonal_inches, profile.width, profile.height))
-        label, text = dd._pairing_hint("Living Room Hi-Fi")
+        label, text = dds.pairing_hint("Living Room Hi-Fi")
         layout = info_value_layout_for(width, height, metrics=metrics)
         draw = ImageDraw.Draw(Image.new("RGB", (width, height)))
         lines, font = dd_draw._fit_value_lines(
@@ -10090,7 +10091,7 @@ class TestPairInAutostreamPage:
 
     def test_a_hint_cannot_open_over_the_main_page(self):
         display, fb, gt = make_display(targets=[])
-        display._info_value_hint = dd._pairing_hint("Lounge")
+        display._info_value_hint = dds.pairing_hint("Lounge")
         with display._lock:
             assert display._open_info_value_locked() is False
         assert display._screen == "main"
@@ -10100,7 +10101,7 @@ class TestPairInAutostreamPage:
     def test_a_hint_over_the_selector_still_returns_to_the_selector(self):
         display, fb, gt = make_display(targets=[])
         display._screen = "selector"
-        display._info_value_hint = dd._unauthorised_hint("Lounge")
+        display._info_value_hint = dds.unauthorised_hint("Lounge")
         with display._lock:
             assert display._open_info_value_locked() is True
         assert display._back_target("info_value") == "selector"
@@ -10159,7 +10160,7 @@ class TestStartFailureNotice:
                          loaded=False)
             display._screen = screen
             if screen == "output":
-                display._output_detail = dd.OutputDetailState(
+                display._output_detail = dds.OutputDetailState(
                     appliance_id=self.AID, output_id="1", opened_at=time.monotonic())
         elif screen != "main":
             display._screen = screen
@@ -10175,15 +10176,15 @@ class TestStartFailureNotice:
             display._apply_screen_requests_locked()
 
     def test_the_text_for_each_reason(self):
-        assert dd._start_failure_hint("Speaker A", "refused") == (
+        assert dds.start_failure_hint("Speaker A", "refused") == (
             "Could not start", "Speaker A turned the request down")
-        assert dd._start_failure_hint("Speaker A", "failed")[1] == "Speaker A did not start"
-        assert dd._start_failure_hint("Speaker A", "timed_out")[1] == "Speaker A did not answer in time"
-        assert dd._start_failure_hint("Speaker A", "encoder_capacity")[1] == "No capacity to stream to Speaker A"
-        assert dd._start_failure_hint("Speaker A", "mystery")[1] == "Speaker A did not start"
+        assert dds.start_failure_hint("Speaker A", "failed")[1] == "Speaker A did not start"
+        assert dds.start_failure_hint("Speaker A", "timed_out")[1] == "Speaker A did not answer in time"
+        assert dds.start_failure_hint("Speaker A", "encoder_capacity")[1] == "No capacity to stream to Speaker A"
+        assert dds.start_failure_hint("Speaker A", "mystery")[1] == "Speaker A did not start"
 
     def test_braces_in_a_name_are_shown_as_written(self):
-        assert dd._start_failure_hint("{0} {name} {", "refused")[1] == "{0} {name} { turned the request down"
+        assert dds.start_failure_hint("{0} {name} {", "refused")[1] == "{0} {name} { turned the request down"
 
     @pytest.mark.parametrize("screen", ["main", "outputs", "output"])
     def test_the_value_page_opens_over_the_main_screen_the_list_and_a_speakers_page(self, screen):
@@ -10230,7 +10231,7 @@ class TestStartFailureNotice:
         self._fold(display)
         assert display._screen == "main"
         display._screen = "outputs"
-        display._info_value_hint = dd._pairing_hint("Lounge")
+        display._info_value_hint = dds.pairing_hint("Lounge")
         with display._lock:
             assert display._open_info_value_locked() is False
 
@@ -10246,7 +10247,7 @@ class TestLatePairingHint:
                      loaded=False)
         display._screen = screen
         if screen == "output":
-            display._output_detail = dd.OutputDetailState(
+            display._output_detail = dds.OutputDetailState(
                 appliance_id=self.AID, output_id="2", opened_at=time.monotonic())
         return display
 
@@ -10293,6 +10294,6 @@ class TestLatePairingHint:
 
     def test_the_unauthorised_row_hint_still_opens_only_over_the_selector(self):
         display = self._display("outputs")
-        display._info_value_hint = dd._unauthorised_hint("Lounge")
+        display._info_value_hint = dds.unauthorised_hint("Lounge")
         with display._lock:
             assert display._open_info_value_locked() is False

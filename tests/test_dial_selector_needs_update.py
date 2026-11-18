@@ -67,12 +67,13 @@ def test_the_hd_row_of_a_mismatched_appliance(rig):
 
 def test_the_small_screen_draws_the_marker():
     pytest.importorskip("PIL.Image", reason="Pillow not installed")
-    from dial_display import NEEDS_UPDATE_TEXT, _needs_update_hint, _selector_list_row
+    from dial_display_state import needs_update_hint, selector_list_row
+    from dial_display_views import NEEDS_UPDATE_TEXT
     row = SelectorRow("a" * 20, "Old", False, authorized=False, needs_update=True)
-    assert _selector_list_row(row) == ("Old", False, NEEDS_UPDATE_TEXT)
-    assert _needs_update_hint("Old")[0] == NEEDS_UPDATE_TEXT == "Needs an update"
+    assert selector_list_row(row) == ("Old", False, NEEDS_UPDATE_TEXT)
+    assert needs_update_hint("Old")[0] == NEEDS_UPDATE_TEXT == "Needs an update"
     authorised = SelectorRow("a" * 20, "Kitchen", True, authorized=True)
-    assert _selector_list_row(authorised) == ("Kitchen", True)
+    assert selector_list_row(authorised) == ("Kitchen", True)
 
 
 def test_an_authorised_appliance_is_not_marked(rig):

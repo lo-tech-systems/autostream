@@ -140,7 +140,7 @@ class OverlayState:
 class ListState:
     """Immutable snapshot of what the appliance-selector screen should show
     — the compose_list() counterpart to OverlayState. Built by the display
-    manager from its ListScreenState (dial_display.py) on the repaint thread;
+    manager from its ListScreenState (dial_display_state.py) on the repaint thread;
     this module has no idea what an "appliance" is, only rows to draw.
 
     rows: (label, checked) pairs for the CURRENT page only — at most
@@ -289,7 +289,7 @@ class OutputViewState:
 class EqViewState:
     """Immutable snapshot of what the EQ page should show — the
     compose_eq() counterpart to RepeatViewState/OutputViewState. Built by
-    the display manager from its ApplianceScreenState (dial_display.py) on the
+    the display manager from its ApplianceScreenState (dial_display_state.py) on the
     repeat-screen compose path; this module has no idea what a PEQ band is,
     only two optional dB values to draw as bars.
 

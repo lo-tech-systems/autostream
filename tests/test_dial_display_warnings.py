@@ -22,6 +22,7 @@ for _p in (str(REPO_ROOT / "dial"), str(REPO_ROOT / "core")):
         sys.path.insert(0, _p)
 
 import dial_display as dd  # noqa: E402
+import dial_display_state as dds  # noqa: E402
 from dial_appliance_warnings import ApplianceWarning  # noqa: E402
 from dial_display_views import BellBadge  # noqa: E402
 from dial_info import INFO_LABELS  # noqa: E402
@@ -475,7 +476,7 @@ class TestPolicy:
 class TestWifiOpensInfo:
     def test_the_info_rows_follow_one_order(self):
         assert INFO_LABELS == ("WiFi", "Signal", "IPv4", "Dial name", "Firmware", "Disk free", "SD health")
-        assert tuple(row.label for row in dd.INFO_PLACEHOLDER_ROWS) == INFO_LABELS
+        assert tuple(row.label for row in dds.INFO_PLACEHOLDER_ROWS) == INFO_LABELS
 
     def test_the_info_page_opens_from_any_idle_dial(self):
         display = _rig()

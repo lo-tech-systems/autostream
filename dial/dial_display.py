@@ -42,20 +42,12 @@ from dial_display_compositor import (
 )
 from dial_display_views import (
     BellBadge,
-    DEFAULT_MARK,
-    PLAY_GLYPH,
     EqViewState,
     InfoValueView,
     ListState,
-    NEEDS_UPDATE_TEXT,
-    NOT_AUTHORISED_TEXT,
     OutputViewState,
     OverlayState,
-    PAIR_IN_AUTOSTREAM_TEXT,
     RepeatViewState,
-    START_FAILURE_LINES,
-    START_FAILURE_LINE_FALLBACK,
-    START_FAILURE_TITLE,
     WIFI_GREY,
     WIFI_OFF,
     WIFI_RED,
@@ -72,10 +64,37 @@ from dial_display_backend import (
 )
 from dial_display_palette import TRANSITION_RGB
 from dial_display_profiles import layout_context_for
+from dial_display_state import (
+    ApplianceScreenState,
+    INFO_PLACEHOLDER_ROWS,
+    INFO_TITLE,
+    InfoRow,
+    InfoState,
+    InfoValueState,
+    ListScreenState,
+    OutputDetailState,
+    RestartingState,
+    WarningScreenState,
+    clamp_page,
+    eq_loaded,
+    held_eq,
+    held_outputs,
+    list_state_for,
+    needs_update_hint,
+    offerable,
+    output_list_row,
+    page_slice,
+    pairing_hint,
+    picker_list_row,
+    rows_per_page_for,
+    selector_list_row,
+    start_failure_hint,
+    unauthorised_hint,
+    wrap_page,
+)
 from dial_display_windows import bounding_box, frame_words, plan_windows
-from dial_eq_model import DERIVED_EQ_IDS
 from dial_core_state import (
-    AUTH_UNAUTHORIZED, PIN_ERRORS, EqState, OutputRow, PickerRow, SelectorRow,
+    AUTH_UNAUTHORIZED, PIN_ERRORS, OutputRow,
     awaiting_title, title_fallback,
     eq_gain,
 )
@@ -88,7 +107,6 @@ from dial_network import (
     LINK_DOWN,
 )
 from dial_repeat_store import heard_position
-from dial_info import INFO_LABELS
 from dial_values import clamp
 from dial_warning_bell import Bell, whole_bell
 from dial_warning_page import Card, WarningsPageState, status_card
@@ -108,7 +126,6 @@ from dial_layout_metrics import (
 from dial_touch_layout import (
     CARD_BUTTON_ZONES,
     TouchZone,
-    list_layout_for,
 )
 from dial_volume import (
     shown_muted,
@@ -412,256 +429,10 @@ class DisplayRuntimeStatus:
 IDLE_ARTIST_TEXT = "Idle"
 
 
-@dataclass(frozen=True)
-class ListScreenState:
-    """Immutable snapshot of a row-list screen's rows and paging: the
-    appliance selector and the replay picker, as last built when a poll tick
-    ended (_refresh_list_rows).
-
-    rows: every row on the screen's list (SelectorRow or PickerRow), ALL
-        rows across every page, not just the current one; the compositor's
-        ListState (built separately, at repaint time) slices out the
-        current page. The selector's are every AUTHORIZED or
-        confirmed-UNAUTHORIZED identified appliance on the merged roster,
-        idle or playing; the picker's are every held, authorized,
-        repeat-capable appliance.
-    page: the current page index. Preserved across each rebuild (clamped to
-        the new row count) so an open list's page does not jump back to 0
-        every ~6s poll tick; reset to 0 only when the screen is freshly
-        opened (see open_selector()/_apply_screen_requests_locked()).
-    opened_at: monotonic time of the open, or of the last touch activity
-        while open (see _apply_touch_activity_locked) — what
-        SELECTOR_TIMEOUT_SECONDS counts down from.
-    """
-    rows: tuple
-    page: int
-    opened_at: float
-
-
-@dataclass(frozen=True)
-class ApplianceScreenState:
-    """Immutable record of the appliance-bound page that is open (the repeat
-    page, the EQ page or the outputs list): which appliance it shows, the
-    inactivity clock and, for the outputs list, its paging. Built once, when
-    the page opens, from the last-published roster snapshot, and never
-    rebuilt while it stays open: what the page shows (the repeat store's
-    record, the EQ readings, the outputs rows) comes fresh from the core's
-    snapshot on every repaint."""
-    appliance_id: str
-    service_name: str
-    opened_at: float
-    page: int = 0
-
-
-@dataclass(frozen=True)
-class InfoRow:
-    """One row of the idle screen's read-only info page — see InfoState."""
-    label: str
-    value: str          # "-" when a source failed or has nothing to report
-
-
-@dataclass(frozen=True)
-class InfoState:
-    """Immutable snapshot of the info page's rows and paging. rows: all seven
-    fields, ALL pages (the same "every row, sliced at paint time" shape
-    ListScreenState uses); page: the current page; opened_at: what
-    SELECTOR_TIMEOUT_SECONDS counts down from; gather_seq: which gather
-    (see DialDisplay._gather_info) this snapshot's rows belong to, so a
-    stale result landing after the page closed/reopened is dropped rather
-    than overwriting fresher (or placeholder) rows."""
-    rows: tuple[InfoRow, ...]
-    page: int
-    opened_at: float
-    gather_seq: int
-
-
-# The seven info fields, shown at once and filled in within about a second
-# of opening — see DialDisplay.open_info()/_gather_info().
-INFO_TITLE = "Info"
-INFO_PLACEHOLDER_ROWS: tuple[InfoRow, ...] = tuple(InfoRow(label=label, value="-") for label in INFO_LABELS)
-
-
-@dataclass(frozen=True)
-class InfoValueState:
-    """The compact info page's own drill-in: which field is showing (an
-    absolute index into InfoState.rows, read fresh at paint — see
-    DialDisplay._display_info_value_locked, so a gather landing while the
-    view is open still shows up) and the inactivity clock.
-
-    hint: (label, text) when the view was opened from the appliance
-    selector to explain an unauthorised row (see selector_pick) instead of
-    showing an info field; such a view ignores index and its back returns to
-    the selector."""
-    index: int
-    opened_at: float
-    hint: "tuple[str, str] | None" = None
-
-
-@dataclass(frozen=True)
-class OutputDetailState:
-    """The per-output page: the output it was opened for. Its row is read
-    from the outputs state at every paint, so a level change or a
-    disappearance shows without this being rebuilt."""
-    appliance_id: str
-    output_id: str
-    opened_at: float
-
-
-@dataclass(frozen=True)
-class WarningScreenState:
-    """A status page on screen: which status, and the clock every
-    screen state carries. Its text is read at paint time from the
-    descriptor and the manager's latest reading, so a later reading
-    shows without reopening."""
-    warning_id: str
-    opened_at: float
-
-
-@dataclass(frozen=True)
-class RestartingState:
-    """The "Restarting..." screen shown from a Restart tap until the reboot
-    takes the panel down — or until RESTARTING_TIMEOUT_SECONDS, whichever
-    comes first."""
-    opened_at: float
-
-
-# ---------------------------------------------------------------------------
-# List-chassis paging (shared by the appliance selector and the replay
-# picker, which page the same way over different row types)
-# ---------------------------------------------------------------------------
-
-def _rows_per_page_for(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> int:
-    return list_layout_for(width, height, metrics=metrics).rows_per_page
-
-
-def _clamp_page(page: int, row_count: int, rows_per_page: int) -> int:
-    """Clamp *page* into [0, last page] for *row_count* rows; 0 when empty."""
-    max_page = max(0, (row_count - 1) // rows_per_page) if row_count else 0
-    return clamp(page, 0, max_page)
-
-
-def _wrap_page(page: int, row_count: int, rows_per_page: int) -> int:
-    """Wrap *page* into [0, page_count) for *row_count* rows; 0 when empty
-    — the compact tier's own paging rule (see _apply_screen_requests_locked):
-    the picker's "more" advance loops back to page 0 after the last page
-    instead of clamping there, since compact has no previous-page control of
-    its own to get back with otherwise."""
-    pages = max(1, -(-row_count // rows_per_page)) if row_count else 1
-    return page % pages
-
-
-def _page_slice(rows: tuple, page: int, rows_per_page: int) -> tuple[int, tuple]:
-    """(start index, the rows on *page*)."""
-    start = page * rows_per_page
-    return start, rows[start:start + rows_per_page]
-
-
-def _list_state_for(state, rows_per_page: int, placeholder: str, to_row, pressed=None, rows=None) -> ListState:
-    """Build the compositor's ListState for *state*'s current page, or a
-    single non-selected *placeholder* row when there are no rows. *to_row*
-    maps one row of *state* to the row tuple ListState carries. *rows*
-    replaces state.rows for a screen whose rows are not its own (the
-    outputs list reads the core's). *pressed* is the (zone, index) pair
-    from the unified pressed channel, passed through unchanged — the
-    compositor resolves it against this screen's own geometry, so a zone
-    from another screen simply washes nothing."""
-    if rows is None and state is not None:
-        rows = state.rows
-    if state is None or not rows:
-        return ListState(rows=((placeholder, False),), has_prev=False, has_next=False, pressed=pressed)
-    start, page_rows = _page_slice(rows, state.page, rows_per_page)
-    return ListState(
-        rows=tuple(to_row(row) for row in page_rows),
-        has_prev=state.page > 0,
-        has_next=start + rows_per_page < len(rows),
-        pressed=pressed,
-    )
-
-
-def _selector_list_row(row: SelectorRow) -> tuple:
-    if row.needs_update:
-        return (row.label, False, NEEDS_UPDATE_TEXT)
-    if not row.authorized:
-        return (row.label, False, NOT_AUTHORISED_TEXT)
-    return (row.label, row.current, PLAY_GLYPH) if row.playing else (row.label, row.current)
-
-
-def _unauthorised_hint(label: str) -> tuple[str, str]:
-    """The (title, text) the value view shows for a tap on an unauthorised
-    selector row."""
-    return NOT_AUTHORISED_TEXT, f"Allow this dial in {label}'s web UI (Setup, Dials)"
-
-
-def _needs_update_hint(label: str) -> tuple[str, str]:
-    """The (title, text) the value view shows for a tap on a selector row
-    whose appliance runs another protocol than this dial's."""
-    return NEEDS_UPDATE_TEXT, f"{label} and this dial need the same software version"
-
-
 # The screens a hint on the value page may open over, by what asks for it.
 _HINT_OVER_DEFAULT = ("selector", "output")
 _LATE_PIN_OVER = ("outputs", "output")
 _START_FAILURE_OVER = ("main", "outputs", "output")
-
-
-def _pairing_hint(label: str) -> tuple[str, str]:
-    """The (title, text) the value view shows for a speaker that must be
-    paired in the appliance's web UI, which the small screen cannot do."""
-    return PAIR_IN_AUTOSTREAM_TEXT, f"Enter the PIN in {label}'s web UI"
-
-
-def _start_failure_hint(name: str, reason: str) -> tuple[str, str]:
-    """The (title, text) the value view shows for a speaker that could not
-    start. The name is appliance text: it is put in by replacement, never
-    handed to a format call."""
-    line = START_FAILURE_LINES.get(reason, START_FAILURE_LINE_FALLBACK)
-    return START_FAILURE_TITLE, line.replace("{name}", name)
-
-
-def _picker_list_row(row: PickerRow) -> tuple:
-    return (row.label, False, format_mmss(row.seconds))
-
-
-_OUTPUT_ROW_MARKS = {True: DEFAULT_MARK, False: ""}
-
-
-def _output_list_row(row: "OutputRow") -> tuple:
-    """One outputs-list row: the level rides in the same secondary-text
-    slot the picker uses for durations, right-aligned by the existing row
-    renderer; a disabled output shows nothing on the right. No row is ever
-    "current" (no wash) and none carries the play marker — the outputs
-    list has no notion of either. The default output carries the trailing
-    default mark."""
-    return (row.name, False, str(row.volume) if row.selected else "", _OUTPUT_ROW_MARKS[row.is_default])
-
-
-def _eq_loaded(eq: "EqState") -> bool:
-    """Whether the EQ page has a reading it can draw: one has landed and it
-    carries a band the page knows."""
-    return eq.loaded and any(b.id in DERIVED_EQ_IDS for b in eq.bands)
-
-
-def _offerable(rows: "tuple[OutputRow, ...]") -> "tuple[OutputRow, ...]":
-    """*rows* without the outputs another appliance has taken."""
-    return tuple(r for r in rows if not r.remote_in_use)
-
-
-def _held_outputs(snapshot, state: "ApplianceScreenState | None"):
-    """The core's outputs state for the appliance the outputs screen *state*
-    shows, or None when the core holds none for it."""
-    held = snapshot.outputs
-    if state is None or held is None or held.appliance_id != state.appliance_id:
-        return None
-    return held
-
-
-def _held_eq(snapshot, state: "ApplianceScreenState | None"):
-    """The core's EQ state for the appliance the EQ page *state* shows, or
-    None when the core holds none for it."""
-    held = snapshot.eq
-    if state is None or held is None or held.appliance_id != state.appliance_id:
-        return None
-    return held
 
 
 # How each repeat-store state draws the repeat page: (layout, start_enabled,
@@ -681,8 +452,8 @@ _REPEAT_LAYOUTS = {
 # The row-list screens built from a ListScreenState: the placeholder shown
 # with no rows, and the mapping from a core row to a list row.
 _ROW_LISTS = {
-    "selector": ("No devices", _selector_list_row),
-    "picker": ("Nothing to replay", _picker_list_row),
+    "selector": ("No devices", selector_list_row),
+    "picker": ("Nothing to replay", picker_list_row),
 }
 
 
@@ -2525,15 +2296,15 @@ class DialDisplay:
                     # the selector stays open underneath a short hint whose
                     # back returns here.
                     self._info_value_hint = (
-                        _needs_update_hint(row.label) if row.needs_update
-                        else _unauthorised_hint(row.label))
+                        needs_update_hint(row.label) if row.needs_update
+                        else unauthorised_hint(row.label))
                     self._screen_request = "info_value"
                     self._overlay_signal.set()
                     return
                 if self._core.set_focus(row.appliance_id).reason == "unauthorized":
                     # The core knows something newer than the row: the
                     # appliance has refused this dial since the page was built.
-                    self._info_value_hint = _unauthorised_hint(row.label)
+                    self._info_value_hint = unauthorised_hint(row.label)
                     self._screen_request = "info_value"
                     self._overlay_signal.set()
                     return
@@ -2590,8 +2361,8 @@ class DialDisplay:
         another appliance has taken) for the outputs list. Of the list
         screens only the outputs list holds an ApplianceScreenState."""
         if isinstance(state, ApplianceScreenState):
-            held = _held_outputs(self._core.snapshot(), state)
-            return _offerable(held.rows) if held is not None else ()
+            held = held_outputs(self._core.snapshot(), state)
+            return offerable(held.rows) if held is not None else ()
         return state.rows
 
     def _current_page_rows(self, state) -> tuple:
@@ -2601,7 +2372,7 @@ class DialDisplay:
         builders so the two can never disagree about which rows are on
         screen; rows_per_page comes from dial_touch_layout, the same source
         the hit-test reads. Takes no lock and writes nothing."""
-        _, page_rows = _page_slice(self._rows_of(state), state.page, self._rows_per_page())
+        _, page_rows = page_slice(self._rows_of(state), state.page, self._rows_per_page())
         return page_rows
 
     def _repeat_page_available(self) -> bool:
@@ -2916,7 +2687,7 @@ class DialDisplay:
     def _show_pairing_hint(self, state, over: tuple[str, ...] = _HINT_OVER_DEFAULT) -> None:
         """Ask for the pairing hint over the screens in *over* (by default
         the selector and a speaker's page). Lock-free."""
-        self._info_value_hint = _pairing_hint(appliance_display_name(state.service_name))
+        self._info_value_hint = pairing_hint(appliance_display_name(state.service_name))
         self._info_value_hint_over = over
         self._screen_request = "info_value"
         self._overlay_signal.set()
@@ -2927,7 +2698,7 @@ class DialDisplay:
         Lock-free, as _apply_outputs_outcome."""
         if self.is_sleeping() or effect.appliance_id != self._core.snapshot().focused_id():
             return
-        self._info_value_hint = _start_failure_hint(effect.name, effect.reason)
+        self._info_value_hint = start_failure_hint(effect.name, effect.reason)
         self._info_value_hint_over = _START_FAILURE_OVER
         self._screen_request = "info_value"
         self._overlay_signal.set()
@@ -3246,7 +3017,7 @@ class DialDisplay:
             active = getattr(self, policy.state_attr)
             if active is not None:
                 rows_per_page = self._rows_per_page()
-                page_fn = _wrap_page if self._compact_tier() else _clamp_page
+                page_fn = wrap_page if self._compact_tier() else clamp_page
                 new_page = page_fn(active.page + delta, len(self._rows_of(active)), rows_per_page)
                 if new_page != active.page:
                     setattr(self, policy.state_attr, dataclasses.replace(active, page=new_page))
@@ -3508,7 +3279,7 @@ class DialDisplay:
         when there was no previous state. Caller holds self._lock."""
         if prev is None:
             return 0, 0.0
-        return _clamp_page(prev.page, row_count, self._rows_per_page()), prev.opened_at
+        return clamp_page(prev.page, row_count, self._rows_per_page()), prev.opened_at
 
     def _refresh_list_rows(self, snapshot) -> None:
         """Rebuild the selector's and the replay picker's row lists from
@@ -3547,8 +3318,8 @@ class DialDisplay:
         pressed comes from the unified pressed channel (self._pressed) —
         the same one every other screen feeds from."""
         placeholder, to_row = _ROW_LISTS[screen]
-        return _list_state_for(
-            getattr(self, _policy(screen).state_attr), _rows_per_page_for(width, height, metrics=metrics),
+        return list_state_for(
+            getattr(self, _policy(screen).state_attr), rows_per_page_for(width, height, metrics=metrics),
             placeholder, to_row, pressed=self._pressed,
         )
 
@@ -3570,8 +3341,8 @@ class DialDisplay:
             metrics = self._layout_metrics()
         compact = metrics.content_tier == CONTENT_COMPACT
         to_row = (lambda row: (row.label, False)) if compact else (lambda row: (row.label, False, row.value))
-        list_state = _list_state_for(
-            self._info, _rows_per_page_for(width, height, metrics=metrics), "-",
+        list_state = list_state_for(
+            self._info, rows_per_page_for(width, height, metrics=metrics), "-",
             to_row, pressed=self._pressed,
         )
         return dataclasses.replace(list_state, title=INFO_TITLE, plain_background=True)
@@ -3595,12 +3366,12 @@ class DialDisplay:
         it reads back immediately without waiting for the worker's
         reconciling fetch."""
         state = self._outputs
-        held = _held_outputs(self._core.snapshot(), state)
+        held = held_outputs(self._core.snapshot(), state)
         placeholder = "Loading" if (held is None or not held.loaded) else "No outputs"
-        rows = tuple(self._row_with_optimistic_locked(r) for r in _offerable(held.rows)) if held is not None else ()
-        return _list_state_for(
-            state, _rows_per_page_for(width, height, metrics=metrics), placeholder,
-            _output_list_row, pressed=self._pressed, rows=rows,
+        rows = tuple(self._row_with_optimistic_locked(r) for r in offerable(held.rows)) if held is not None else ()
+        return list_state_for(
+            state, rows_per_page_for(width, height, metrics=metrics), placeholder,
+            output_list_row, pressed=self._pressed, rows=rows,
         )
 
     def _build_output_view_locked(self, now: float) -> "OutputViewState":
@@ -3886,7 +3657,7 @@ class DialDisplay:
             for band_id, gain in pairs:
                 if band_id == control:
                     return gain
-        held = _held_eq(self._core.snapshot(), state)
+        held = held_eq(self._core.snapshot(), state)
         return eq_gain(held.bands, control) if held is not None else None
 
     def _build_eq_view_locked(self, screen: "ApplianceScreenState | None", now: float) -> EqViewState:
@@ -3901,12 +3672,12 @@ class DialDisplay:
         if screen is None:
             return EqViewState(name="", bass_db=None, treble_db=None, loaded=False, pressed=pressed)
         name, volume = self._readout(screen.service_name)
-        held = _held_eq(self._core.snapshot(), screen)
+        held = held_eq(self._core.snapshot(), screen)
         return EqViewState(
             name=name,
             bass_db=self._shown_eq(screen, "bass"),
             treble_db=self._shown_eq(screen, "treble"),
-            loaded=held is not None and _eq_loaded(held),
+            loaded=held is not None and eq_loaded(held),
             volume=volume, pressed=pressed,
         )
 
@@ -4272,10 +4043,10 @@ class DialDisplay:
         if new.outputs != prev.outputs:
             with self._lock:
                 state = self._outputs
-                held = _held_outputs(new, state)
+                held = held_outputs(new, state)
                 if held is not None and held.loaded:
-                    rows = _offerable(held.rows)
-                    page = _clamp_page(state.page, len(rows), self._rows_per_page())
+                    rows = offerable(held.rows)
+                    page = clamp_page(state.page, len(rows), self._rows_per_page())
                     if page != state.page:
                         self._outputs = dataclasses.replace(state, page=page)
                     detail = self._output_detail

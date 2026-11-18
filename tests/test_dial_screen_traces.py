@@ -36,6 +36,7 @@ for _p in (_DIAL, _CORE):
         sys.path.insert(0, _p)
 
 import dial_display as dd
+import dial_display_state as dds
 from dial_config import DialDisplayConfig
 from dial_core_focus import FOCUS_PENDING_GRACE_S
 from dial_appliance_warnings import ApplianceWarning
@@ -394,7 +395,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "loaded": held_outputs is not None and held_outputs.loaded,
         "rows": [
             [r.id, r.name, r.selected, r.volume]
-            for r in (dd._offerable(held_outputs.rows) if held_outputs is not None else ())
+            for r in (dds.offerable(held_outputs.rows) if held_outputs is not None else ())
         ],
     }
     detail = d._output_detail
@@ -410,7 +411,7 @@ def _snapshot(ctx: _Ctx) -> dict:
         "appliance_id": eq.appliance_id, "opened_at": eq.opened_at,
         "bass_db": eq_gain(held_eq.bands, "bass") if held_eq is not None else None,
         "treble_db": eq_gain(held_eq.bands, "treble") if held_eq is not None else None,
-        "loaded": held_eq is not None and dd._eq_loaded(held_eq),
+        "loaded": held_eq is not None and dds.eq_loaded(held_eq),
     }
     outputs_override = d.core.outputs_override()
     eq_pairs, eq_expires_at = d.core.eq_override()

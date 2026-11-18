@@ -28,6 +28,7 @@ ALLOWED = {
     "dial_display_palette": set(),
     "dial_layout_metrics": set(),
     "dial_display_views": {"dial_touch_layout"},
+    "dial_display_state": {"dial_display_views", "dial_eq_model", "dial_info", "dial_touch_layout", "dial_values"},
     "dial_appliance_warnings": {"dial_mdns", "dial_values"},
     "dial_hd_session": set(),
     "dial_recovery": {"dial_config"},
@@ -63,12 +64,13 @@ def test_a_library_module_does_not_import_pil_at_module_level(name):
     assert "PIL" not in _imports(tree, module_level=True)
 
 
-def test_the_views_module_imports_without_pillow():
+@pytest.mark.parametrize("name", ["dial_display_views", "dial_display_state"])
+def test_a_display_data_module_imports_without_pillow(name):
     code = (
         "import sys\n"
         "sys.modules['PIL'] = None\n"
-        f"sys.path.insert(0, {str(DIAL)!r})\n"
-        "import dial_display_views\n"
+        f"sys.path[:0] = [{str(DIAL)!r}, {str(DIAL.parent / 'core')!r}]\n"
+        f"import {name}\n"
     )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -77,6 +79,7 @@ def test_the_views_module_imports_without_pillow():
 # The display layers, lowest first: each may import only the display modules listed.
 DISPLAY_LAYER_IMPORTS = {
     "dial_display_views": {"dial_display_palette"},
+    "dial_display_state": {"dial_display_views"},
     "dial_display_draw": {"dial_display_palette", "dial_display_views"},
     "dial_display_reveal": {"dial_display_views", "dial_display_draw"},
     "dial_display_render": {"dial_display_palette", "dial_display_views", "dial_display_draw"},
