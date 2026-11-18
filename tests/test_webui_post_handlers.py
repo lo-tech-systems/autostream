@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
@@ -1745,9 +1747,7 @@ class TestPollDrivenPinPromptSource:
         assert "function maybePromptForPin" in HOME_CARDS_SCRIPT
 
     def test_airplay_page_calls_maybe_prompt_for_pin_from_outputs_poll(self):
-        source = (REPO_ROOT / "core" / "autostream_webui_page_airplay.py").read_text(
-            encoding="utf-8"
-        )
+        source = _source_text.module_text("autostream_webui_page_airplay")
         assert "maybePromptForPin(j.outputs)" in source
 
 

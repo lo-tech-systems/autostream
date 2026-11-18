@@ -20,6 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
@@ -907,7 +909,7 @@ class TestSetupPageNetworkCard:
     the HTML and JS strings are correctly embedded in the template strings.
     """
 
-    PAGE_SRC = (REPO_ROOT / "core" / "autostream_webui_page_setup.py").read_text(encoding="utf-8")
+    PAGE_SRC = _source_text.module_text("autostream_webui_page_setup")
 
     def test_network_card_html_present(self):
         assert 'id="networkCard"' in self.PAGE_SRC

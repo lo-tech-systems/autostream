@@ -33,6 +33,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
@@ -105,9 +107,7 @@ class TestControlProtocolSourceInspection:
 
     @pytest.fixture(scope="class")
     def python_src(self):
-        p = REPO_ROOT / "core" / "autostream_core.py"
-        assert p.exists(), f"autostream_core.py not found at {p}"
-        return _read_source(p)
+        return _source_text.core_text()
 
     @pytest.mark.parametrize("cmd", EXPECTED_COMMANDS)
     def test_command_dispatched_by_cpp(self, dispatcher_src, cmd):
@@ -119,7 +119,7 @@ class TestControlProtocolSourceInspection:
     @pytest.mark.parametrize("cmd", EXPECTED_COMMANDS)
     def test_command_sent_by_python(self, python_src, cmd):
         assert _cmd_in_python(python_src, cmd), (
-            f'MonitorClient in autostream_core.py does not send "{cmd}"; '
+            f'MonitorClient (any core module) does not send "{cmd}"; '
             "add the missing method"
         )
 

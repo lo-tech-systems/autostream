@@ -4,7 +4,7 @@
 // Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 //
 // Source-inspection tests for the JSON control protocol.  These tests assert
-// that every command name sent by MonitorClient in autostream_core.py has a
+// that every command name sent by MonitorClient (in any core Python module) has a
 // matching dispatch branch in ControlServer::dispatch_command().  They do not
 // link against ALSA or libsamplerate — they operate entirely on the source
 // text so they can be compiled and run on any machine with g++.
@@ -14,18 +14,19 @@
 //       core/monitor/tests/test_control_protocol.cpp \
 //       -o /tmp/test_control_protocol && /tmp/test_control_protocol
 //
-// The test reads two fixed relative paths:
-//   core/monitor/autostream_monitor.cpp  (C++ dispatcher)
-//   core/autostream_core.py              (Python client)
+// The test reads the C++ dispatcher (default core/monitor/autostream_monitor.cpp,
+// or argv[1]) and the Python client sources: the files named by argv[2..], or,
+// with no such argument, every core/*.py, concatenated.
 // =============================================================================
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
-#include <algorithm>
 
 // ---------------------------------------------------------------------------
 // Minimal assertion harness
@@ -68,7 +69,7 @@ static bool contains(const std::string& haystack, const std::string& needle)
 
 // Every string in this table must be found in dispatch_command() in
 // autostream_monitor.cpp.  They are the exact values of the "type" field
-// sent by MonitorClient in autostream_core.py.
+// sent by MonitorClient.
 static const std::vector<std::string> EXPECTED_COMMANDS = {
     "configure_input",
     "set_fifo",
@@ -144,7 +145,7 @@ static void test_ok_field_in_responses(const std::string& src)
 //
 // debug_fail_input is deliberately NOT in EXPECTED_COMMANDS above: it is a
 // test-only command (docs/AUTOSTREAM-MONITOR-API.md), never sent by the
-// production Python client (core/autostream_core.py), so it must not be
+// production Python client, so it must not be
 // asserted present there. This is a narrower, source-text-only check (no
 // ALSA link needed, matching this file's whole approach) that the command
 // exists in the dispatcher and that its runtime gate (--test-hooks /
@@ -212,20 +213,32 @@ int main(int argc, char** argv)
 {
     // Locate source files relative to CWD (expected: repo root).
     std::string dispatcher_path = "core/monitor/autostream_monitor.cpp";
-    std::string python_path     = "core/autostream_core.py";
 
     if (argc >= 2) dispatcher_path = argv[1];
-    if (argc >= 3) python_path     = argv[2];
+
+    std::vector<std::string> python_paths;
+    for (int i = 2; i < argc; ++i)
+        python_paths.push_back(argv[i]);
+    if (python_paths.empty()) {
+        std::error_code ec;
+        for (const auto& entry : std::filesystem::directory_iterator("core", ec)) {
+            if (entry.is_regular_file() && entry.path().extension() == ".py")
+                python_paths.push_back(entry.path().generic_string());
+        }
+        std::sort(python_paths.begin(), python_paths.end());
+    }
 
     std::string dispatcher_src = read_file(dispatcher_path);
-    std::string python_src     = read_file(python_path);
+    std::string python_src;
+    for (const auto& path : python_paths)
+        python_src += read_file(path) + '\n';
 
     if (dispatcher_src.empty()) {
         std::fprintf(stderr, "ERROR: could not read %s\n", dispatcher_path.c_str());
         return 2;
     }
     if (python_src.empty()) {
-        std::fprintf(stderr, "ERROR: could not read %s\n", python_path.c_str());
+        std::fprintf(stderr, "ERROR: could not read any Python client source\n");
         return 2;
     }
 

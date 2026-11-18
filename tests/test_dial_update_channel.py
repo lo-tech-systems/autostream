@@ -15,6 +15,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 _SUPERVISOR = str(REPO_ROOT / "supervisor")
 if _SUPERVISOR not in sys.path:
@@ -660,8 +662,7 @@ class TestMainDialCardStructural:
     """Verify the main appliance dial card HTML includes per-dial channel controls."""
 
     def _get_setup_page_source(self) -> str:
-        source_path = REPO_ROOT / "core" / "autostream_webui_page_setup.py"
-        return source_path.read_text(encoding="utf-8")
+        return _source_text.module_text("autostream_webui_page_setup")
 
     def test_dial_channel_class_present(self):
         source = self._get_setup_page_source()

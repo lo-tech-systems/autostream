@@ -16,6 +16,8 @@ from pathlib import Path
 
 import pytest
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
 _dial = str(REPO_ROOT / "dial")
@@ -136,7 +138,7 @@ def test_sysutils_docstring_correct_helper_path():
 
 def test_webui_assets_module_header_correct():
     """Module header must name the correct file and have a complete description."""
-    src = (REPO_ROOT / "core" / "autostream_webui_assets.py").read_text(encoding="utf-8")
+    src = _source_text.module_text("autostream_webui_assets")
     # Correct filename in header
     assert '"""autostream_webui_assets.py' in src, (
         "Module header must name the file as autostream_webui_assets.py"
@@ -151,17 +153,14 @@ def test_webui_assets_module_header_correct():
 # 6. Embedded-asset and page modules compile without SyntaxWarning
 # ---------------------------------------------------------------------------
 
-_ASSET_MODULES = [
-    REPO_ROOT / "core" / "autostream_webui_assets.py",
-    REPO_ROOT / "core" / "autostream_webui_page_setup.py",
-    REPO_ROOT / "core" / "autostream_webui_page_service.py",
-    REPO_ROOT / "core" / "autostream_webui_page_about.py",
-    REPO_ROOT / "core" / "autostream_webui_page_logs.py",
-    REPO_ROOT / "core" / "autostream_webui_page_equaliser.py",
-    REPO_ROOT / "core" / "autostream_webui_page_owntone.py",
-    REPO_ROOT / "core" / "autostream_webui_page_rebooting.py",
-    REPO_ROOT / "dial" / "dial_webui_assets.py",
-]
+# A glob, so a new page or asset module cannot escape the compile check.
+_ASSET_MODULES = sorted(
+    [
+        *(REPO_ROOT / "core").glob("autostream_webui*.py"),
+        *(REPO_ROOT / "core").glob("autostream_appliance_*.py"),
+        REPO_ROOT / "dial" / "dial_webui_assets.py",
+    ]
+)
 
 
 @pytest.mark.parametrize("module_path", _ASSET_MODULES, ids=lambda p: p.name)

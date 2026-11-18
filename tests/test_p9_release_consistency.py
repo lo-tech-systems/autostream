@@ -37,6 +37,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 
 sys.path.insert(0, str(REPO_ROOT / "core"))
@@ -361,10 +363,10 @@ class TestApplianceRouteExistence:
 
     @pytest.fixture(scope="class")
     def api_src(self):
-        p = REPO_ROOT / "core" / "autostream_webui_api.py"
-        if not p.exists():
+        try:
+            return _source_text.module_text("autostream_webui_api")
+        except KeyError:
             pytest.skip("autostream_webui_api.py not found")
-        return _read(p)
 
     def test_audio_status_route_exists(self, api_src):
         assert "/api/audio/status" in api_src, (

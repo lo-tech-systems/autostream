@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 _CORE = str(REPO_ROOT / "core")
 if _CORE not in sys.path:
@@ -20,7 +22,7 @@ if _CORE not in sys.path:
 
 import autostream_webui_page_setup as setup
 
-_SRC = (REPO_ROOT / "core" / "autostream_webui_page_setup.py").read_text(encoding="utf-8")
+_SRC = _source_text.module_text("autostream_webui_page_setup")
 
 
 def _body(name: str) -> str:

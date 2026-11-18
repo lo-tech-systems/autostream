@@ -18,11 +18,13 @@ from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 
 
 def _setup_page_src() -> str:
-    return (REPO_ROOT / "core" / "autostream_webui_page_setup.py").read_text(encoding="utf-8")
+    return _source_text.module_text("autostream_webui_page_setup")
 
 
 def _load_page_setup() -> ModuleType:

@@ -18,6 +18,8 @@ from unittest.mock import MagicMock, patch, call
 
 import pytest
 
+import _source_text
+
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
 if _core not in sys.path:
@@ -1498,9 +1500,9 @@ class TestConfigureInputCallSitesPassTheFlag:
     def test_every_configure_input_call_names_the_keyword(self):
         import ast
 
-        source = (REPO_ROOT / "core" / "autostream_core.py").read_text(encoding="utf-8")
         calls = [
-            node for node in ast.walk(ast.parse(source))
+            node for source in _source_text.core_sources().values()
+            for node in ast.walk(ast.parse(source))
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "configure_input"
