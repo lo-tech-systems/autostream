@@ -23,6 +23,8 @@ import stat
 import threading
 from typing import Mapping, Optional
 
+from autostream_bluetooth_client import BLUETOOTH_CAPTURE_DEVICE, classify_loopback_hw
+
 # Canonical path for the mutable runtime state file.
 # Import this constant rather than hardcoding the path at call sites.
 STATE_PATH = "/var/lib/autostream/autostream-state.json"
@@ -159,6 +161,23 @@ SILENCE_THRESHOLD_MAX_DBFS = -30.0
 START_AFTER_MS_DEFAULT = 60
 START_AFTER_MS_MIN = 30
 START_AFTER_MS_MAX = 250
+
+# The appliance's inputs, by number. Inputs 1 and 2 are wired (each has a
+# user-chosen capture device); input 3 is Bluetooth, whose device is the
+# loopback the Bluetooth daemon feeds. Code that does something per input
+# loops over these rather than naming the inputs.
+INPUT_INDICES = (1, 2, 3)
+WIRED_INPUT_INDICES = (1, 2)
+BLUETOOTH_INPUT_INDEX = 3
+
+# Whether an input with no "enabled" key is on: input 1 is, so every config
+# written before the flag existed keeps working; the others are not.
+_AUDIO_ENABLED_DEFAULT = {1: True, 2: False, 3: False}
+
+
+def audio_section_name(index: int) -> str:
+    """The config section of input *index* (``"audio1"`` ... ``"audio3"``)."""
+    return f"audio{index}"
 
 
 def normalize_input_type(value: object, default: str = INPUT_TYPE_DEFAULT) -> str:
@@ -737,6 +756,8 @@ class AutostreamConfig:
     audio1: AudioInputConfig
     audio2_enabled: bool
     audio2: AudioInputConfig
+    audio3_enabled: bool
+    audio3: AudioInputConfig
     owntone: OwntoneConfig
     webui: WebUIConfig
     output_eq: OutputEqConfig
@@ -745,13 +766,53 @@ class AutostreamConfig:
     repeat: RepeatConfig
     outputs: OutputsConfig = field(default_factory=OutputsConfig)
 
+    def audio_section(self, index: int) -> AudioInputConfig:
+        """Input *index*'s settings (one of INPUT_INDICES)."""
+        if index not in INPUT_INDICES:
+            raise ValueError(f"no input {index!r}")
+        return getattr(self, audio_section_name(index))
 
-def _parse_audio_input_config(section: dict) -> AudioInputConfig:
-    """Parse a single audio section dict into an AudioInputConfig."""
+    def audio_enabled(self, index: int) -> bool:
+        """Whether input *index* is enabled (one of INPUT_INDICES)."""
+        if index not in INPUT_INDICES:
+            raise ValueError(f"no input {index!r}")
+        return getattr(self, f"{audio_section_name(index)}_enabled")
+
+
+# Wired sections already warned about holding the Bluetooth loopback, so a
+# config that still has one logs it once rather than on every parse.
+_warned_wired_loopback: set[str] = set()
+
+
+def _wired_capture_device(section_name: str, section: dict) -> str:
+    """A wired input's capture device. The Bluetooth loopback belongs to
+    input 3, so on a wired input it reads as no device, with one warning."""
+    device = str(section.get("capture_device", "") or "").strip()
+    if classify_loopback_hw(device) is None:
+        return device
+    if section_name not in _warned_wired_loopback:
+        _warned_wired_loopback.add(section_name)
+        logging.warning(
+            "Config: %s.capture_device is the Bluetooth loopback, which is input 3; "
+            "treating %s as having no device", section_name, section_name)
+    return ""
+
+
+def _parse_audio_input_config(
+    section: dict, capture_device: Optional[str] = None,
+) -> AudioInputConfig:
+    """Parse a single audio section dict into an AudioInputConfig.
+
+    *capture_device* replaces the section's own device: the caller passes
+    the fixed or already-checked device it has decided on. When omitted, the
+    section's value is taken as it is.
+    """
     input_type = input_type_from_section(section)
     is_turntable = input_type == "turntable"
+    if capture_device is None:
+        capture_device = str(section.get("capture_device", "") or "").strip()
     return AudioInputConfig(
-        capture_device=str(section.get("capture_device", "") or "").strip(),
+        capture_device=capture_device,
         silence_threshold_dbfs=clamp_silence_threshold_dbfs(
             section.get("silence_threshold"),
             default=input_type_silence_threshold_dbfs(input_type),
@@ -851,15 +912,20 @@ def parse_config(
         audio_path=normalize_audio_path(general_d.get("audio_path"), high_perf=high_perf),
     )
 
-    audio1_section = data.get("audio1") or {}
-    # Absent key defaults to True so every existing deployed config (written
-    # before this flag existed) behaves identically after update.
-    audio1_enabled = bool(audio1_section.get("enabled", True))
-    audio1 = _parse_audio_input_config(audio1_section)
-
-    audio2_section = data.get("audio2") or {}
-    audio2_enabled = bool(audio2_section.get("enabled", False))
-    audio2 = _parse_audio_input_config(audio2_section)
+    # Every input's section, by field name: audioN_enabled and audioN. A
+    # wired input's device is its own (never the loopback); input 3's is
+    # always the loopback, whatever the section says.
+    audio_fields: dict[str, object] = {}
+    for index in INPUT_INDICES:
+        name = audio_section_name(index)
+        section = data.get(name) or {}
+        if index == BLUETOOTH_INPUT_INDEX:
+            device = BLUETOOTH_CAPTURE_DEVICE
+        else:
+            device = _wired_capture_device(name, section)
+        audio_fields[f"{name}_enabled"] = bool(
+            section.get("enabled", _AUDIO_ENABLED_DEFAULT[index]))
+        audio_fields[name] = _parse_audio_input_config(section, capture_device=device)
 
     owntone_d = data.get("owntone") or {}
 
@@ -996,10 +1062,7 @@ def parse_config(
 
     return AutostreamConfig(
         general=general,
-        audio1_enabled=audio1_enabled,
-        audio1=audio1,
-        audio2_enabled=audio2_enabled,
-        audio2=audio2,
+        **audio_fields,
         owntone=owntone,
         webui=webui,
         output_eq=output_eq,

@@ -16,7 +16,7 @@ from typing import Optional
 import autostream_runtime as runtime
 import autostream_state
 from autostream_state import live
-from autostream_bluetooth_client import classify_loopback_hw
+from autostream_config import BLUETOOTH_INPUT_INDEX, INPUT_INDICES
 from autostream_intents.table import Intent, Outcome, bind
 from autostream_playback_stats import (
     MaintenanceResetResult,
@@ -29,30 +29,21 @@ _OWNER = "autostream_playback_tracking"
 
 
 def _playback_input_configs_from_config(cfg) -> dict[int, PlaybackInputConfig]:
-    return {
-        1: PlaybackInputConfig.normalized(
-            enabled=cfg.audio1_enabled,
-            is_turntable=cfg.audio1.is_turntable,
-            is_bluetooth=classify_loopback_hw(cfg.audio1.capture_device) == "capture",
-            stylus_life_hours=cfg.audio1.stylus_life_hours,
-            belt_life_hours=cfg.audio1.belt_life_hours,
-            belt_life_years=cfg.audio1.belt_life_years,
-            bearing_life_hours=cfg.audio1.bearing_life_hours,
-            bearing_life_years=cfg.audio1.bearing_life_years,
-            input_type=cfg.audio1.input_type,
-        ),
-        2: PlaybackInputConfig.normalized(
-            enabled=cfg.audio2_enabled,
-            is_turntable=cfg.audio2.is_turntable,
-            is_bluetooth=classify_loopback_hw(cfg.audio2.capture_device) == "capture",
-            stylus_life_hours=cfg.audio2.stylus_life_hours,
-            belt_life_hours=cfg.audio2.belt_life_hours,
-            belt_life_years=cfg.audio2.belt_life_years,
-            bearing_life_hours=cfg.audio2.bearing_life_hours,
-            bearing_life_years=cfg.audio2.bearing_life_years,
-            input_type=cfg.audio2.input_type,
-        ),
-    }
+    configs: dict[int, PlaybackInputConfig] = {}
+    for i in INPUT_INDICES:
+        a = cfg.audio_section(i)
+        configs[i] = PlaybackInputConfig.normalized(
+            enabled=cfg.audio_enabled(i),
+            is_turntable=a.is_turntable,
+            is_bluetooth=i == BLUETOOTH_INPUT_INDEX,
+            stylus_life_hours=a.stylus_life_hours,
+            belt_life_hours=a.belt_life_hours,
+            belt_life_years=a.belt_life_years,
+            bearing_life_hours=a.bearing_life_hours,
+            bearing_life_years=a.bearing_life_years,
+            input_type=a.input_type,
+        )
+    return configs
 
 
 def ensure_playback_tracker(cfg) -> Optional[PlaybackTracker]:

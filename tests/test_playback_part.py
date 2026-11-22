@@ -18,6 +18,7 @@ if _CORE not in sys.path:
 import autostream_core as core
 import autostream_runtime as runtime
 import autostream_state as state
+from autostream_config import parse_config
 from autostream_playback_stats import PlaybackInputConfig, PlaybackTracker
 import autostream_playback_tracking as playback_tracking
 
@@ -78,22 +79,20 @@ def test_publishing_reflects_the_tracker(tmp_path):
 
 
 def test_ensuring_the_tracker_publishes_its_configuration(tmp_path):
-    cfg = SimpleNamespace(
-        audio1_enabled=True, audio2_enabled=False,
-        audio1=SimpleNamespace(
-            is_turntable=True, capture_device="hw:0,0", stylus_life_hours=500,
-            belt_life_hours=0, belt_life_years=0, bearing_life_hours=0,
-            bearing_life_years=0, input_type="turntable"),
-        audio2=SimpleNamespace(
-            is_turntable=False, capture_device="hw:1,0", stylus_life_hours=0,
-            belt_life_hours=0, belt_life_years=0, bearing_life_hours=0,
-            bearing_life_years=0, input_type="line"),
-    )
+    cfg = parse_config({
+        "audio1": {"enabled": True, "capture_device": "hw:0,0", "input_type": "turntable",
+                   "stylus_life_hours": 500},
+        "audio2": {"enabled": False, "capture_device": "hw:1,0", "input_type": "line"},
+        "audio3": {"enabled": True, "input_type": "cd"},
+    }, high_perf=False)
     with patch("autostream_playback_tracking.PlaybackTracker",
                lambda: PlaybackTracker(stats_path=tmp_path / "ps.json")):
         playback_tracking.ensure_playback_tracker(cfg)
     assert playback().inputs[1].enabled is True
     assert playback().inputs[2].enabled is False
+    assert playback().inputs[3].enabled is True
+    assert playback().inputs[3].is_bluetooth is True
+    assert playback().inputs[1].is_bluetooth is False
 
 
 def test_a_counter_reset_publishes_before_it_returns(tmp_path):

@@ -21,6 +21,7 @@ import math
 import threading
 import time
 from dataclasses import dataclass, replace
+from functools import partial
 from types import MappingProxyType
 from typing import Callable, Mapping, Optional
 
@@ -30,14 +31,11 @@ import autostream_monitor_client as monitor_client
 import autostream_monitor_control as monitor_control
 import autostream_playback_tracking as playback_tracking
 import autostream_runtime as runtime
-from autostream_bluetooth_client import (
-    bluetooth_installed,
-    classify_loopback_hw,
-    is_loopback_playback,
-)
+from autostream_bluetooth_client import classify_loopback_hw
 from autostream_config import (
     OutputsConfig,
     AUDIO_PATH_CHOICES,
+    BLUETOOTH_INPUT_INDEX,
     BUFFERED_AIRPLAY_MODES,
     CONFIG_IO_LOCK,
     DEFAULT_AIRPLAY_MODE,
@@ -45,6 +43,7 @@ from autostream_config import (
     FIFO_PATH,
     DEVICE_PAUSE_SCOPE_DEFAULT,
     DEVICE_PAUSE_SCOPES,
+    INPUT_INDICES,
     REPEAT_CODEC_CHOICES,
     SILENCE_THRESHOLD_MAX_DBFS,
     SILENCE_THRESHOLD_MIN_DBFS,
@@ -54,6 +53,7 @@ from autostream_config import (
     PAUSE_OFF_SECONDS_DEFAULT,
     PAUSE_OFF_SECONDS_RANGE,
     VALID_AIRPLAY_MODES,
+    audio_section_name,
     input_type_silence_threshold_dbfs,
     load_config,
     load_state,
@@ -94,7 +94,7 @@ from autostream_settings_schema import (
 )
 from autostream_state import Origin, store
 from autostream_state.outputs import get_authority
-from autostream_sysutils import run_admin_cmd
+from autostream_sysutils import bt_services_disable, bt_services_enable, run_admin_cmd
 
 _OWNER = "autostream_live_config"
 
@@ -119,37 +119,20 @@ def _validate_gain_db(value: object) -> float:
     return v
 
 
-def _live_gain_1(state: object, value: object) -> bool:
-    return bool(monitor_control.set_live_input_gain(1, float(value)))
+def _live_gain(index: int, state: object, value: object) -> bool:
+    return bool(monitor_control.set_live_input_gain(index, float(value)))
 
 
-def _live_gain_2(state: object, value: object) -> bool:
-    return bool(monitor_control.set_live_input_gain(2, float(value)))
-
-
-def _live_eq_1(state: object, value: object) -> bool:
+def _live_eq(index: int, state: object, value: object) -> bool:
     settings = writable_store(getattr(state, "settings", None))
     if settings is None:
         return False
-    snap = settings.snapshot()
+    a = settings.snapshot().audio_section(index)
     return bool(monitor_control.set_live_input_eq(
-        1,
-        eq_40hz_db=snap.audio1.eq_40hz_db,
-        eq_100hz_db=snap.audio1.eq_100hz_db,
-        eq_8khz_db=snap.audio1.eq_8khz_db,
-    ))
-
-
-def _live_eq_2(state: object, value: object) -> bool:
-    settings = writable_store(getattr(state, "settings", None))
-    if settings is None:
-        return False
-    snap = settings.snapshot()
-    return bool(monitor_control.set_live_input_eq(
-        2,
-        eq_40hz_db=snap.audio2.eq_40hz_db,
-        eq_100hz_db=snap.audio2.eq_100hz_db,
-        eq_8khz_db=snap.audio2.eq_8khz_db,
+        index,
+        eq_40hz_db=a.eq_40hz_db,
+        eq_100hz_db=a.eq_100hz_db,
+        eq_8khz_db=a.eq_8khz_db,
     ))
 
 
@@ -286,14 +269,6 @@ register_field("repeat.codec", "repeat", "codec", _validate_repeat_codec, live=_
                live_class=LiveClass.LIVE)
 register_field("repeat.target_minutes", "repeat", "target_minutes", _validate_repeat_target_minutes,
                live=_live_repeat_target_minutes, live_class=LiveClass.LIVE)
-register_field("audio1.gain_db", "audio1", "gain_db", _validate_gain_db, live=_live_gain_1, live_class=LiveClass.LIVE)
-register_field("audio2.gain_db", "audio2", "gain_db", _validate_gain_db, live=_live_gain_2, live_class=LiveClass.LIVE)
-register_field("audio1.eq_40hz_db", "audio1", "eq_40hz_db", _validate_gain_db, live=_live_eq_1, live_class=LiveClass.LIVE)
-register_field("audio1.eq_100hz_db", "audio1", "eq_100hz_db", _validate_gain_db, live=_live_eq_1, live_class=LiveClass.LIVE)
-register_field("audio1.eq_8khz_db", "audio1", "eq_8khz_db", _validate_gain_db, live=_live_eq_1, live_class=LiveClass.LIVE)
-register_field("audio2.eq_40hz_db", "audio2", "eq_40hz_db", _validate_gain_db, live=_live_eq_2, live_class=LiveClass.LIVE)
-register_field("audio2.eq_100hz_db", "audio2", "eq_100hz_db", _validate_gain_db, live=_live_eq_2, live_class=LiveClass.LIVE)
-register_field("audio2.eq_8khz_db", "audio2", "eq_8khz_db", _validate_gain_db, live=_live_eq_2, live_class=LiveClass.LIVE)
 
 
 # ---------------------------------------------------------------------------
@@ -786,16 +761,13 @@ def _validate_capture_device(value: object) -> str:
     v = value.strip()
     if not v:
         raise ValueError("Value must be a non-empty string")
-    # Reject the ASBT loopback's PLAYBACK side: it is an internal device the
-    # pump feeds, never a valid capture-device value -- a stale saved value
-    # or a hand-crafted request could otherwise resurface it (see the Setup
-    # page's synthetic "(not currently detected)" option, build_opts in
-    # webui/browser/setup/cards_inputs.py). Only rejected when the Bluetooth-input
-    # subsystem is installed, so appliances without it see byte-identical
-    # validator behaviour.
-    if bluetooth_installed() and is_loopback_playback(v):
+    # Only the wired inputs have a capture_device row. Either side of the
+    # Bluetooth loopback is refused: the capture side belongs to input 3,
+    # whose device is fixed, and the playback side is the internal device
+    # the pump feeds.
+    if classify_loopback_hw(v) is not None:
         raise ValueError(
-            "That is the internal Bluetooth loopback device; select the Bluetooth input entry instead"
+            "That is the Bluetooth loopback device; Bluetooth is Input 3"
         )
     return v
 
@@ -870,52 +842,39 @@ def _debounce_track_id_rebuild(state: object, delay: float = 0.3) -> None:
     default_debouncer().trigger("track_id_rebuild", delay, _do_rebuild)
 
 
-def _live_capture_1(state: object, value: object) -> bool:
+def _live_capture(state: object, value: object) -> bool:
     _debounce_coordinator_reload(state)
     return True
 
 
-def _live_capture_2(state: object, value: object) -> bool:
-    _debounce_coordinator_reload(state)
-    return True
-
-
-def _live_audio1_enabled(state: object, value: object) -> bool:
+def _live_input_enabled(index: int, state: object, value: object) -> bool:
     settings = writable_store(getattr(state, "settings", None))
     if settings is not None:
-        snap = settings.snapshot()
-        playback_tracking.update_playback_input_config(
-            1,
-            enabled=bool(value),
-            is_turntable=snap.audio1.is_turntable,
-            input_type=snap.audio1.input_type,
-            is_bluetooth=classify_loopback_hw(snap.audio1.capture_device) == "capture",
-            stylus_life_hours=snap.audio1.stylus_life_hours,
-            belt_life_hours=snap.audio1.belt_life_hours,
-            belt_life_years=snap.audio1.belt_life_years,
-            bearing_life_hours=snap.audio1.bearing_life_hours,
-            bearing_life_years=snap.audio1.bearing_life_years,
-        )
+        _sync_playback_input_config(settings.snapshot(), index)
     _debounce_coordinator_reload(state)
     return True
 
 
-def _live_audio2_enabled(state: object, value: object) -> bool:
+def _live_bluetooth_input_enabled(state: object, value: object) -> bool:
+    """Input 3's enable is the Bluetooth services switch: the services are
+    enabled or disabled first, then the reload starts or stops the input.
+
+    The flag is already stored when this runs. If the services cannot be
+    switched, the flag is put back, so the input stays as it was and the
+    caller sees the live error.
+    """
+    enable = bool(value)
+    ok, message = bt_services_enable() if enable else bt_services_disable()
     settings = writable_store(getattr(state, "settings", None))
+    if not ok:
+        logging.warning("Bluetooth input: could not %s the services: %s",
+                        "enable" if enable else "disable", message)
+        if settings is not None:
+            section = audio_section_name(BLUETOOTH_INPUT_INDEX)
+            settings.update(lambda raw: raw.setdefault(section, {}).update({"enabled": not enable}))
+        return False
     if settings is not None:
-        snap = settings.snapshot()
-        playback_tracking.update_playback_input_config(
-            2,
-            enabled=bool(value),
-            is_turntable=snap.audio2.is_turntable,
-            input_type=snap.audio2.input_type,
-            is_bluetooth=classify_loopback_hw(snap.audio2.capture_device) == "capture",
-            stylus_life_hours=snap.audio2.stylus_life_hours,
-            belt_life_hours=snap.audio2.belt_life_hours,
-            belt_life_years=snap.audio2.belt_life_years,
-            bearing_life_hours=snap.audio2.bearing_life_hours,
-            bearing_life_years=snap.audio2.bearing_life_years,
-        )
+        _sync_playback_input_config(settings.snapshot(), BLUETOOTH_INPUT_INDEX)
     _debounce_coordinator_reload(state)
     return True
 
@@ -954,13 +913,13 @@ def _validate_start_after_ms(value: object) -> int:
 
 def _sync_playback_input_config(snap, input_index: int) -> None:
     """Hand one input's current settings to the playback tracker."""
-    a = snap.audio1 if input_index == 1 else snap.audio2
+    a = snap.audio_section(input_index)
     playback_tracking.update_playback_input_config(
         input_index,
-        enabled=snap.audio1_enabled if input_index == 1 else snap.audio2_enabled,
+        enabled=snap.audio_enabled(input_index),
         is_turntable=a.is_turntable,
         input_type=a.input_type,
-        is_bluetooth=classify_loopback_hw(a.capture_device) == "capture",
+        is_bluetooth=input_index == BLUETOOTH_INPUT_INDEX,
         stylus_life_hours=a.stylus_life_hours,
         belt_life_hours=a.belt_life_hours,
         belt_life_years=a.belt_life_years,
@@ -976,42 +935,22 @@ def _live_input_type(state: object, input_index: int, value: object) -> bool:
     if settings is not None:
         snap = settings.snapshot()
         _sync_playback_input_config(snap, input_index)
-        a = snap.audio1 if input_index == 1 else snap.audio2
+        a = snap.audio_section(input_index)
         return update_live_input_type(input_index, a.input_type, a.silence_threshold_dbfs)
     return update_live_input_type(
         input_index, value, input_type_silence_threshold_dbfs(value))
 
 
-def _live_input_type_1(state: object, value: object) -> bool:
-    return _live_input_type(state, 1, value)
+def _live_silence_threshold(index: int, state: object, value: object) -> bool:
+    return update_live_silence_threshold_dbfs(index, float(value))
 
 
-def _live_input_type_2(state: object, value: object) -> bool:
-    return _live_input_type(state, 2, value)
+def _live_start_after_ms(index: int, state: object, value: object) -> bool:
+    return update_live_start_after_ms(index, int(value))
 
 
-def _live_silence_threshold_1(state: object, value: object) -> bool:
-    return update_live_silence_threshold_dbfs(1, float(value))
-
-
-def _live_silence_threshold_2(state: object, value: object) -> bool:
-    return update_live_silence_threshold_dbfs(2, float(value))
-
-
-def _live_start_after_ms_1(state: object, value: object) -> bool:
-    return update_live_start_after_ms(1, int(value))
-
-
-def _live_start_after_ms_2(state: object, value: object) -> bool:
-    return update_live_start_after_ms(2, int(value))
-
-
-def _live_dynamic_rate_matching_1(state: object, value: object) -> bool:
-    return update_live_dynamic_rate_matching(1, bool(value))
-
-
-def _live_dynamic_rate_matching_2(state: object, value: object) -> bool:
-    return update_live_dynamic_rate_matching(2, bool(value))
+def _live_dynamic_rate_matching(index: int, state: object, value: object) -> bool:
+    return update_live_dynamic_rate_matching(index, bool(value))
 
 
 def _live_track_id(state: object, value: object) -> bool:
@@ -1020,9 +959,44 @@ def _live_track_id(state: object, value: object) -> bool:
 
 
 def _mutate_input_type(raw: dict, section: str, key: str, value: object) -> None:
-    """FieldSpec.mutate for audio{1,2}.input_type: set_input_type also keeps
+    """FieldSpec.mutate for audioN.input_type: set_input_type also keeps
     the turntable flag in step and moves the threshold to the new preset."""
     set_input_type(raw, int(section[-1]), value)
+
+
+def _register_input_fields(index: int) -> None:
+    """Register one input's settings rows. Every input has the same rows,
+    except that a wired input has a capture device and an enable that
+    reloads, and input 3 has no device (it is fixed) and an enable that is
+    the Bluetooth services switch."""
+    section = audio_section_name(index)
+
+    def row(key, validate, live, live_class, **extra):
+        register_field(f"{section}.{key}", section, key, validate,
+                       live=live, live_class=live_class, **extra)
+
+    row("gain_db", _validate_gain_db, partial(_live_gain, index), LiveClass.LIVE)
+    for band in ("eq_40hz_db", "eq_100hz_db", "eq_8khz_db"):
+        row(band, _validate_gain_db, partial(_live_eq, index), LiveClass.LIVE)
+    if index == BLUETOOTH_INPUT_INDEX:
+        row("enabled", _validate_bool, _live_bluetooth_input_enabled, LiveClass.RELOAD)
+    else:
+        row("capture_device", _validate_capture_device, _live_capture, LiveClass.RELOAD,
+            cross_validate=cross_validate_capture_device_unique)
+        row("enabled", _validate_bool, partial(_live_input_enabled, index), LiveClass.RELOAD)
+    # One store update writes the type, the turntable flag and the preset
+    # threshold; the live effect is the playback tracker and a daemon push,
+    # never a reload.
+    row("input_type", _validate_input_type,
+        lambda state, value: _live_input_type(state, index, value), LiveClass.LIVE,
+        mutate=_mutate_input_type)
+    row("silence_threshold", _validate_silence_threshold_dbfs,
+        partial(_live_silence_threshold, index), LiveClass.LIVE)
+    row("start_after_ms", _validate_start_after_ms, partial(_live_start_after_ms, index),
+        LiveClass.LIVE, type=int, bounds=(START_AFTER_MS_MIN, START_AFTER_MS_MAX),
+        default=START_AFTER_MS_DEFAULT)
+    row("dynamic_rate_matching", _validate_bool, partial(_live_dynamic_rate_matching, index),
+        LiveClass.LIVE)
 
 
 # Rows of the settings schema whose change has a live effect. The validators
@@ -1036,41 +1010,8 @@ register_field("general.silence_seconds", "general", "silence_seconds", _validat
                live=_live_silence, live_class=LiveClass.LIVE)
 register_field("general.audio_path", "general", "audio_path", _validate_audio_path,
                live=_live_audio_path, live_class=LiveClass.RELOAD)
-register_field("audio1.capture_device", "audio1", "capture_device", _validate_capture_device,
-               live=_live_capture_1, cross_validate=cross_validate_capture_device_unique,
-               live_class=LiveClass.RELOAD)
-register_field("audio2.capture_device", "audio2", "capture_device", _validate_capture_device,
-               live=_live_capture_2, cross_validate=cross_validate_capture_device_unique,
-               live_class=LiveClass.RELOAD)
-register_field("audio1.enabled", "audio1", "enabled", _validate_bool,
-               live=_live_audio1_enabled, live_class=LiveClass.RELOAD)
-register_field("audio2.enabled", "audio2", "enabled", _validate_bool,
-               live=_live_audio2_enabled, live_class=LiveClass.RELOAD)
-# One store update writes the type, the turntable flag and the preset
-# threshold; the live effect is the playback tracker and a daemon push, never a
-# reload.
-register_field("audio1.input_type", "audio1", "input_type", _validate_input_type,
-               live=_live_input_type_1, mutate=_mutate_input_type, live_class=LiveClass.LIVE)
-register_field("audio2.input_type", "audio2", "input_type", _validate_input_type,
-               live=_live_input_type_2, mutate=_mutate_input_type, live_class=LiveClass.LIVE)
-register_field("audio1.silence_threshold", "audio1", "silence_threshold",
-               _validate_silence_threshold_dbfs, live=_live_silence_threshold_1,
-               live_class=LiveClass.LIVE)
-register_field("audio2.silence_threshold", "audio2", "silence_threshold",
-               _validate_silence_threshold_dbfs, live=_live_silence_threshold_2,
-               live_class=LiveClass.LIVE)
-register_field("audio1.start_after_ms", "audio1", "start_after_ms",
-               _validate_start_after_ms, live=_live_start_after_ms_1,
-               type=int, bounds=(START_AFTER_MS_MIN, START_AFTER_MS_MAX),
-               default=START_AFTER_MS_DEFAULT, live_class=LiveClass.LIVE)
-register_field("audio2.start_after_ms", "audio2", "start_after_ms",
-               _validate_start_after_ms, live=_live_start_after_ms_2,
-               type=int, bounds=(START_AFTER_MS_MIN, START_AFTER_MS_MAX),
-               default=START_AFTER_MS_DEFAULT, live_class=LiveClass.LIVE)
-register_field("audio1.dynamic_rate_matching", "audio1", "dynamic_rate_matching", _validate_bool,
-               live=_live_dynamic_rate_matching_1, live_class=LiveClass.LIVE)
-register_field("audio2.dynamic_rate_matching", "audio2", "dynamic_rate_matching", _validate_bool,
-               live=_live_dynamic_rate_matching_2, live_class=LiveClass.LIVE)
+for _index in INPUT_INDICES:
+    _register_input_fields(_index)
 register_field("track_identification.enabled", "track_identification", "enabled", _validate_bool,
                live=_live_track_id, live_class=LiveClass.RELOAD)
 register_field("track_identification.analysis_lead_in_seconds", "track_identification",

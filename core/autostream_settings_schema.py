@@ -73,6 +73,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, FrozenSet, Optional, Tuple
 
+from autostream_config import WIRED_INPUT_INDICES, audio_section_name
+
 
 class CrossFieldValidationError(ValueError):
     """Raised by a ``FieldSpec.cross_validate`` callable to atomically reject
@@ -256,20 +258,24 @@ def template_leaf(template_path: str, concrete_path: str) -> Optional[str]:
 # -----------------------------------------------------------------------------
 
 def cross_validate_capture_device_unique(raw: dict, section: str, key: str, value: object) -> None:
-    """Reject *value* if the other audio input already has this same capture
+    """Reject *value* if another wired input already has this same capture
     device assigned. Runs against *raw*, the in-progress copy about to be
     committed, so it is atomic under whichever lock the caller holds while
-    mutating that copy (SettingsStore._lock).
+    mutating that copy (SettingsStore._lock). Input 3's device is fixed, so
+    only the wired inputs take part.
     """
     normalized = str(value or "").strip()
     if not normalized:
         return
-    other_section = "audio2" if section == "audio1" else "audio1"
-    other_value = str((raw.get(other_section) or {}).get("capture_device") or "").strip()
-    if other_value == normalized:
-        raise CrossFieldValidationError(
-            "That device is already assigned to the other input; choose a different device or reassign it first"
-        )
+    for index in WIRED_INPUT_INDICES:
+        other_section = audio_section_name(index)
+        if other_section == section:
+            continue
+        other_value = str((raw.get(other_section) or {}).get("capture_device") or "").strip()
+        if other_value == normalized:
+            raise CrossFieldValidationError(
+                "That device is already assigned to the other input; choose a different device or reassign it first"
+            )
 
 
 def cross_validate_hostname_visibility_cascade(raw: dict, section: str, key: str, value: object) -> None:

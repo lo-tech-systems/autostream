@@ -1,18 +1,14 @@
-"""Tests for the Bluetooth device-list relabel hook in
-core/autostream_services.py's normalize_monitor_devices(), and
-get_available_monitor_devices() threading the status through.
-
-Regression guard: with Bluetooth mode off (the default / today's
-appliances), normalize_monitor_devices() must behave byte-identically to
-before this feature existed.
+"""Tests for the capture-device list in core/autostream_services.py:
+normalize_monitor_devices() leaves out both sides of the Bluetooth loopback
+(the capture side is input 3's fixed device, the playback side is internal)
+and labels every other device as before, and get_available_monitor_devices()
+hands the daemon's list to it.
 """
 from __future__ import annotations
 
 import sys
 from pathlib import Path
-from unittest.mock import patch
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 REPO_ROOT = Path(__file__).parent.parent
 _core = str(REPO_ROOT / "core")
@@ -30,102 +26,42 @@ _RAW_DEVICES = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Bluetooth mode OFF — byte-identical regression guard
-# ---------------------------------------------------------------------------
+class TestTheLoopbackIsNotListed:
+    def test_both_sides_left_out(self):
+        hws = {d["hw"] for d in services.normalize_monitor_devices(_RAW_DEVICES)}
+        assert BLUETOOTH_PLAYBACK_DEVICE not in hws
+        assert BLUETOOTH_CAPTURE_DEVICE not in hws
 
-class TestBluetoothOffIsUnchanged:
-    def test_playback_side_not_dropped_when_off(self):
-        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
-        hws = {d["hw"] for d in result}
-        assert BLUETOOTH_PLAYBACK_DEVICE in hws
-
-    def test_capture_side_not_relabelled_when_off(self):
-        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
-        capture = next(d for d in result if d["hw"] == BLUETOOTH_CAPTURE_DEVICE)
-        assert not capture["label"].startswith("Bluetooth")
-        assert capture["label"] == f"Loopback - Loopback PCM ({BLUETOOTH_CAPTURE_DEVICE})"
-
-    def test_matches_legacy_two_arg_call(self):
-        """Calling with only the devices arg (today's call shape) must not error
-        and must resolve bluetooth_enabled from bluetooth_installed() (defaults
-        off in the test environment -- no unit file at the default path)."""
-        result = services.normalize_monitor_devices(_RAW_DEVICES)
-        hws = {d["hw"] for d in result}
-        assert BLUETOOTH_PLAYBACK_DEVICE in hws
-        assert BLUETOOTH_CAPTURE_DEVICE in hws
+    def test_left_out_whatever_its_spelling(self):
+        raw = [{"hw": "hw:card=asbt,dev=1", "card": "Loopback", "name": ""}]
+        assert services.normalize_monitor_devices(raw) == []
 
     def test_ordinary_device_untouched(self):
-        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=False)
-        usb = next(d for d in result if d["hw"] == "hw:1,0")
-        assert usb["label"] == "Behringer UCA - USB Audio (hw:1,0)"
+        result = services.normalize_monitor_devices(_RAW_DEVICES)
+        assert result == [{
+            "hw": "hw:1,0", "card": "Behringer UCA", "name": "USB Audio",
+            "label": "Behringer UCA - USB Audio (hw:1,0)",
+        }]
 
     def test_empty_devices_returns_empty_list(self):
-        assert services.normalize_monitor_devices(None, bluetooth_enabled=False) == []
-        assert services.normalize_monitor_devices([], bluetooth_enabled=False) == []
+        assert services.normalize_monitor_devices([]) == []
+        assert services.normalize_monitor_devices(None) == []
 
 
-# ---------------------------------------------------------------------------
-# Bluetooth mode ON — playback side hidden, capture side relabelled
-# ---------------------------------------------------------------------------
+class TestGetAvailableMonitorDevices:
+    def test_daemon_list_is_normalised(self):
+        client = MagicMock()
+        client.list_devices.return_value = _RAW_DEVICES
+        cm = MagicMock()
+        cm.__enter__.return_value = client
+        cm.__exit__.return_value = False
+        with patch.object(services.monitor_client, "_connected_monitor", return_value=cm):
+            result = services.get_available_monitor_devices()
+        assert [d["hw"] for d in result] == ["hw:1,0"]
 
-class TestBluetoothOnHidesPlaybackSide:
-    def test_playback_side_dropped(self):
-        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
-        hws = {d["hw"] for d in result}
-        assert BLUETOOTH_PLAYBACK_DEVICE not in hws
-
-    def test_other_devices_unaffected(self):
-        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
-        hws = {d["hw"] for d in result}
-        assert "hw:1,0" in hws
-
-    def test_capture_side_still_present(self):
-        result = services.normalize_monitor_devices(_RAW_DEVICES, bluetooth_enabled=True)
-        hws = {d["hw"] for d in result}
-        assert BLUETOOTH_CAPTURE_DEVICE in hws
-
-
-class TestBluetoothOnRelabelsCaptureSide:
-    def _capture_label(self, status):
-        result = services.normalize_monitor_devices(
-            _RAW_DEVICES, status, bluetooth_enabled=True,
-        )
-        return next(d for d in result if d["hw"] == BLUETOOTH_CAPTURE_DEVICE)["label"]
-
-    def test_paired_shows_device_name(self):
-        status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Technics SL-1200"}}
-        assert self._capture_label(status) == "Bluetooth: Technics SL-1200"
-
-    def test_not_paired(self):
-        status = {"ok": True, "paired": None}
-        assert self._capture_label(status) == "Bluetooth (not paired)"
-
-    def test_status_none_is_service_unavailable(self):
-        assert self._capture_label(None) == "Bluetooth (service unavailable)"
-
-    def test_status_ok_false_is_service_unavailable(self):
-        status = {"ok": False, "error": "daemon down"}
-        assert self._capture_label(status) == "Bluetooth (service unavailable)"
-
-
-# ---------------------------------------------------------------------------
-# get_available_monitor_devices() threads bluetooth_status through
-# ---------------------------------------------------------------------------
-
-class TestGetAvailableMonitorDevicesThreadsStatus:
-    def test_bluetooth_status_reaches_normalize(self):
-        fake_client = type("FakeClient", (), {
-            "connect": lambda self: True,
-            "close": lambda self: None,
-            "list_devices": lambda self: list(_RAW_DEVICES),
-        })()
-
-        status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Deck"}}
-
-        with patch("autostream_monitor_client.MonitorClient", return_value=fake_client), \
-             patch("autostream_services.bluetooth_installed", return_value=True):
-            result = services.get_available_monitor_devices(bluetooth_status=status)
-
-        capture = next(d for d in result if d["hw"] == BLUETOOTH_CAPTURE_DEVICE)
-        assert capture["label"] == "Bluetooth: My Deck"
+    def test_no_daemon_is_an_empty_list(self):
+        cm = MagicMock()
+        cm.__enter__.return_value = None
+        cm.__exit__.return_value = False
+        with patch.object(services.monitor_client, "_connected_monitor", return_value=cm):
+            assert services.get_available_monitor_devices() == []

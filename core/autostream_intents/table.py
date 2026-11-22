@@ -16,6 +16,7 @@ from enum import IntEnum
 from typing import Callable, Mapping, Optional
 
 import autostream_pin_pairing as pairing
+from autostream_config import INPUT_INDICES
 from autostream_state import Origin, store
 from autostream_state.freeze import deep_freeze
 
@@ -95,6 +96,7 @@ class Outcome:
 Handler = Callable[[Intent, float], Outcome]
 
 _BAD_BODY = "invalid_request_body"
+_BAD_INPUT = f"Input must be {INPUT_INDICES[0]} to {INPUT_INDICES[-1]}"
 _PIN = v.text(error="invalid_pin", max_len=16, pattern=pairing.PIN_RE)
 _MAX_REPEAT_POSITION_S = 1e7
 _DIAL_TEXT = v.text(error="invalid_args", max_len=64)
@@ -215,7 +217,7 @@ def _build_rows() -> dict:
         _row(
             "input.eq.set",
             {
-                "input": v.choice(1, 2, error="input must be 1 or 2"),
+                "input": v.choice(*INPUT_INDICES, error=_BAD_INPUT),
                 "eq_40hz_db": _EQ_DB,
                 "eq_100hz_db": _EQ_DB,
                 "eq_8khz_db": _EQ_DB,
@@ -361,7 +363,7 @@ def _build_rows() -> dict:
         _row(
             "input.counters.reset",
             {
-                "input": v.choice(1, 2, error="Input must be 1 or 2"),
+                "input": v.choice(*INPUT_INDICES, error=_BAD_INPUT),
                 "item": v.choice("stylus", "belt", "bearing", error="invalid_item"),
             },
             {"input", "item"},
@@ -370,7 +372,7 @@ def _build_rows() -> dict:
         _row(
             "input.playback_config.set",
             {
-                "input": v.choice(1, 2, error="Input must be 1 or 2"),
+                "input": v.choice(*INPUT_INDICES, error=_BAD_INPUT),
                 "enabled": v.boolean(error=_BAD_BODY),
                 "is_turntable": v.boolean(error=_BAD_BODY),
                 "input_type": v.text(error=_BAD_BODY, max_len=64),

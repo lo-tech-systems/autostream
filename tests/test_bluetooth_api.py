@@ -715,260 +715,33 @@ class TestBluetoothPairPost:
 
 
 # ---------------------------------------------------------------------------
-# GET pair_window — post-pair input auto-enable rules
+# GET pair_window -- a paired close changes no input settings
 # ---------------------------------------------------------------------------
 
-_POLL_REPLIES = {
-    "done": {"ok": True, "state": "idle", "last_close": {"reason": "paired", "error": None}},
-    "failed": {"ok": True, "state": "idle", "last_close": {"reason": "limit", "error": None}},
-    "in_progress": {"ok": True, "state": "adopting", "last_close": None},
-}
+class TestBluetoothPairWindowPairedClose:
+    """Bluetooth is input 3, so a successful tap assigns nothing: the poll
+    passes the daemon's reply through and the inputs stay as they were."""
 
-
-class TestBluetoothPairStatusAutoConfigure:
-    """The daemon's ``pair`` reply only means the tap *started*; real
-    success is only known once the window's poll shows it closed with
-    ``last_close.reason == "paired"``. That's the hook point for the input
-    auto-enable rules (see _bt_pair_auto_configure), not the POST handler --
-    so this class exercises ``send_bluetooth_pair_window_json`` with a
-    stubbed daemon reply rather than the pair POST.
-    """
-
-    def _poll(self, handler, state, daemon_state="done"):
+    def test_paired_close_is_passed_through_and_changes_no_input(self, tmp_path):
         from webui.system.bluetooth import send_bluetooth_pair_window_json
-        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
-             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
-            m_cls.return_value.window_poll.return_value = dict(_POLL_REPLIES[daemon_state])
-            send_bluetooth_pair_window_json(handler, state=state)
-
-    def test_input1_disabled_maps_and_enables_input1(self, tmp_path):
-        """Rule a: input 1 disabled -> loopback assigned to input 1 and enabled."""
-        state, store = _make_state(tmp_path, audio1={"enabled": False})
-        handler = _make_handler()
-        try:
-            self._poll(handler, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
-        assert body["last_close"]["reason"] == "paired"
-        assert body["input_auto_configure"] == {"action": "enabled", "input": "audio1"}
-        assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
-        assert snap.audio1_enabled is True
-
-    def test_input1_disabled_overwrites_stale_device_value(self, tmp_path):
-        """Rule a explicitly overwrites any stale device value on record."""
-        state, store = _make_state(
-            tmp_path, audio1={"enabled": False, "capture_device": "hw:1,0"},
-        )
-        handler = _make_handler()
-        try:
-            self._poll(handler, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
-        assert snap.audio1_enabled is True
-
-    def test_input1_on_real_device_input2_disabled_maps_input2(self, tmp_path):
-        """Rule b: input 1 already on a real device, input 2 disabled ->
-        loopback assigned to input 2 and enabled; input 1 left untouched."""
-        state, store = _make_state(tmp_path, audio1={"capture_device": "hw:1,0"})
-        handler = _make_handler()
-        try:
-            self._poll(handler, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["input_auto_configure"] == {"action": "enabled", "input": "audio2"}
-        assert snap.audio2.capture_device == BLUETOOTH_CAPTURE_DEVICE
-        assert snap.audio2_enabled is True
-        assert snap.audio1.capture_device == "hw:1,0"
-
-    def test_input1_on_real_device_input2_enabled_but_no_device_maps_input2(self, tmp_path):
-        """Rule b's 'unmapped' also covers input 2 enabled with no device
-        recorded, not only input 2 disabled."""
-        state, store = _make_state(
-            tmp_path, audio1={"capture_device": "hw:1,0"}, audio2={"enabled": True},
-        )
-        handler = _make_handler()
-        try:
-            self._poll(handler, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        assert snap.audio2.capture_device == BLUETOOTH_CAPTURE_DEVICE
-        assert snap.audio2_enabled is True
-
-    def test_already_on_loopback_is_a_no_op_with_no_notice(self, tmp_path):
-        """Rule c: input 1 already on the loopback -> nothing changes, and
-        no notice is surfaced."""
-        state, store = _make_state(
-            tmp_path, audio1={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
-        )
-        handler = _make_handler()
-        try:
-            self._poll(handler, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["input_auto_configure"] == {"action": "already_configured"}
-        assert "notice" not in body["input_auto_configure"]
-        assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
-        assert snap.audio2.capture_device == ""
-
-    def test_both_inputs_on_real_devices_leaves_config_alone_with_notice(self, tmp_path):
-        """Rule d: both inputs already occupied by real devices -> nothing
-        changes, but a notice is surfaced for the caller to display."""
-        state, store = _make_state(
-            tmp_path,
-            audio1={"capture_device": "hw:1,0"},
-            audio2={"capture_device": "hw:2,0", "enabled": True},
-        )
-        handler = _make_handler()
-        try:
-            self._poll(handler, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        auto = body["input_auto_configure"]
-        assert auto["action"] == "notice"
-        assert auto["notice"]
-        assert snap.audio1.capture_device == "hw:1,0"
-        assert snap.audio2.capture_device == "hw:2,0"
-
-    def test_never_produces_both_inputs_on_loopback(self, tmp_path):
-        """Guard against a weird pre-existing state: input 1 disabled (which
-        rule a would naively map to the loopback) while input 2 already
-        holds the loopback -- must bail rather than end up with both inputs
-        on the loopback at once."""
-        state, store = _make_state(
-            tmp_path,
-            audio1={"enabled": False},
-            audio2={"capture_device": BLUETOOTH_CAPTURE_DEVICE, "enabled": True},
-        )
-        handler = _make_handler()
-        try:
-            self._poll(handler, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["input_auto_configure"] == {"action": "already_configured"}
-        # Input 1 must not have been touched -- still disabled, no device.
-        assert snap.audio1_enabled is False
-        assert snap.audio1.capture_device == ""
-        assert snap.audio2.capture_device == BLUETOOTH_CAPTURE_DEVICE
-
-    def test_never_auto_disables_anything(self, tmp_path):
-        """Both inputs already enabled on real devices: polling must never
-        flip an enabled flag to False."""
-        state, store = _make_state(
-            tmp_path,
-            audio1={"capture_device": "hw:1,0"},
-            audio2={"capture_device": "hw:2,0", "enabled": True},
-        )
-        handler = _make_handler()
-        try:
-            self._poll(handler, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        assert snap.audio1_enabled is True
-        assert snap.audio2_enabled is True
-
-    def test_no_state_available_omits_auto_configure_field(self):
-        """When the route passes no WebUIState, the response is the plain
-        daemon-passthrough shape rather than raising."""
-        from webui.system.bluetooth import send_bluetooth_pair_window_json
-        handler = _make_handler()
-        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
-             patch("webui.system.bluetooth.BluetoothClient") as m_cls:
-            m_cls.return_value.window_poll.return_value = dict(_POLL_REPLIES["done"])
-            send_bluetooth_pair_window_json(handler)
-        code, body = _response(handler)
-        assert code == 200
-        assert body == _POLL_REPLIES["done"]
-
-    def test_failed_state_never_triggers_auto_configure(self, tmp_path):
-        """A "failed" pairing attempt must never apply the auto-enable
-        rules or attach the field, even with a fully resolvable state."""
-        state, store = _make_state(tmp_path, audio1={"enabled": False})
-        handler = _make_handler()
-        try:
-            self._poll(handler, state, daemon_state="failed")
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body == _POLL_REPLIES["failed"]
-        assert "input_auto_configure" not in body
-        assert snap.audio1_enabled is False
-        assert snap.audio1.capture_device == ""
-
-    def test_in_progress_state_never_triggers_auto_configure(self, tmp_path):
-        """Same guarantee for an in-progress attempt."""
-        state, store = _make_state(tmp_path, audio1={"enabled": False})
-        handler = _make_handler()
-        try:
-            self._poll(handler, state, daemon_state="in_progress")
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert "input_auto_configure" not in body
-        assert snap.audio1_enabled is False
-
-    def test_repeated_done_polls_stay_idempotent(self, tmp_path):
-        """The UI keeps polling after observing "done" is possible in
-        principle (e.g. a slow client tick); a second "done" poll must not
-        double-apply or error -- the rules themselves short-circuit once
-        the input is already on the loopback."""
-        state, store = _make_state(tmp_path, audio1={"enabled": False})
-        handler1 = _make_handler()
-        handler2 = _make_handler()
-        try:
-            self._poll(handler1, state)
-            self._poll(handler2, state)
-            snap = store.snapshot()
-        finally:
-            store.close(save=False)
-        _, body2 = _response(handler2)
-        assert body2["input_auto_configure"] == {"action": "already_configured"}
-        assert snap.audio1.capture_device == BLUETOOTH_CAPTURE_DEVICE
-        assert snap.audio1_enabled is True
-
-    def test_pair_post_no_longer_applies_auto_configure(self, tmp_path):
-        """The pair POST reply only means pairing *started* -- it must
-        never touch settings or carry the auto-configure field, regardless
-        of what the settings snapshot looks like."""
-        from webui.system.bluetooth import send_bluetooth_pair_post_json
-        state, store = _make_state(tmp_path, audio1={"enabled": False})
+        reply = {"ok": True, "state": "idle", "last_close": {"reason": "paired", "error": None}}
+        state, store = _make_state(tmp_path, audio1={"enabled": False, "capture_device": ""})
         handler = _make_handler()
         try:
             with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
                  patch("webui.system.bluetooth.BluetoothClient") as m_cls:
-                m_cls.return_value.pair.return_value = {"ok": True}
-                send_bluetooth_pair_post_json(handler, {"address": "AA:BB:CC:DD:EE:FF"})
+                m_cls.return_value.window_poll.return_value = dict(reply)
+                send_bluetooth_pair_window_json(handler, state)
             snap = store.snapshot()
         finally:
             store.close(save=False)
         code, body = _response(handler)
         assert code == 200
-        assert body == {"ok": True}
-        assert "input_auto_configure" not in body
+        assert body == reply
         assert snap.audio1_enabled is False
         assert snap.audio1.capture_device == ""
+        assert snap.audio2_enabled is False
+
 
 
 # ---------------------------------------------------------------------------
@@ -1117,112 +890,48 @@ class TestRouteRegistration:
 
 
 # ---------------------------------------------------------------------------
-# Settings guard — cross-input capture_device exclusivity (generalised from
-# the original Bluetooth-only double-assignment guard)
+# Settings guard -- cross-input capture_device exclusivity over the wired
+# inputs, and the Bluetooth loopback refused on both of them
 # ---------------------------------------------------------------------------
 
+def _post_capture(tmp_path, field, value, **sections):
+    from webui.browser.api_settings import send_settings_post_json
+    state, store = _make_state(tmp_path, **sections)
+    handler = _make_handler()
+    try:
+        send_settings_post_json(handler, state, {"field": field, "value": value})
+        snap = store.snapshot()
+    finally:
+        store.close(save=False)
+    code, body = _response(handler)
+    return code, body, snap
+
+
 class TestDoubleAssignmentGuard:
-    def test_second_input_rejected_when_first_already_bluetooth(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(
-            tmp_path, audio1={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
-        )
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "audio2.capture_device", "value": BLUETOOTH_CAPTURE_DEVICE},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 400
-        assert body["ok"] is False
-        assert "bluetooth" in body["error"].lower() or "assigned" in body["error"].lower()
-
-    def test_first_input_rejected_when_second_already_bluetooth(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(
-            tmp_path, audio2={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
-        )
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "audio1.capture_device", "value": BLUETOOTH_CAPTURE_DEVICE},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 400
-        assert body["ok"] is False
-
-    def test_assigning_bluetooth_to_first_input_when_free_succeeds(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "audio1.capture_device", "value": BLUETOOTH_CAPTURE_DEVICE},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
-
-    def test_different_device_from_bluetooth_still_succeeds(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(
-            tmp_path, audio1={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
-        )
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "audio2.capture_device", "value": "hw:1,0"},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
-
     def test_ordinary_duplicate_device_rejected(self, tmp_path):
-        """The guard is not Bluetooth-specific -- any device already
-        assigned to the other input is rejected, e.g. two USB devices."""
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(
-            tmp_path, audio1={"capture_device": "hw:1,0"},
-        )
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "audio2.capture_device", "value": "hw:1,0"},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
+        """Any device already assigned to the other wired input is rejected,
+        e.g. two USB devices."""
+        code, body, _ = _post_capture(
+            tmp_path, "audio2.capture_device", "hw:1,0", audio1={"capture_device": "hw:1,0"})
         assert code == 400
         assert body["ok"] is False
         assert "assigned" in body["error"].lower()
 
+    def test_first_input_rejected_when_second_holds_the_device(self, tmp_path):
+        code, body, _ = _post_capture(
+            tmp_path, "audio1.capture_device", "hw:2,0", audio2={"capture_device": "hw:2,0"})
+        assert code == 400
+        assert body["ok"] is False
+
     def test_ordinary_device_free_to_assign_when_not_taken(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(
-            tmp_path, audio1={"capture_device": "hw:1,0"},
-        )
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "audio2.capture_device", "value": "hw:2,0"},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
+        code, body, _ = _post_capture(
+            tmp_path, "audio2.capture_device", "hw:2,0", audio1={"capture_device": "hw:1,0"})
+        assert code == 200
+        assert body["ok"] is True
+
+    def test_reassigning_the_same_input_is_not_a_double_assignment(self, tmp_path):
+        code, body, _ = _post_capture(
+            tmp_path, "audio1.capture_device", "hw:1,0", audio1={"capture_device": "hw:1,0"})
         assert code == 200
         assert body["ok"] is True
 
@@ -1234,151 +943,53 @@ class TestDoubleAssignmentGuard:
         check must live inside the mutator (which runs atomically under
         SettingsStore._lock, against the real raw dict being committed) so
         the second of the two still gets rejected.
-
-        Simulated deterministically here: patch settings.snapshot() to
-        return a stale pre-race view (no conflict) for the fast-path check,
-        while the store's real raw state already has audio1 committed to
-        Bluetooth (as if a concurrent request had just landed it).  Only the
-        mutator-level check -- not the fast path -- can catch this.
         """
         from webui.browser.api_settings import send_settings_post_json
         state, store = _make_state(tmp_path)
-        stale_snapshot = store.snapshot()  # audio1 not yet Bluetooth
+        stale_snapshot = store.snapshot()  # audio1 not yet on hw:1,0
 
         # Simulate the concurrent request that already committed audio1.
-        store.update(
-            lambda raw: raw.setdefault("audio1", {}).update({"capture_device": BLUETOOTH_CAPTURE_DEVICE})
-        )
+        store.update(lambda raw: raw.setdefault("audio1", {}).update({"capture_device": "hw:1,0"}))
 
         handler = _make_handler()
         with patch.object(store, "snapshot", return_value=stale_snapshot):
             send_settings_post_json(
-                handler, state,
-                {"field": "audio2.capture_device", "value": BLUETOOTH_CAPTURE_DEVICE},
-            )
+                handler, state, {"field": "audio2.capture_device", "value": "hw:1,0"})
         code, body = _response(handler)
         final = store.snapshot()  # patch reverted -- real post-request state
         store.close(save=False)
 
         assert code == 400
         assert body["ok"] is False
-        assert "assigned" in body["error"].lower() or "bluetooth" in body["error"].lower()
+        assert "assigned" in body["error"].lower()
         # The rejected mutation must not have been committed.
-        assert final.audio2.capture_device != BLUETOOTH_CAPTURE_DEVICE
-
-    def test_reassigning_same_input_to_bluetooth_is_not_a_double_assignment(self, tmp_path):
-        """Re-saving audio1 as Bluetooth while audio1 itself already holds it
-        must not be rejected as a conflict with 'the other input'."""
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(
-            tmp_path, audio1={"capture_device": BLUETOOTH_CAPTURE_DEVICE},
-        )
-        handler = _make_handler()
-        try:
-            send_settings_post_json(
-                handler, state,
-                {"field": "audio1.capture_device", "value": BLUETOOTH_CAPTURE_DEVICE},
-            )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
+        assert final.audio2.capture_device != "hw:1,0"
 
 
-# ---------------------------------------------------------------------------
-# Settings validator — reject the loopback PLAYBACK side as a capture_device
-# (field report B): it is an internal device the pump feeds, never a valid
-# input, so a stale save or hand-crafted request must not be able to set it.
-# ---------------------------------------------------------------------------
+class TestWiredInputsRefuseTheLoopback:
+    """Either side of the Bluetooth loopback is refused as a wired input's
+    device: the capture side is input 3's, the playback side is internal."""
 
-class TestCaptureDeviceRejectsLoopbackPlayback:
-    def test_rejected_when_bluetooth_enabled(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            with patch("autostream_live_config.bluetooth_installed", return_value=True):
-                send_settings_post_json(
-                    handler, state,
-                    {"field": "audio1.capture_device", "value": BLUETOOTH_PLAYBACK_DEVICE},
-                )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
+    @pytest.mark.parametrize("field", ["audio1.capture_device", "audio2.capture_device"])
+    @pytest.mark.parametrize("device", [BLUETOOTH_CAPTURE_DEVICE, BLUETOOTH_PLAYBACK_DEVICE])
+    def test_rejected(self, tmp_path, field, device):
+        code, body, snap = _post_capture(tmp_path, field, device)
         assert code == 400
         assert body["ok"] is False
-        assert "bluetooth" in body["error"].lower()
-        assert "loopback" in body["error"].lower() or "internal" in body["error"].lower()
+        assert "input 3" in body["error"].lower()
+        assert snap.audio1.capture_device != device
+        assert snap.audio2.capture_device != device
 
-    def test_rejected_for_second_input_too_when_bluetooth_enabled(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            with patch("autostream_live_config.bluetooth_installed", return_value=True):
-                send_settings_post_json(
-                    handler, state,
-                    {"field": "audio2.capture_device", "value": BLUETOOTH_PLAYBACK_DEVICE},
-                )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
+    def test_ordinary_device_still_accepted(self, tmp_path):
+        code, body, _ = _post_capture(tmp_path, "audio1.capture_device", "hw:1,0")
+        assert code == 200
+        assert body["ok"] is True
+
+    def test_input_3_has_no_device_field(self, tmp_path):
+        code, body, _ = _post_capture(tmp_path, "audio3.capture_device", "hw:1,0")
         assert code == 400
-        assert body["ok"] is False
+        assert body["error"] == "Unknown field"
 
-    def test_accepted_when_bluetooth_disabled(self, tmp_path):
-        """Byte-identical validator behaviour when Bluetooth mode is off --
-        the raw hw: string is just an (unusual but well-formed) capture
-        device value with no special meaning."""
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
-                send_settings_post_json(
-                    handler, state,
-                    {"field": "audio1.capture_device", "value": BLUETOOTH_PLAYBACK_DEVICE},
-                )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
-
-    def test_capture_side_still_accepted_when_bluetooth_enabled(self, tmp_path):
-        """The CAPTURE side (BLUETOOTH_CAPTURE_DEVICE) is the valid Bluetooth
-        input entry -- must not be caught by the playback-side guard."""
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
-                send_settings_post_json(
-                    handler, state,
-                    {"field": "audio1.capture_device", "value": BLUETOOTH_CAPTURE_DEVICE},
-                )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
-
-    def test_ordinary_device_still_accepted_when_bluetooth_enabled(self, tmp_path):
-        from webui.browser.api_settings import send_settings_post_json
-        state, store = _make_state(tmp_path)
-        handler = _make_handler()
-        try:
-            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
-                send_settings_post_json(
-                    handler, state,
-                    {"field": "audio1.capture_device", "value": "hw:1,0"},
-                )
-        finally:
-            store.close(save=False)
-        code, body = _response(handler)
-        assert code == 200
-        assert body["ok"] is True
 
 
 # ---------------------------------------------------------------------------

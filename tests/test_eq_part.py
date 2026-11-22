@@ -166,9 +166,9 @@ def test_the_input_equaliser_intent_refuses_what_the_route_refuses():
 
     base = {"input": 1, "eq_40hz_db": 0.0, "eq_100hz_db": 0.0, "eq_8khz_db": 0.0}
     with patch("autostream_monitor_control.set_live_input_eq") as live:
-        bad_input = submit(Intent("input.eq.set", dict(base, input=3), Origin.USER, "webui"))
+        bad_input = submit(Intent("input.eq.set", dict(base, input=4), Origin.USER, "webui"))
         too_loud = submit(Intent("input.eq.set", dict(base, eq_8khz_db=10.5), Origin.USER, "webui"))
-    assert bad_input.error == "input must be 1 or 2"
+    assert bad_input.error == "Input must be 1 to 3"
     assert too_loud.error == "EQ gain must be between -10 and 10 dB"
     live.assert_not_called()
 

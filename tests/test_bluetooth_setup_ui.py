@@ -728,9 +728,9 @@ class TestSyntheticOptionSuppression:
         )
         assert "hw:CARD=Vanished,DEV=0 (not currently detected)" in html
 
-    def test_playback_side_still_injected_when_bluetooth_disabled(self, tmp_path):
-        # Bluetooth-off appliances have no notion of the loopback device --
-        # behaviour here must be byte-identical to before this fix.
+    def test_playback_side_not_injected_when_bluetooth_disabled(self, tmp_path):
+        # A wired input never holds the loopback: a stale saved value reads
+        # as no device, so there is nothing to offer as "not detected".
         html = _SetupRenderer().render(
             tmp_path,
             bt_enabled=False,
@@ -738,7 +738,7 @@ class TestSyntheticOptionSuppression:
             audio1_capture_device=BT_PLAYBACK_HW,
             audio2_capture_device="hw:2,0",
         )
-        assert f"{BT_PLAYBACK_HW} (not currently detected)" in html
+        assert f"{BT_PLAYBACK_HW} (not currently detected)" not in html
 
 
 class TestBluetoothInputCardSummary:
@@ -747,43 +747,6 @@ class TestBluetoothInputCardSummary:
     turntable flag."""
 
     BT_HW = "hw:CARD=ASBT,DEV=1"
-
-    def test_summary_shows_device_name_when_connected(self, tmp_path):
-        html_out = _SetupRenderer().render(
-            tmp_path,
-            bt_enabled=True,
-            bt_status={
-                "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "BT-Turntable"},
-                "link": "connected",
-                "streaming": True,
-            },
-            audio1_capture_device=self.BT_HW,
-        )
-        assert "Bluetooth · BT-Turntable · 0 dB" in html_out
-
-    def test_summary_shows_not_connected_when_link_down(self, tmp_path):
-        html_out = _SetupRenderer().render(
-            tmp_path,
-            bt_enabled=True,
-            bt_status={
-                "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "BT-Turntable"},
-                "link": "disconnected",
-                "streaming": False,
-            },
-            audio1_capture_device=self.BT_HW,
-        )
-        assert "Bluetooth · Not Connected · 0 dB" in html_out
-        assert "Loopback · " not in html_out
-
-    def test_non_bluetooth_input_summary_unchanged(self, tmp_path):
-        html_out = _SetupRenderer().render(
-            tmp_path,
-            bt_enabled=True,
-            bt_status=None,
-            audio1_capture_device=self.BT_HW,
-        )
-        # status unavailable (None) -> treated as not connected
-        assert "Bluetooth · Not Connected" in html_out
 
     def test_js_card_sub_has_bluetooth_branch(self, tmp_path):
         html_out = _SetupRenderer().render(tmp_path, bt_enabled=True, audio1_capture_device=self.BT_HW)

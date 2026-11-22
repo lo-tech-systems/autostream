@@ -67,8 +67,8 @@ def test_a_reset_that_is_not_applied_replies_not_applied_with_the_result():
 
 
 @pytest.mark.parametrize("input_index,item,error", [
-    (3, "stylus", "Input must be 1 or 2"),
-    ("1", "stylus", "Input must be 1 or 2"),
+    (4, "stylus", "Input must be 1 to 3"),
+    ("1", "stylus", "Input must be 1 to 3"),
     (1, "needle", "invalid_item"),
 ])
 def test_a_bad_input_or_item_is_refused_before_any_call(input_index, item, error):
