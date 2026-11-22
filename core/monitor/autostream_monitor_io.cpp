@@ -701,12 +701,8 @@ bool InputChannel::configure(const InputConfig& cfg)
     _config_valid             = true;
     _silence_threshold_sample.store(dbfs_to_linear_threshold(cfg.silence_threshold_dbfs),
                                     std::memory_order_relaxed);
-    _immediate_interrupt.store(
-        input_type_immediate_interrupt(cfg.input_type, cfg.silence_threshold_dbfs,
-                                       kImmediateInterruptThresholdDbfs),
-        std::memory_order_relaxed);
-    _activity_gated.store(input_type_activity_gated(cfg.input_type),
-                          std::memory_order_relaxed);
+    _immediate_interrupt.store(input_type_immediate_interrupt(cfg.input_type),
+                               std::memory_order_relaxed);
     _start_after_ms.store(cfg.start_after_ms, std::memory_order_relaxed);
     // Stored for a stopped and a running input alike; the capture thread
     // acts on it at the next detector window, and start() reads it when it
@@ -843,7 +839,6 @@ bool InputChannel::start(std::string* error_out)
 
     // Reset silence tracking and capture-thread private state.
     _activity_gate.reset();
-    _gate_prev_enabled                = false;
     _gate_prev_threshold_sample       = -1.0f;
     _gate_prev_start_after_ms         = -1;
     _last_above_threshold_time        = 0.0;
@@ -1140,7 +1135,7 @@ void InputChannel::log_activity_start(const ActivityStartReport& report,
                   _start_after_ms.load(std::memory_order_relaxed));
         break;
     case ActivityStartReport::Kind::Ungated:
-        LOG_DEBUG("[input%d] Became active: %.1f dB peak, %.1f dB mean power, on its first block above %.1f dB (no start delay)",
+        LOG_DEBUG("[input%d] Became active: %.1f dB peak, %.1f dB mean power, on its first block above %.1f dB (capture rate unknown)",
                   _index, peak_db, power_db, threshold_db);
         break;
     case ActivityStartReport::Kind::None:
@@ -1590,20 +1585,17 @@ bool InputChannel::update_silence_state(float                peak_sample,
         minimum_playback_seconds     = _config.minimum_playback_seconds;
     }
 
-    // The gate's running total is only meaningful against one threshold,
-    // one type and one Start after; discard it when any of them changes.
-    bool gated          = _activity_gated.load(std::memory_order_relaxed);
-    int  start_after_ms = _start_after_ms.load(std::memory_order_relaxed);
+    // The gate's running total is only meaningful against one threshold and
+    // one Start after; discard it when either changes.
+    int start_after_ms = _start_after_ms.load(std::memory_order_relaxed);
     if (start_after_ms != _gate_prev_start_after_ms)
     {
         _activity_gate.set_required_seconds(static_cast<double>(start_after_ms) / 1000.0);
         _gate_prev_start_after_ms = start_after_ms;
     }
-    if (gated != _gate_prev_enabled
-        || silence_threshold_sample != _gate_prev_threshold_sample)
+    if (silence_threshold_sample != _gate_prev_threshold_sample)
     {
         _activity_gate.reset();
-        _gate_prev_enabled          = gated;
         _gate_prev_threshold_sample = silence_threshold_sample;
     }
 
@@ -1613,17 +1605,18 @@ bool InputChannel::update_silence_state(float                peak_sample,
 
     // A window that ran out without starting is reported a second after it
     // opened, not whenever the next loud block arrives.
-    if (gated && !was_active && _activity_gate.expire(now, start_report.gate))
+    if (!was_active && _activity_gate.expire(now, start_report.gate))
         start_report.kind = ActivityStartReport::Kind::Expired;
 
     // Plain float comparison (still no log10/trig on this hot path). An
-    // active input is refreshed by any single block at the threshold; a
-    // gated input that is not yet active must first accumulate enough
-    // signal, counted within each block by update_metering(), so a spike
-    // counts its own length however the blocks fall. Mean power is worked
-    // out only for a block the gate counts and for the block that makes an
-    // ungated input active.
-    if (!gated || was_active || _capture_rate_hz <= 0)
+    // active input is refreshed by any single block at the threshold; an
+    // input that is not yet active must first accumulate enough signal,
+    // counted within each block by update_metering(), so a spike counts its
+    // own length however the blocks fall. Only an unknown capture rate
+    // (blocks without a length, so the gate could never fire) starts on the
+    // first block at the threshold. Mean power is worked out only for a
+    // block the gate counts and for that first block.
+    if (was_active || _capture_rate_hz <= 0)
     {
         if (peak_sample >= silence_threshold_sample)
         {

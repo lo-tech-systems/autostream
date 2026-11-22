@@ -375,10 +375,12 @@ class TestActivityGateSourceInspection:
     def _squash(src):
         return " ".join(src.split())
 
-    def test_configure_resolves_gate_from_input_type(self, io_src):
-        assert "input_type_activity_gated(cfg.input_type)" in io_src, (
-            "configure() does not resolve the gate flag from cfg.input_type"
-        )
+    def test_every_input_is_gated(self, io_src):
+        header = _read_source(REPO_ROOT / "core" / "monitor" / "autostream_monitor.h")
+        for src in (io_src, header):
+            assert "input_type_activity_gated" not in src
+            assert "_activity_gated" not in src
+        assert "input_type_immediate_interrupt(cfg.input_type)" in io_src
 
     def test_gate_is_fed_in_one_place(self, io_src):
         n = io_src.count("_activity_gate.on_block(")

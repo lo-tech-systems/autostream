@@ -1549,14 +1549,11 @@ inline constexpr double kPreRollSeconds = 5.0;
 inline constexpr double kInterruptSustainSeconds = 1.25;
 
 // Live-interrupt probation window for any input not configured as a
-// turntable. The input type the coordinator sends chooses it; only when no
-// type is sent does the silence threshold decide (at or below
-// kImmediateInterruptThresholdDbfs, autostream_monitor.h). A line source
-// (CD player, digital deck) is already at full level from its
-// very first sample, unlike a turntable's mechanical start, so a much
-// shorter sustain is enough to trust it -- 0.25 s still rejects a
-// single-block transient (blocks are 20 ms) while confirming a genuine
-// session almost at once.
+// turntable, an input with no type included. A line source (CD player,
+// digital deck) is already at full level from its very first sample,
+// unlike a turntable's mechanical start, so a much shorter sustain is
+// enough to trust it -- 0.25 s still rejects a short transient while
+// confirming a genuine session almost at once.
 inline constexpr double kImmediateInterruptSustainSeconds = 0.25;
 
 // Length of the crossfade the output mixer runs between the replay source

@@ -100,17 +100,10 @@ struct InputConfig
     int         silence_seconds              = 30;      // silence duration before stopping
     float       track_change_silence_seconds = 1.25f;  // gap duration (s) that marks a track boundary [0.5, 5.0]
     int         minimum_playback_seconds     = 30;      // minimum playback hold, seconds; 0 disables [0, 300]
-    std::string input_type;                 // "turntable", "cd" or "line"; empty when the coordinator sent none
+    std::string input_type;                 // "turntable", "cd" or "line"; empty when the coordinator sent none, which behaves as "line"
     bool        dynamic_rate_matching        = false;  // follow the delivered rate (see RateEstimator); off = fixed-rate behaviour
-    int         start_after_ms               = kStartAfterDefaultMs;  // activity gate requirement [30, 250]; ignored when ungated
+    int         start_after_ms               = kStartAfterDefaultMs;  // activity gate requirement [30, 250], every input
 };
-
-// Boundary for a coordinator that sends no input_type: a silence threshold
-// at or below this reads as a line-level input (the line preset is
-// -60 dBFS, the turntable preset -45 dBFS). When the coordinator names
-// the type, the type decides and this boundary is not consulted. See
-// input_type_immediate_interrupt().
-inline constexpr float kImmediateInterruptThresholdDbfs = -55.0f;
 
 
 // =============================================================================
@@ -3615,7 +3608,6 @@ private:
     // legacy int16 scale for replay's own domain.
     std::atomic<float> _silence_threshold_sample{0.0f};
     std::atomic<bool> _immediate_interrupt{true};   // resolved from input_type in configure(); read lock-free per block
-    std::atomic<bool> _activity_gated{false};       // resolved from input_type in configure(); read lock-free per block
     std::atomic<int>  _start_after_ms{kStartAfterDefaultMs};  // set by configure(); read lock-free per block
 
     // ── ALSA capture ─────────────────────────────────────────────────────────
@@ -3698,7 +3690,6 @@ private:
 
     // ── Activity gate (process thread only) ──────────────────────────────────
     ActivityGate _activity_gate;
-    bool  _gate_prev_enabled          = false;
     float _gate_prev_threshold_sample = -1.0f;
     int   _gate_prev_start_after_ms   = -1;
     // Negotiated capture rate, copied from the ALSA handle in start() before

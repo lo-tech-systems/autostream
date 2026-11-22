@@ -7,8 +7,7 @@
 // autostream_input_activity.h.
 //
 // Build (on Linux, from repo root):
-//   g++ -std=c++17 -O2 -I core/monitor \
-//       core/monitor/tests/test_input_activity.cpp \
+//   g++ -std=c++17 -O2 -I core/monitor core/monitor/tests/test_input_activity.cpp
 //       -o /tmp/test_input_activity && /tmp/test_input_activity
 // =============================================================================
 
@@ -33,8 +32,6 @@ static int g_failed = 0;
                      __FILE__, __LINE__, #cond, (msg)); \
     } \
 } while (0)
-
-static const float kBoundary = -55.0f;
 
 // Feeds one block with a fixed level, all of it signal, for the tests that
 // only count time.
@@ -62,40 +59,23 @@ static bool near(double a, double b)
 
 static void test_named_turntable_gets_long_window()
 {
-    CHECK(!input_type_immediate_interrupt("turntable", -45.0f, kBoundary),
-          "turntable at a turntable-level threshold gets the long window");
-    CHECK(!input_type_immediate_interrupt("turntable", -60.0f, kBoundary),
-          "turntable keeps the long window even at a line-level threshold");
+    CHECK(!input_type_immediate_interrupt("turntable"), "turntable gets the long window");
 }
 
 static void test_named_cd_and_line_get_short_window()
 {
-    CHECK(input_type_immediate_interrupt("cd", -60.0f, kBoundary),
-          "cd at -60 gets the short window");
-    CHECK(input_type_immediate_interrupt("cd", -45.0f, kBoundary),
-          "cd at -45 still gets the short window");
-    CHECK(input_type_immediate_interrupt("line", -60.0f, kBoundary),
-          "line at -60 gets the short window");
-    CHECK(input_type_immediate_interrupt("line", -45.0f, kBoundary),
-          "line at -45 still gets the short window");
+    CHECK(input_type_immediate_interrupt("cd"), "cd gets the short window");
+    CHECK(input_type_immediate_interrupt("line"), "line gets the short window");
 }
 
 static void test_unknown_type_is_short()
 {
-    CHECK(input_type_immediate_interrupt("tape", -45.0f, kBoundary),
-          "an unknown type is treated as not a turntable");
+    CHECK(input_type_immediate_interrupt("tape"), "an unknown type is treated as not a turntable");
 }
 
-static void test_empty_type_follows_boundary()
+static void test_empty_type_is_line()
 {
-    CHECK(input_type_immediate_interrupt("", -55.0f, kBoundary),
-          "no type, threshold on the boundary: short window");
-    CHECK(input_type_immediate_interrupt("", -55.1f, kBoundary),
-          "no type, threshold just below the boundary: short window");
-    CHECK(!input_type_immediate_interrupt("", -54.9f, kBoundary),
-          "no type, threshold just above the boundary: long window");
-    CHECK(!input_type_immediate_interrupt("", -45.0f, kBoundary),
-          "no type, turntable-level threshold: long window");
+    CHECK(input_type_immediate_interrupt(""), "no type behaves as line: short window");
 }
 
 static void test_one_block_does_not_fire()
@@ -153,15 +133,6 @@ static void test_reset_discards_partial_total()
     feed(gate,1.021, 0.021);
     gate.reset();
     CHECK(!feed(gate,1.042, 0.021), "total was discarded by reset()");
-}
-
-static void test_gating_by_type()
-{
-    CHECK(!input_type_activity_gated(""), "no type: gate off");
-    CHECK(!input_type_activity_gated("cd"), "cd: gate off");
-    CHECK(input_type_activity_gated("turntable"), "turntable: gate on");
-    CHECK(input_type_activity_gated("line"), "line: gate on");
-    CHECK(input_type_activity_gated("tape"), "any other named type: gate on");
 }
 
 static void test_slow_click_train_never_fires()
@@ -346,7 +317,7 @@ int main()
     test_named_turntable_gets_long_window();
     test_named_cd_and_line_get_short_window();
     test_unknown_type_is_short();
-    test_empty_type_follows_boundary();
+    test_empty_type_is_line();
     test_one_block_does_not_fire();
     test_three_consecutive_blocks_fire_on_third();
     test_spread_blocks_within_a_second_fire();
@@ -354,7 +325,6 @@ int main()
     test_large_block_then_small_fires_on_second();
     test_fires_then_starts_over();
     test_reset_discards_partial_total();
-    test_gating_by_type();
     test_slow_click_train_never_fires();
     test_exactly_required_seconds_fires();
     test_block_exactly_one_second_later_counts();
