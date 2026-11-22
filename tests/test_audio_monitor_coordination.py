@@ -1326,8 +1326,8 @@ class TestConfigureInputCallSitesPassTheFlag:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "configure_input"
         ]
-        # Five sites today; fewer would mean this test no longer finds them.
-        assert len(calls) >= 5
+        # Four sites today; fewer would mean this test no longer finds them.
+        assert len(calls) >= 4
         missing = [
             node.lineno for node in calls
             if "dynamic_rate_matching" not in {kw.arg for kw in node.keywords}
@@ -1344,7 +1344,7 @@ class TestConfigureInputCallSitesPassTheFlag:
             and isinstance(node.func, ast.Attribute)
             and node.func.attr == "configure_input"
         ]
-        assert len(calls) >= 5
+        assert len(calls) >= 4
         missing = [
             node.lineno for node in calls
             if "start_after_ms" not in {kw.arg for kw in node.keywords}

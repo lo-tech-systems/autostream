@@ -19,10 +19,13 @@ import autostream_monitor_client as monitor_client
 import autostream_monitor_control as monitor_control
 import autostream_playback_tracking as playback_tracking
 import autostream_runtime as runtime
-from autostream_bluetooth_client import BluetoothClient, bluetooth_installed, classify_loopback_hw
+from autostream_bluetooth_client import BluetoothClient, bluetooth_installed, bluetooth_services_enabled
 from autostream_config import (
     AUDIO_PATH_DEFAULT,
+    BLUETOOTH_INPUT_INDEX,
+    INPUT_INDICES,
     OutputEqConfig,
+    audio_section_name,
     normalize_audio_path,
     unconfigured,
 )
@@ -384,9 +387,10 @@ BLUETOOTH_LOOPBACK_WAIT_SECONDS = 10.0
 BLUETOOTH_LOOPBACK_POLL_SECONDS = 0.5
 
 
-def _wait_for_bluetooth_loopback(capture_device: str) -> None:
-    """Hold off opening a monitor capture on the Bluetooth loopback until the
-    pump reports it holds the playback end.
+def _wait_for_bluetooth_loopback() -> bool:
+    """Hold off opening input 3's capture on the Bluetooth loopback until
+    the pump reports it holds the playback end. Returns False if it never
+    does, in which case input 3 is not started on this pass.
 
     The shared snd-aloop cable takes its rate/format from whichever end
     opens first. The pump's end carries the source's real parameters, so the
@@ -394,32 +398,134 @@ def _wait_for_bluetooth_loopback(capture_device: str) -> None:
     match, exactly as it would against a hardware device with those native
     parameters. Opening first would instead pin the cable at the monitor's
     own negotiation ceiling and force the pump into its paused/retrying
-    state (no audio).
-
-    Best-effort by design: not the Bluetooth device, Bluetooth not
-    installed, or a status surface without the field all fall through
-    immediately; a pump that never reports readiness falls through after
-    BLUETOOTH_LOOPBACK_WAIT_SECONDS with a warning.
+    state (no audio). So a pump that has not held the loopback within
+    BLUETOOTH_LOOPBACK_WAIT_SECONDS leaves input 3 stopped until the next
+    reload (a rate change, a lockout heal or any settings reload) tries
+    again. A status without the field, or shutting down, does not wait.
     """
-    if classify_loopback_hw(capture_device) != "capture":
-        return
-    if not bluetooth_installed():
-        return
-
     bt_client = BluetoothClient()
     deadline = time.monotonic() + BLUETOOTH_LOOPBACK_WAIT_SECONDS
     while time.monotonic() < deadline and not runtime.stop_flag.is_set():
         status = bt_client.status()
         if status is not None and "loopback_held" not in status:
-            return   # older bluetooth service without the field; nothing to wait on
+            return True   # a status surface without the field; nothing to wait on
         if status is not None and status.get("loopback_held"):
-            return
+            return True
         if runtime.stop_flag.wait(BLUETOOTH_LOOPBACK_POLL_SECONDS):
-            return   # shutting down; the caller's own stop_flag checks take over
+            return True   # shutting down; the caller's own stop_flag checks take over
     logging.warning(
         "Bluetooth pump did not report holding the loopback within %.0fs; "
-        "starting input on %r anyway.",
-        BLUETOOTH_LOOPBACK_WAIT_SECONDS, capture_device,
+        "input %d not started until the next reload.",
+        BLUETOOTH_LOOPBACK_WAIT_SECONDS, BLUETOOTH_INPUT_INDEX,
+    )
+    return False
+
+
+def reconcile_bluetooth_input_startup(settings) -> None:
+    """Make input 3's enabled flag agree with the Bluetooth services.
+
+    The flag and the services are one switch, but the services can change
+    without the flag (by hand, or by an update that ran with them off), so
+    at every pass through the startup phase systemd wins: a flag that
+    disagrees is rewritten, with no live effect, before the inputs start.
+    Idempotent, so passes after the first correction change nothing.
+    """
+    if not bluetooth_installed():
+        return
+    services_on = bluetooth_services_enabled()
+    section = audio_section_name(BLUETOOTH_INPUT_INDEX)
+    stored = (settings.raw_snapshot().get(section) or {}).get("enabled")
+    if stored is not None and bool(stored) == services_on:
+        return
+    settings.update(lambda r: r.setdefault(section, {}).update({"enabled": services_on}))
+    settings.save_now()
+    logging.info(
+        "Input %d enabled flag set to %s to match the Bluetooth services.",
+        BLUETOOTH_INPUT_INDEX, services_on,
+    )
+
+
+# A failure to start this input fails the whole startup pass (it is retried);
+# any other input that fails is skipped and the rest start without it.
+_STRICT_INPUT_INDEX = INPUT_INDICES[0]
+
+
+def _input_wanted(cfg, index: int, started: list) -> bool:
+    """Whether startup should start input *index*, given the monitors
+    already *started* on this pass.
+
+    A wired input needs its enable, a device, and a device no earlier wired
+    input has taken. Input 3 needs its enable and the Bluetooth services
+    (which also means the subsystem is installed).
+    """
+    if not cfg.audio_enabled(index):
+        return False
+    if index == BLUETOOTH_INPUT_INDEX:
+        return bluetooth_installed() and bluetooth_services_enabled()
+    device = cfg.audio_section(index).capture_device
+    if not device:
+        logging.warning("Input %d is enabled but has no capture device; not starting it.", index)
+        return False
+    if any(m.input_device == device for m in started):
+        logging.warning("Input %d uses the same device as another input (%r); not starting it.",
+                        index, device)
+        return False
+    return True
+
+
+def _start_input(client, cfg, index: int, fifo_path: str) -> Optional["audio_monitor.AudioMonitor"]:
+    """Configure and start input *index* on the daemon, apply its gain and
+    equaliser, and return its monitor. None when any step fails or input 3's
+    loopback is not held; the caller decides whether that fails startup."""
+    a = cfg.audio_section(index)
+    outcome = "will retry" if index == _STRICT_INPUT_INDEX else f"skipping input {index}"
+    log = logging.warning if index == _STRICT_INPUT_INDEX else logging.error
+
+    if not client.configure_input(
+        index,
+        a.capture_device,
+        a.silence_threshold_dbfs,
+        cfg.general.silence_seconds,
+        cfg.track_identification.track_change_silence_seconds,
+        cfg.general.minimum_playback_seconds,
+        input_type=a.input_type,
+        dynamic_rate_matching=a.dynamic_rate_matching,
+        start_after_ms=a.start_after_ms,
+    ):
+        log("configure_input(%d, %r) failed during startup; %s.", index, a.capture_device, outcome)
+        return None
+
+    if index == BLUETOOTH_INPUT_INDEX and not _wait_for_bluetooth_loopback():
+        return None
+    if not client.start_input(index):
+        log("start_input(%d) failed during startup; %s.", index, outcome)
+        return None
+    if not monitor_control.apply_input_gain(client, index, a.gain_db):
+        log("set_gain(%d) failed during startup; %s.", index, outcome)
+        return None
+    if not monitor_control.apply_input_eq(client, index, a.eq_40hz_db, a.eq_100hz_db, a.eq_8khz_db):
+        log("set_eq(%d) failed during startup; %s.", index, outcome)
+        return None
+
+    return audio_monitor.AudioMonitor(
+        input_index=index,
+        input_device=a.capture_device,
+        silence_threshold_dbfs=a.silence_threshold_dbfs,
+        silence_seconds=cfg.general.silence_seconds,
+        fifo_path=fifo_path,
+        owntone_base_url=cfg.owntone.base_url,
+        track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
+        minimum_playback_seconds=cfg.general.minimum_playback_seconds,
+        owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
+        owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
+        gain_db=a.gain_db,
+        eq_40hz_db=a.eq_40hz_db,
+        eq_100hz_db=a.eq_100hz_db,
+        eq_8khz_db=a.eq_8khz_db,
+        is_turntable=a.is_turntable,
+        input_type=a.input_type,
+        dynamic_rate_matching=a.dynamic_rate_matching,
+        start_after_ms=a.start_after_ms,
     )
 
 
@@ -434,138 +540,23 @@ def configure_startup_monitors(
                         cfg.general.log_level)
         return None
 
-    # Defensively stop both inputs before configuring.  If a previous reload
+    # Defensively stop every input before configuring.  If a previous reload
     # left the daemon with inputs still running (e.g. stop_input in the finally
     # block failed silently due to a lost connection), configure_input and
     # start_input would otherwise fail.  api_stop_input is idempotent.
-    client.stop_input(1)
-    client.stop_input(2)
+    for index in INPUT_INDICES:
+        client.stop_input(index)
 
     monitors: list[audio_monitor.AudioMonitor] = []
 
-    if cfg.audio1_enabled:
-        if not client.configure_input(
-            1,
-            cfg.audio1.capture_device,
-            cfg.audio1.silence_threshold_dbfs,
-            cfg.general.silence_seconds,
-            cfg.track_identification.track_change_silence_seconds,
-            cfg.general.minimum_playback_seconds,
-            input_type=cfg.audio1.input_type,
-            dynamic_rate_matching=cfg.audio1.dynamic_rate_matching,
-            start_after_ms=cfg.audio1.start_after_ms,
-        ):
-            logging.warning(
-                "configure_input(1, %r) failed during startup; will retry.",
-                cfg.audio1.capture_device,
-            )
+    for index in INPUT_INDICES:
+        if not _input_wanted(cfg, index, monitors):
+            continue
+        monitor = _start_input(client, cfg, index, fifo_path)
+        if monitor is not None:
+            monitors.append(monitor)
+        elif index == _STRICT_INPUT_INDEX:
             return None
-
-        _wait_for_bluetooth_loopback(cfg.audio1.capture_device)
-        if not client.start_input(1):
-            logging.warning("start_input(1) failed during startup; will retry.")
-            return None
-
-        if not monitor_control.apply_input_gain(client, 1, cfg.audio1.gain_db):
-            logging.warning("set_gain(1) failed during startup; will retry.")
-            return None
-
-        if not monitor_control.apply_input_eq(
-            client,
-            1,
-            cfg.audio1.eq_40hz_db,
-            cfg.audio1.eq_100hz_db,
-            cfg.audio1.eq_8khz_db,
-        ):
-            logging.warning("set_eq(1) failed during startup; will retry.")
-            return None
-
-        monitors.append(audio_monitor.AudioMonitor(
-            input_index=1,
-            input_device=cfg.audio1.capture_device,
-            silence_threshold_dbfs=cfg.audio1.silence_threshold_dbfs,
-            silence_seconds=cfg.general.silence_seconds,
-            fifo_path=fifo_path,
-            owntone_base_url=cfg.owntone.base_url,
-            track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
-            minimum_playback_seconds=cfg.general.minimum_playback_seconds,
-            owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
-            owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
-            gain_db=cfg.audio1.gain_db,
-            eq_40hz_db=cfg.audio1.eq_40hz_db,
-            eq_100hz_db=cfg.audio1.eq_100hz_db,
-            eq_8khz_db=cfg.audio1.eq_8khz_db,
-            is_turntable=cfg.audio1.is_turntable,
-            input_type=cfg.audio1.input_type,
-            dynamic_rate_matching=cfg.audio1.dynamic_rate_matching,
-            start_after_ms=cfg.audio1.start_after_ms,
-        ))
-
-    if (
-        cfg.audio2_enabled
-        and cfg.audio2.capture_device
-        and (not cfg.audio1_enabled or cfg.audio2.capture_device != cfg.audio1.capture_device)
-    ):
-        audio2_ok = True
-
-        if not client.configure_input(
-            2,
-            cfg.audio2.capture_device,
-            cfg.audio2.silence_threshold_dbfs,
-            cfg.general.silence_seconds,
-            cfg.track_identification.track_change_silence_seconds,
-            cfg.general.minimum_playback_seconds,
-            input_type=cfg.audio2.input_type,
-            dynamic_rate_matching=cfg.audio2.dynamic_rate_matching,
-            start_after_ms=cfg.audio2.start_after_ms,
-        ):
-            logging.error(
-                "configure_input(2, %r) failed; skipping second input.",
-                cfg.audio2.capture_device,
-            )
-            audio2_ok = False
-
-        if audio2_ok:
-            _wait_for_bluetooth_loopback(cfg.audio2.capture_device)
-        if audio2_ok and not client.start_input(2):
-            logging.error("start_input(2) failed; skipping second input.")
-            audio2_ok = False
-
-        if audio2_ok and not monitor_control.apply_input_gain(client, 2, cfg.audio2.gain_db):
-            logging.error("set_gain(2) failed; skipping second input.")
-            audio2_ok = False
-
-        if audio2_ok and not monitor_control.apply_input_eq(
-            client,
-            2,
-            cfg.audio2.eq_40hz_db,
-            cfg.audio2.eq_100hz_db,
-            cfg.audio2.eq_8khz_db,
-        ):
-            logging.error("set_eq(2) failed; skipping second input.")
-            audio2_ok = False
-
-        if audio2_ok:
-            monitors.append(audio_monitor.AudioMonitor(
-                input_index=2,
-                input_device=cfg.audio2.capture_device,
-                silence_threshold_dbfs=cfg.audio2.silence_threshold_dbfs,
-                silence_seconds=cfg.general.silence_seconds,
-                fifo_path=fifo_path,
-                owntone_base_url=cfg.owntone.base_url,
-                track_change_silence_seconds=cfg.track_identification.track_change_silence_seconds,
-                minimum_playback_seconds=cfg.general.minimum_playback_seconds,
-                owntone_output_offsets_ms=cfg.owntone.output_offsets_ms,
-                owntone_output_airplay_modes=cfg.owntone.output_airplay_modes,
-                gain_db=cfg.audio2.gain_db,
-                eq_40hz_db=cfg.audio2.eq_40hz_db,
-                eq_100hz_db=cfg.audio2.eq_100hz_db,
-                eq_8khz_db=cfg.audio2.eq_8khz_db,
-                is_turntable=cfg.audio2.is_turntable,
-                input_type=cfg.audio2.input_type,
-                dynamic_rate_matching=cfg.audio2.dynamic_rate_matching,
-                start_after_ms=cfg.audio2.start_after_ms,
-            ))
 
     if len(monitors) > 1:
         for m in monitors:
@@ -687,6 +678,7 @@ def await_startup(
         # it on every lap of this loop -- including connect-retry laps --
         # settles to a no-op after the first successful correction.
         reconcile_audio_path_startup(settings)
+        reconcile_bluetooth_input_startup(settings)
 
         cfg = settings.snapshot()
         fifo_path = cfg.general.fifo_path

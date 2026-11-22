@@ -30,7 +30,10 @@ from autostream_bluetooth_client import (
     bluetooth_services_enabled,
     onboard_radio_refused,
 )
-from autostream_sysutils import bt_onboard_set, bt_services_disable, bt_services_enable
+from autostream_config import BLUETOOTH_INPUT_INDEX, audio_section_name
+from autostream_intents import Intent, submit
+from autostream_state import Origin
+from autostream_sysutils import bt_onboard_set
 from webui import common
 
 # -----------------------------------------------------------------------------
@@ -46,6 +49,12 @@ from webui import common
 _BLUETOOTH_WINDOW_ALLOWED_ACTIONS = frozenset({"start", "stop"})
 _BLUETOOTH_MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 _BLUETOOTH_SERVICES_ALLOWED_ACTIONS = frozenset({"enable", "disable"})
+_BLUETOOTH_SERVICES_MESSAGES = {
+    ("enable", True): "Bluetooth services enabled.",
+    ("disable", True): "Bluetooth services disabled.",
+    ("enable", False): "Failed to enable Bluetooth services.",
+    ("disable", False): "Failed to disable Bluetooth services.",
+}
 _BLUETOOTH_BUFFER_MS_MIN = 100
 _BLUETOOTH_BUFFER_MS_MAX = 500
 
@@ -217,13 +226,16 @@ def send_bluetooth_forget_post_json(handler) -> None:
     common.send_json(handler, 200, {"ok": True})
 
 
-def send_bluetooth_services_post_json(handler, json_obj) -> None:
+def send_bluetooth_services_post_json(handler, state, json_obj) -> None:
     """POST /api/bluetooth/services {"action": "enable"|"disable"}.
 
-    Thin wrapper over the ``autostream_sysutils`` privileged-path
-    functions, which each return ``(ok, message)``. Disabling implicitly
-    stops any active stream -- that is handled inside the systemd unit
-    stop, not here. Closed action set, extra keys rejected.
+    The services switch is input 3's enable, so this is a settings apply of
+    ``audio3.enabled``: one path for this route and the input card's
+    switch. Its live effect switches the services and reloads the inputs;
+    a switch that fails leaves the flag as it was and is reported here.
+    Disabling implicitly stops any active stream -- that is handled inside
+    the systemd unit stop, not here. Closed action set, extra keys
+    rejected.
     """
     if not bluetooth_installed():
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
@@ -237,13 +249,17 @@ def send_bluetooth_services_post_json(handler, json_obj) -> None:
         common.send_browser_api_error(handler, 400, "Invalid action")
         return
 
-    try:
-        ok, message = bt_services_enable() if action == "enable" else bt_services_disable()
-    except Exception as e:
-        logging.exception("send_bluetooth_services_post_json: %s failed", action)
-        common.send_json(handler, 200, {"ok": False, "message": str(e)})
-        return
-    common.send_json(handler, 200, {"ok": bool(ok), "message": str(message)})
+    enable = action == "enable"
+    reply = submit(Intent(
+        "settings.apply",
+        {"changes": ((f"{audio_section_name(BLUETOOTH_INPUT_INDEX)}.enabled", enable),)},
+        Origin.USER, "webui", context=state))
+    outcomes = reply.result.get("outcomes") if reply.ok else None
+    ok = bool(outcomes and outcomes[0].get("live"))
+    message = _BLUETOOTH_SERVICES_MESSAGES[(action, ok)]
+    if not reply.ok:
+        logging.warning("send_bluetooth_services_post_json: %s failed: %s", action, reply.error)
+    common.send_json(handler, 200, {"ok": ok, "message": message})
 
 
 def send_bluetooth_onboard_post_json(handler, json_obj) -> None:
@@ -341,7 +357,7 @@ def _route_post_bluetooth_forget(handler, state, body_str):
 
 
 def _route_post_bluetooth_services(handler, state, body_str):
-    send_bluetooth_services_post_json(handler, common._route_post_json_obj(handler))
+    send_bluetooth_services_post_json(handler, state, common._route_post_json_obj(handler))
 
 
 def _route_post_bluetooth_onboard(handler, state, body_str):

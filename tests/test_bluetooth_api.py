@@ -269,45 +269,56 @@ class TestBluetoothStatusJson:
 # ---------------------------------------------------------------------------
 
 class TestBluetoothServicesPost:
-    def test_enable_action(self):
+    """The route is a settings apply of audio3.enabled, whose live effect
+    switches the services; the reply carries whether that worked."""
+
+    def _post(self, tmp_path, action, *, enable_ok=True, disable_ok=True, audio3_enabled=False):
         from webui.system.bluetooth import send_bluetooth_services_post_json
+        import autostream_live_config as live_config
+        state, store = _make_state(tmp_path, audio3={"enabled": audio3_enabled})
         handler = _make_handler()
-        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
-             patch("webui.system.bluetooth.bt_services_enable", return_value=(True, "enabled")) as m_en, \
-             patch("webui.system.bluetooth.bt_services_disable") as m_dis:
-            send_bluetooth_services_post_json(handler, {"action": "enable"})
+        try:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch.object(live_config, "bt_services_enable", return_value=(enable_ok, "x")) as m_en, \
+                 patch.object(live_config, "bt_services_disable", return_value=(disable_ok, "x")) as m_dis, \
+                 patch.object(live_config, "_debounce_coordinator_reload") as m_reload:
+                send_bluetooth_services_post_json(handler, state, {"action": action})
+            snap = store.snapshot()
+        finally:
+            store.close(save=False)
         code, body = _response(handler)
+        return code, body, snap, m_en, m_dis, m_reload
+
+    def test_enable_action(self, tmp_path):
+        code, body, snap, m_en, m_dis, m_reload = self._post(tmp_path, "enable")
         assert code == 200
-        assert body == {"ok": True, "message": "enabled"}
+        assert body == {"ok": True, "message": "Bluetooth services enabled."}
         m_en.assert_called_once()
         m_dis.assert_not_called()
+        m_reload.assert_called_once()
+        assert snap.audio3_enabled is True
 
-    def test_disable_action(self):
-        from webui.system.bluetooth import send_bluetooth_services_post_json
-        handler = _make_handler()
-        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
-             patch("webui.system.bluetooth.bt_services_disable", return_value=(True, "disabled")):
-            send_bluetooth_services_post_json(handler, {"action": "disable"})
-        code, body = _response(handler)
+    def test_disable_action(self, tmp_path):
+        code, body, snap, m_en, m_dis, _ = self._post(tmp_path, "disable", audio3_enabled=True)
         assert code == 200
-        assert body == {"ok": True, "message": "disabled"}
+        assert body == {"ok": True, "message": "Bluetooth services disabled."}
+        m_dis.assert_called_once()
+        m_en.assert_not_called()
+        assert snap.audio3_enabled is False
 
-    def test_failure_reported_but_still_200(self):
-        from webui.system.bluetooth import send_bluetooth_services_post_json
-        handler = _make_handler()
-        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
-             patch("webui.system.bluetooth.bt_services_enable", return_value=(False, "sudo failed")):
-            send_bluetooth_services_post_json(handler, {"action": "enable"})
-        code, body = _response(handler)
+    def test_failure_reported_but_still_200_and_the_flag_stays(self, tmp_path):
+        code, body, snap, _, _, m_reload = self._post(tmp_path, "enable", enable_ok=False)
         assert code == 200
-        assert body == {"ok": False, "message": "sudo failed"}
+        assert body == {"ok": False, "message": "Failed to enable Bluetooth services."}
+        m_reload.assert_not_called()
+        assert snap.audio3_enabled is False
 
     @pytest.mark.parametrize("action", ["start", "stop", "", None, 1, "enable_all"])
     def test_invalid_action_rejected(self, action):
         from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
         with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
-            send_bluetooth_services_post_json(handler, {"action": action})
+            send_bluetooth_services_post_json(handler, None, {"action": action})
         code, body = _response(handler)
         assert code == 400
         assert body["ok"] is False
@@ -316,7 +327,7 @@ class TestBluetoothServicesPost:
         from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
         with patch("webui.system.bluetooth.bluetooth_installed", return_value=True):
-            send_bluetooth_services_post_json(handler, {"action": "enable", "extra": 1})
+            send_bluetooth_services_post_json(handler, None, {"action": "enable", "extra": 1})
         code, body = _response(handler)
         assert code == 400
 
@@ -324,7 +335,7 @@ class TestBluetoothServicesPost:
         from webui.system.bluetooth import send_bluetooth_services_post_json
         handler = _make_handler()
         with patch("webui.system.bluetooth.bluetooth_installed", return_value=False):
-            send_bluetooth_services_post_json(handler, {"action": "enable"})
+            send_bluetooth_services_post_json(handler, None, {"action": "enable"})
         _, body = _response(handler)
         assert body["error"] == "bluetooth_unavailable"
 
