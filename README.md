@@ -4,7 +4,7 @@
 
 **autostream** connects classic Hi-Fi gear to wireless multi-room speakers, making analogue sources first-class citizens in your AirPlay world. No apps to install and no complex configuration: Just press play.
 
-> autostream is compatible with HomePod, Apple TV, Sonos and other AirPlay-compatible speakers (including the latest HomePod Software and tvOS releases).
+> autostream is compatible with HomePod, Apple Home View, Apple TV, Sonos and other AirPlay-compatible speakers (including the latest HomePod Software and tvOS releases).
 
 **autostream** is designed to be invisible - it converts a cheap Raspberry Pi into a tiny always-on audio streaming appliance with no clutter, and is easy to install with only one command needed.
 
@@ -20,7 +20,7 @@ See [GETTING-STARTED.md](docs/GETTING-STARTED.md) for full setup instructions an
 
 * Streams vinyl, CDs, tape decks, and other line-level sources to AirPlay speakers
 * Plays to:
-  * HomePods and Stereo Paired HomePods (including HomeOS 27)
+  * HomePods and Stereo Paired HomePods (including HomeOS 27), and Apple Home View
   * Apple TV (with HDMI in stereo or 5.1 upmix, or with HomePods in stereo)
   * Third-party AirPlay and AirPlay 2 compatible speakers (Sonos, Denon, Edifier and more)
 * Detects audio automatically - starts and stops the stream without any interaction
