@@ -672,7 +672,8 @@ class TestBluetoothServicesToggle:
             assert gone not in html, gone
 
     def test_the_services_modal_is_on_the_page(self, html):
-        for element_id in ("btServicesModal", "btServicesModalMsg", "btServicesModalNote",
+        for element_id in ("btServicesModal", "btServicesModalMsg", "btServicesModalReplay",
+                           "btServicesModalNote",
                            "btServicesModalError", "btServicesModalFt", "btServicesOk",
                            "btServicesCancel"):
             assert f'id="{element_id}"' in html, element_id
@@ -685,7 +686,7 @@ class TestBluetoothServicesToggle:
         toggle = segment[segment.index("function btServicesToggle(el)"):]
         toggle = toggle[:toggle.index("\n        }\n")]
         assert "el.checked = !el.checked;" in toggle
-        assert "_btServicesView('confirm');" in toggle
+        assert "_btServicesAsk();" in toggle
         assert "settingsTransact(" not in toggle
         assert "window.confirm(" not in segment
 
@@ -736,7 +737,8 @@ class TestBluetoothMemoryNote:
             note = cards_bluetooth._bluetooth_memory_note()
         assert bool(note) is noted
         if noted:
-            assert "about 40 MB" in note and "512 MB" in note
+            assert note == ("Bluetooth uses about 40 MB of memory. "
+                            "Replay buffer capacity may be reduced on this system.")
 
 
 class TestUnconfiguredInputPlaceholder:

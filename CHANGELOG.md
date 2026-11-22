@@ -22,7 +22,11 @@ Update every appliance and every dial together, as for 0.8.0.
 - new: turning Bluetooth on or off asks first, then shows a message until the
   services have started or stopped, which can take up to 30 seconds. On a
   board with 512 MB of memory the card and the question say Bluetooth uses
-  about 40 MB.
+  about 40 MB and the replay buffer may hold less. The question also says
+  when a replay playing will stop or music held in the replay buffer will be
+  lost.
+- changed: turning Bluetooth on or off sizes the replay buffer again for the
+  memory then free.
 - fixed: turning Bluetooth on could time out in the browser on a slower board
   and leave the switch showing off, though Bluetooth had started.
 - changed: Inputs 1 and 2 no longer offer Bluetooth as a device, and pairing

@@ -34,7 +34,10 @@ var pageData = (function () {
         // leaves the switch where it was and opens the services modal, which
         // goes confirm -> busy -> (page reload | error). Starting the
         // services takes many seconds, so the busy view stays up, without
-        // buttons, until they have changed.
+        // buttons, until they have changed. Either change restarts the
+        // inputs and plans the repeat buffer again, so the confirm view says
+        // what of the replay will be lost, read from the repeat part when the
+        // tap happens.
         var _btServicesText = {
           enable: {
             title: 'Enable Bluetooth',
@@ -52,12 +55,46 @@ var pageData = (function () {
           }
         };
         var _btServicesAction = 'enable';
+        var _btServicesReplayText = '';
+
+        // What the change costs the replay, from the repeat part's block:
+        // nothing held, audio held in the replay buffer (with its length), or
+        // a replay playing. Without a block the state is unknown, so the
+        // text covers both.
+        function _btReplayLossText(block) {
+          if (!block) return 'Any replay will stop, and the replay buffer will be cleared.';
+          var held = block.recording || {};
+          var seconds = Number(held.seconds) || 0;
+          var minutes = Math.round(seconds / 60);
+          var length = seconds < 60 ? 'Less than a minute'
+            : 'About ' + minutes + (minutes === 1 ? ' minute' : ' minutes');
+          if (block.replay && block.replay.active)
+            return 'A replay is playing. It will stop, and the replay buffer will be cleared.';
+          if (seconds > 0) return length + ' held in the replay buffer will be lost.';
+          return '';
+        }
+
+        async function _btServicesAsk() {
+          var block = null;
+          try {
+            var r = await fetch('/api/v1/state?parts=repeat', { cache: 'no-store' });
+            var d = await r.json();
+            block = (d && d.parts && d.parts.repeat && d.parts.repeat.block) || null;
+          } catch (e) {
+            block = null;
+          }
+          _btServicesReplayText = (block && block.enabled === false) ? '' : _btReplayLossText(block);
+          _btServicesView('confirm');
+        }
 
         function _btServicesView(view, error) {
           var text = _btServicesText[_btServicesAction];
           var byId = function(id) { return document.getElementById(id); };
           byId('btServicesModalTitle').textContent = text.title;
           byId('btServicesModalMsg').textContent = view === 'busy' ? text.busy : text.confirm;
+          var replayEl = byId('btServicesModalReplay');
+          replayEl.textContent = _btServicesReplayText;
+          replayEl.style.display = (view === 'confirm' && _btServicesReplayText) ? '' : 'none';
           var note = pageData.bt_memory_note || '';
           var noteEl = byId('btServicesModalNote');
           noteEl.textContent = note;
@@ -75,7 +112,7 @@ var pageData = (function () {
         function btServicesToggle(el) {
           _btServicesAction = el.checked ? 'enable' : 'disable';
           el.checked = !el.checked;
-          _btServicesView('confirm');
+          _btServicesAsk();
         }
 
         function _btServicesRun() {

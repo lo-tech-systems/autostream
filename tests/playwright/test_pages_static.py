@@ -622,10 +622,17 @@ class TestSetup:
             posts.append(json.loads(route.request.post_data or "{}"))
             route.fulfill(json={"ok": False, "message": "Could not stop the Bluetooth services."})
 
+        repeat = {"block": {"enabled": True, "recording": {"active": False, "seconds": 0},
+                            "replay": {"active": False}}}
+
+        def _state(route):
+            route.fulfill(json={"parts": {"repeat": repeat}})
+
         server, base = _serve_setup(bt_enabled=True)
         try:
             errors = _watch_errors(page)
             page.route("**/api/bluetooth/services", _services)
+            page.route("**/api/v1/state?parts=repeat", _state)
             page.goto(f"{base}/")
             page.wait_for_load_state("networkidle")
             _open_setup_panel(page, "input3")
@@ -634,16 +641,29 @@ class TestSetup:
             before = switch.is_checked()
             modal = page.locator("#btServicesModal")
 
-            # Cancel: nothing is sent and the switch has not moved.
+            # Cancel: nothing is sent and the switch has not moved. Nothing
+            # is held, so there is no replay warning.
             knob.click()
             expect(modal).to_have_class(_SHOWN)
+            expect(page.locator("#btServicesModalReplay")).to_be_hidden()
             assert switch.is_checked() == before
             page.click("#btServicesCancel")
             expect(modal).not_to_have_class(_SHOWN)
             assert posts == []
 
-            # Confirm: the request goes, its failure is shown, Close dismisses.
+            # A held recording, then a replay playing, are each named with the
+            # recording's length.
+            repeat["block"]["recording"]["seconds"] = 1250
             knob.click()
+            expect(page.locator("#btServicesModalReplay")).to_have_text(
+                "About 21 minutes held in the replay buffer will be lost.")
+            page.click("#btServicesCancel")
+            repeat["block"]["replay"]["active"] = True
+            knob.click()
+            expect(page.locator("#btServicesModalReplay")).to_have_text(
+                "A replay is playing. It will stop, and the replay buffer will be cleared.")
+
+            # Confirm: the request goes, its failure is shown, Close dismisses.
             expect(page.locator("#btServicesOk")).to_be_visible()
             page.click("#btServicesOk")
             expect(page.locator("#btServicesModalError")).to_have_text(
@@ -663,6 +683,16 @@ class TestSetup:
             expect(page.locator("#btServicesModalFt")).to_be_hidden()
             expect(page.locator("#btServicesModalNote")).to_be_hidden()
             expect(page.locator("#btServicesModalMsg")).to_contain_text("up to 30 seconds")
+            expect(page.locator("#btServicesModalReplay")).to_be_hidden()
+
+            # The text's other cases: under a minute, and no repeat block at all.
+            assert page.evaluate(
+                "_btReplayLossText({recording: {seconds: 20}, replay: {active: false}})"
+            ) == "Less than a minute held in the replay buffer will be lost."
+            assert page.evaluate("_btReplayLossText({recording: {seconds: 70}})") == (
+                "About 1 minute held in the replay buffer will be lost.")
+            assert page.evaluate("_btReplayLossText(null)") == (
+                "Any replay will stop, and the replay buffer will be cleared.")
             assert errors == []
         finally:
             server.shutdown()

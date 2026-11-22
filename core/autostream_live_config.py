@@ -178,6 +178,15 @@ def _live_repeat_enabled(state: object, value: object) -> bool:
     return bool(monitor_control.set_live_repeat_enabled(bool(value), snap.repeat.codec, snap.repeat.target_minutes))
 
 
+def _pulse_repeat_policy(codec: str, target_minutes: int) -> bool:
+    """Turn repeat off then on, so the daemon frees its buffer (any held
+    recording and an active replay with it) and plans a new one from the
+    memory available now."""
+    off_ok = monitor_control.set_live_repeat_enabled(False, codec, target_minutes)
+    on_ok = monitor_control.set_live_repeat_enabled(True, codec, target_minutes)
+    return bool(off_ok) and bool(on_ok)
+
+
 def _live_repeat_codec(state: object, value: object) -> bool:
     """Apply a codec-pin change while repeat is enabled.
 
@@ -205,9 +214,7 @@ def _live_repeat_codec(state: object, value: object) -> bool:
     if previous_codec == new_codec:
         return True
 
-    off_ok = monitor_control.set_live_repeat_enabled(False, new_codec, snap.repeat.target_minutes)
-    on_ok = monitor_control.set_live_repeat_enabled(True, new_codec, snap.repeat.target_minutes)
-    return bool(off_ok) and bool(on_ok)
+    return _pulse_repeat_policy(new_codec, snap.repeat.target_minutes)
 
 
 def _live_repeat_target_minutes(state: object, value: object) -> bool:
@@ -258,9 +265,7 @@ def _live_repeat_target_minutes(state: object, value: object) -> bool:
     if previous_target == new_target:
         return True
 
-    off_ok = monitor_control.set_live_repeat_enabled(False, snap.repeat.codec, new_target)
-    on_ok = monitor_control.set_live_repeat_enabled(True, snap.repeat.codec, new_target)
-    return bool(off_ok) and bool(on_ok)
+    return _pulse_repeat_policy(snap.repeat.codec, new_target)
 
 
 register_field("repeat.enabled", "repeat", "enabled", _validate_bool, live=_live_repeat_enabled,
@@ -862,6 +867,12 @@ def _live_bluetooth_input_enabled(state: object, value: object) -> bool:
     The flag is already stored when this runs. If the services cannot be
     switched, the flag is put back, so the input stays as it was and the
     caller sees the live error.
+
+    Once the services have changed, the repeat buffer is planned again: it
+    was sized from the memory free before, and Bluetooth takes or gives
+    back tens of MB, which matters on a 512 MB board. The reload that
+    follows stops every input, which already ends any replay and frees a
+    held recording, so planning again costs nothing more.
     """
     enable = bool(value)
     ok, message = bt_services_enable() if enable else bt_services_disable()
@@ -874,7 +885,10 @@ def _live_bluetooth_input_enabled(state: object, value: object) -> bool:
             settings.update(lambda raw: raw.setdefault(section, {}).update({"enabled": not enable}))
         return False
     if settings is not None:
-        _sync_playback_input_config(settings.snapshot(), BLUETOOTH_INPUT_INDEX)
+        snap = settings.snapshot()
+        _sync_playback_input_config(snap, BLUETOOTH_INPUT_INDEX)
+        if snap.repeat.enabled and not _pulse_repeat_policy(snap.repeat.codec, snap.repeat.target_minutes):
+            logging.warning("Bluetooth input: could not plan the repeat buffer again")
     _debounce_coordinator_reload(state)
     return True
 

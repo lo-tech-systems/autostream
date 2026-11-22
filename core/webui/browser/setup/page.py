@@ -335,6 +335,7 @@ def send_setup_page(
     <div class="hdr modal-hdr" id="btServicesModalTitle">Bluetooth</div>
     <div class="bd modal-bd">
       <p id="btServicesModalMsg"></p>
+      <p id="btServicesModalReplay" style="display:none;font-weight:600;"></p>
       <p id="btServicesModalNote" class="helptext" style="display:none;text-align:left;"></p>
       <p id="btServicesModalError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
     </div>

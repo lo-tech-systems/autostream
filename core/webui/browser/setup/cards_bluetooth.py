@@ -141,8 +141,8 @@ def _bluetooth_memory_note() -> str:
     info = get_effective_memory_info()
     if info is None or info[1] >= BLUETOOTH_LOW_MEMORY_TOTAL_MIB:
         return ""
-    return (f"Bluetooth uses about {BLUETOOTH_MEMORY_MIB} MB of memory. This board has 512 MB, "
-            "so that leaves less for autostream's other features.")
+    return (f"Bluetooth uses about {BLUETOOTH_MEMORY_MIB} MB of memory. "
+            "Replay buffer capacity may be reduced on this system.")
 
 
 def _setup_compute_bluetooth_state(state: WebUIState) -> dict:

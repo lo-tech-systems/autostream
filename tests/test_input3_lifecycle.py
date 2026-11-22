@@ -136,6 +136,40 @@ class TestDisabled:
             store.close(save=False)
 
 
+class TestRepeatPlannedAgain:
+    """A services change plans the repeat buffer again (off then on), before
+    the reload, so it is sized for the memory Bluetooth leaves."""
+
+    def _switch(self, tmp_path, *, enable, repeat_enabled=True, services_ok=True):
+        before = not enable
+        store = _store(tmp_path, {"audio3": {"enabled": before},
+                                  "repeat": {"enabled": repeat_enabled, "codec": "auto",
+                                             "target_minutes": 80}})
+        calls = []
+        try:
+            with patch.object(live_config, "bt_services_enable", return_value=(services_ok, "x")), \
+                    patch.object(live_config, "bt_services_disable", return_value=(services_ok, "x")), \
+                    patch.object(live_config.monitor_control, "set_live_repeat_enabled",
+                                 side_effect=lambda *a: calls.append(("repeat",) + a) or True), \
+                    patch.object(live_config, "_debounce_coordinator_reload",
+                                 side_effect=lambda s: calls.append(("reload",))):
+                store.set("audio3.enabled", enable, state=SimpleNamespace(settings=store))
+        finally:
+            store.close(save=False)
+        return calls
+
+    @pytest.mark.parametrize("enable", [True, False])
+    def test_off_then_on_with_the_stored_policy_then_the_reload(self, tmp_path, enable):
+        calls = self._switch(tmp_path, enable=enable)
+        assert calls == [("repeat", False, "auto", 80), ("repeat", True, "auto", 80), ("reload",)]
+
+    def test_not_while_repeat_is_off(self, tmp_path):
+        assert self._switch(tmp_path, enable=True, repeat_enabled=False) == [("reload",)]
+
+    def test_not_when_the_services_could_not_change(self, tmp_path):
+        assert self._switch(tmp_path, enable=True, services_ok=False) == []
+
+
 class TestWaiting:
     def test_the_gate_held_starts_input_3_on_the_loopback(self):
         client, monitors = _run_startup(_cfg())

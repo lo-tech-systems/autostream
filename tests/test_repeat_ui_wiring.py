@@ -574,6 +574,7 @@ class TestRepeatUiWordingRegression:
         "recording.truncated_head",
         "recording.unavailable_reason",
         "recording.origin_input",  # replay-origin resolution for track-ID display
+        "block.recording",  # the Bluetooth switch's replay warning reads the held length
         "repeat.max_recording_seconds",
     )
 
