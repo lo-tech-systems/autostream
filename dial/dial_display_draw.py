@@ -454,6 +454,7 @@ GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
 GLYPH_PLAY = "play"                    # params: () — the selector's "playing" row marker
 GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
 GLYPH_MUTE = "mute"                    # params: () or (color,) — the main screen's footer mute cell
+GLYPH_PAUSE = "pause"                  # params: () — the mute cell while everything playing is paused
 GLYPH_SPEAKER = "speaker"              # no params — the top band's volume readout icon
 GLYPH_RESTART = "restart"              # params: (color,) — the compact tier's Restart control
 GLYPH_STOP = "stop"                    # params: (color,) — the compact tier's Stop control
@@ -638,13 +639,25 @@ def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=GLYPH_RGB)
     is no unmuted state for it to distinguish. Rendered into a (w, h)
     canvas — see _draw_glyph. Integer box arithmetic throughout: Pillow's
     stroke widths must be ints, and _draw_speaker_glyph derives its own
-    stroke width from this box's size. *color* lets the compact tier's
-    muted cell invert it to black over its own solid white wash."""
+    stroke width from this box's size."""
     side = round(min(w, h) * _MUTE_GLYPH_BOX_FRACTION)
     cx, cy = w // 2, h // 2
     half = side // 2
     box = (cx - half, cy - half, cx - half + side, cy - half + side)
     _draw_speaker_glyph(draw, box, muted=True, color=color)
+
+
+def _draw_pause_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
+    """The mute cell's pause sign while everything playing is paused: two
+    upright bars, the same box as the mute glyph so the cell does not jump.
+    Rendered into a (w, h) canvas — see _draw_glyph."""
+    side = min(w, h) * _MUTE_GLYPH_BOX_FRACTION
+    cx, cy = w / 2, h / 2
+    bar = side * 0.28
+    gap = side * 0.22
+    top, bottom = cy - side * 0.42, cy + side * 0.42
+    for x0 in (cx - gap / 2 - bar, cx + gap / 2):
+        draw.rectangle([x0, top, x0 + bar, bottom], fill=GLYPH_RGB)
 
 
 def _draw_speaker_tile(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
@@ -766,6 +779,7 @@ _GLYPH_PAINTERS = {
     GLYPH_PLAY: _draw_play_glyph,
     GLYPH_CROSS: _draw_cross_glyph,
     GLYPH_MUTE: _draw_mute_glyph,
+    GLYPH_PAUSE: _draw_pause_glyph,
     GLYPH_SPEAKER: _draw_speaker_tile,
     GLYPH_RESTART: _draw_restart_glyph,
     GLYPH_STOP: _draw_stop_glyph,

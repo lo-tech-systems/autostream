@@ -568,6 +568,21 @@ class TestCoreIntents:
         assert sent(rig, client)[0][1:] == ("outputs.resume", {"id": "u1"}, None)
         assert rig.core.snapshot().outputs_request is None
 
+    def test_everything_paused_is_resumed_together(self, rig):
+        # The screen's mute button while every playing speaker is paused; a
+        # muted one counts as paused, one taken elsewhere and one off are left
+        client = kitchen(rig, units=[
+            pool_unit("u1", "Lounge", selected=True, held=True),
+            pool_unit("u2", "Study", selected=True, held=True),
+            pool_unit("u3", "Hall", selected=True, muted=True),
+            pool_unit("u4", "Den", selected=True, in_use_by="Hall", in_use_id="x"),
+            pool_unit("u5", "Patio"),
+        ])
+        assert rig.core.resume_paused().accepted
+        calls = sent(rig, client, 2)
+        assert sorted(c[2]["id"] for c in calls) == ["u1", "u2"]
+        assert all(c[1] == "outputs.resume" for c in calls)
+
     def test_an_eq_band_and_a_step(self, rig):
         client = kitchen(rig)
         rig.core.step_eq(K, "peq3", 2)
@@ -624,6 +639,24 @@ class TestLocalRefusals:
         client = kitchen(rig, units=[speaker])
         assert rig.core.resume_output(K, "u1").reason == "wrong_state"
         assert rig.core.resume_output(K, "u9").reason == "wrong_state"
+        assert client.sent() == []
+
+    @pytest.mark.parametrize("speakers", [
+        [pool_unit("u1", selected=True, held=True), pool_unit("u2", "Study", selected=True)],
+        [pool_unit("u1", selected=True, muted=True)],
+        [pool_unit("u1", selected=False, held=True)],
+        [],
+    ], ids=["one_still_playing", "muted_only", "paused_one_off", "no_speakers"])
+    def test_a_resume_of_everything_when_not_everything_is_paused(self, rig, speakers):
+        client = kitchen(rig, units=speakers)
+        assert rig.core.resume_paused().reason == "wrong_state"
+        assert client.sent() == []
+
+    def test_a_resume_of_everything_from_a_dial_refused(self, rig):
+        client = rig.add("Kitchen", peer("Kitchen", playing=True, access="none", access_reason="dial_not_authorized",
+                                         units=[pool_unit(selected=True, held=True)]))
+        rig.fold()
+        assert not rig.core.resume_paused().accepted
         assert client.sent() == []
 
     def test_a_protocol_mismatch_has_no_capability(self, rig):

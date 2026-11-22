@@ -23,6 +23,7 @@ from dial_display_draw import (
     GLYPH_CROSS,
     GLYPH_MUTE,
     GLYPH_PAGE_DOTS,
+    GLYPH_PAUSE,
     GLYPH_PLAY,
     GLYPH_RESTART,
     GLYPH_SPEAKER,
@@ -57,7 +58,6 @@ from dial_display_palette import (
     DIVIDER_RGB,
     LIST_SEPARATOR_RGB,
     DIMMED_GLYPH_RGB,
-    INVERTED_GLYPH_RGB,
     BELL_INFO_RGB,
     ALARM_RGB,
     CORNER_DISC_RGBA,
@@ -622,17 +622,16 @@ def _draw_compact_dividers(
 
 def _body_compact_controls(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """The compact tier's playing screen: pager dots (dimmed when there is
-    no repeat record to open), mute (inverted over a solid wash while
-    muted — the wash itself is a Frame.washes entry, drawn before this body
-    runs), minus and plus."""
+    no repeat record to open), mute (the pause sign while everything
+    playing is paused; the alert wash under it is a Frame.washes entry,
+    drawn before this body runs), minus and plus."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
     ss = metrics.supersample
     dots_color = _tone(body.dots_lit)
     _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 0, dots_color, supersample=ss)
     if body.bell is not None:
         _draw_bell(img, dots_bell_rect(c.tl), body.bell, metrics, _DOTS_BELL_FRACTION)
-    mute_color = INVERTED_GLYPH_RGB if body.muted else GLYPH_RGB
-    _draw_glyph(img, _compact_glyph_box(c.tr), GLYPH_MUTE, mute_color, supersample=ss)
+    _draw_glyph(img, _compact_glyph_box(c.tr), GLYPH_PAUSE if body.paused else GLYPH_MUTE, supersample=ss)
     draw = ImageDraw.Draw(img)
     _draw_minus_glyph(draw, c.bl)
     _draw_plus_glyph(draw, c.br)
@@ -1108,14 +1107,16 @@ def _footer_volume_mute(img: Image.Image, layout, metrics: LayoutMetrics, footer
     """The main screen's own three-way footer: minus | plus | mute, left to
     right (vol-/vol+ stay at today's thumb
     positions, mute moves off the header into its own cell). The mute cell
-    always shows the crossed-speaker glyph (GLYPH_MUTE) — this control IS
-    the mute toggle, not a state readout — and carries the persistent wash
-    while muted (see _now_playing_frame's `highlights`), on top of which a
+    shows the crossed-speaker glyph (GLYPH_MUTE) — this control IS the mute
+    toggle, not a state readout — or the pause sign while everything playing
+    is paused, when a tap plays them again. It carries the alert wash while
+    muted or paused (see _now_playing_frame's `washes`), on top of which a
     genuine press adds the momentary wash."""
     draw = ImageDraw.Draw(img)
     _draw_minus_glyph(draw, layout.footer_down)
     _draw_plus_glyph(draw, layout.footer_up)
-    _draw_glyph(img, layout.footer_mute, GLYPH_MUTE, supersample=metrics.supersample)
+    glyph = GLYPH_PAUSE if footer.paused else GLYPH_MUTE
+    _draw_glyph(img, layout.footer_mute, glyph, supersample=metrics.supersample)
     draw = ImageDraw.Draw(img)  # _draw_glyph pastes into img; get a fresh Draw handle
     _draw_band_divider(draw, layout, metrics, layout.footer_dividers)
 

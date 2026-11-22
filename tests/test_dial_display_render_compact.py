@@ -41,6 +41,7 @@ from dial_display_render import (  # noqa: E402
 )
 from dial_display_compositor import _reset_font_cache  # noqa: E402
 from dial_display_palette import (  # noqa: E402
+    ALERT_RGB,
     GLYPH_RGB,
     OVERLAY_DIM_FACTOR,
 )
@@ -177,7 +178,7 @@ class TestCompactPlayingScreen:
         assert min(result.getpixel(right_centre)) < 200
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_muted_cell_is_a_solid_white_wash_with_a_black_glyph(self, compositor, metrics):
+    def test_muted_cell_is_a_solid_red_wash_with_a_white_glyph(self, compositor, metrics):
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
         muted = compositor.compose(
@@ -188,16 +189,34 @@ class TestCompactPlayingScreen:
             base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
             overlay=OverlayState(visible=True, muted=False), metrics=metrics,
         )
-        # The wash: every pixel of tr not part of the glyph itself is solid
-        # white on the muted frame.
+        # The wash: every pixel of tr not part of the glyph itself is the
+        # solid alert red on the muted frame (the pulse defaults to solid).
         x0, y0, x1, y1 = c.tr
-        corner = muted.getpixel((x0 + 2, y0 + 2))
-        assert corner == (255, 255, 255)
-        # The glyph itself is drawn in black over that white wash.
+        assert muted.getpixel((x0 + 2, y0 + 2)) == ALERT_RGB
+        # The glyph stays white over it.
         pixels = list(muted.crop(c.tr).getdata())
-        assert any(p == (0, 0, 0) for p in pixels)
-        # Unmuted: no wash (the corner stays dimmed background, not white).
-        assert unmuted.getpixel((x0 + 2, y0 + 2)) != (255, 255, 255)
+        assert any(p == (255, 255, 255) for p in pixels)
+        # Unmuted: no wash.
+        assert unmuted.getpixel((x0 + 2, y0 + 2)) != ALERT_RGB
+
+    @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
+    def test_everything_paused_shows_the_pause_sign_on_the_red_wash(self, compositor, metrics):
+        c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
+        base = Image.new("RGB", (metrics.width, metrics.height), (10, 10, 10))
+        paused = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, paused=True), metrics=metrics,
+        )
+        muted = compositor.compose(
+            base, metrics.width, metrics.height, rotate=False, bgr=False, is_artwork=False,
+            overlay=OverlayState(visible=True, muted=True), metrics=metrics,
+        )
+        x0, y0, x1, y1 = c.tr
+        assert paused.getpixel((x0 + 2, y0 + 2)) == ALERT_RGB
+        # A different glyph in the same cell, and nothing else differs
+        assert list(paused.crop(c.tr).getdata()) != list(muted.crop(c.tr).getdata())
+        for rect in (c.tl, c.bl, c.br):
+            assert list(paused.crop(rect).getdata()) == list(muted.crop(rect).getdata())
 
     def test_no_text_anywhere_on_the_playing_screen(self, compositor):
         # No name, no volume digits, no artist/title — a plain dimmed frame

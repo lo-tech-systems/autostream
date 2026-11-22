@@ -14,6 +14,7 @@ import pytest
 REPO_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(REPO_ROOT / "dial"))
 
+from dial_core_state import ActionResult
 from dial_touch_layout import BELL_ZONES, CARD_BUTTON_ZONES, TouchZone
 from dial_touch_wiring import TouchWiring
 
@@ -67,6 +68,9 @@ class TestBuildTouchSourceWiring:
         display = MagicMock()
         display.noncomposited_generation = MagicMock(return_value=0)
         core = MagicMock()
+        # Not everything paused: the mute zone mutes
+        core.resume_paused.return_value = ActionResult(False, "wrong_state")
+        self.core = core
 
         captured = {}
 
@@ -171,6 +175,16 @@ class TestBuildTouchSourceWiring:
         with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
             captured["kwargs"]["on_mute_toggle"]()
             mock_mute.assert_called_once_with()
+
+    def test_mute_zone_plays_everything_again_while_everything_is_paused(self):
+        """The cell shows the pause sign then; the core decides, and a
+        resume taken mutes nothing."""
+        with self._built() as (cfg, display, result, captured, _open, mock_delta, mock_mute):
+            self.core.resume_paused.return_value = ActionResult(True, token=1.0)
+            captured["kwargs"]["on_mute_toggle"]()
+            self.core.resume_paused.assert_called_once_with()
+            mock_mute.assert_not_called()
+            display.notify_touch_activity.assert_called_once()
 
     def test_mute_toggle_reveals_the_overlay_without_publishing_muted(self):
         """The overlay is revealed with no muted field of its own -- the

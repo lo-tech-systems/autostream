@@ -45,7 +45,7 @@ from dial_touch_layout import TouchZone
 import dial_core
 import dial_core_state
 import dial_display as dd
-from dial_core_state import NowPlaying, artwork_key
+from dial_core_state import NowPlaying, OutputRow, OutputsState, artwork_key
 from dial_display import SCREEN_POLICIES
 from dial_test_support import (
     FakeBackend,
@@ -1180,6 +1180,69 @@ class TestLogoOverlayGating:
         with display3._lock:
             display3._disable_locked()
         assert display3.persistent_overlay_shown() is False
+
+    def test_muted_or_everything_paused_holds_the_controls_up(self):
+        """The mute cell's alert must not be missed, so it keeps the
+        controls drawn without always-show; an artwork tap still hides them."""
+        import dial_volume as dv
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        service = display.core.snapshot().now_playing.service_name
+        assert display.persistent_overlay_shown() is False
+        dv.observe_mute_state(service, True)
+        try:
+            assert display.persistent_overlay_shown() is True
+            result = display._effective_overlay_locked(OverlayState(visible=False))
+            assert result.visible and result.muted and not result.paused
+            assert display._alert_pulsing() is True
+            display._controls.hide(time.monotonic())
+            assert display.persistent_overlay_shown() is False
+            assert display._alert_pulsing() is False
+        finally:
+            dv.observe_mute_state(None, None)
+
+    def test_everything_paused_shows_paused_and_pulses(self):
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        paused = OutputsState("a", (OutputRow("1", "Lounge", True, 40, paused=True),
+                                    OutputRow("2", "Study", True, 40, muted=True)), True, 0.0)
+        with display._lock:
+            display.core.set_field_for_tests("outputs", paused)
+        assert display.persistent_overlay_shown() is True
+        result = display._effective_overlay_locked(OverlayState(visible=False))
+        assert result.paused and result.alert
+        playing = OutputsState("a", (OutputRow("1", "Lounge", True, 40, paused=True),
+                                     OutputRow("2", "Study", True, 40)), True, 0.0)
+        with display._lock:
+            display.core.set_field_for_tests("outputs", playing)
+        assert display.persistent_overlay_shown() is False
+        assert display._alert_pulse_deadline() is None
+
+    def test_the_pulse_wakes_the_loop_on_each_step(self):
+        import dial_volume as dv
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        dv.observe_mute_state(display.core.snapshot().now_playing.service_name, True)
+        try:
+            due = display._alert_pulse_deadline()
+            assert due is not None and 0.0 < due - time.monotonic() <= dd.ALERT_PULSE_STEP_S + dd.DEADLINE_PAD_S
+        finally:
+            dv.observe_mute_state(None, None)
+
+    def test_the_pulse_eases_from_see_through_to_solid_and_back_each_period(self):
+        period, step = dd.ALERT_PULSE_PERIOD_S, dd.ALERT_PULSE_STEP_S
+        assert dd._alert_pulse_level(0.0) == pytest.approx(0.0)
+        assert dd._alert_pulse_level(period / 2) == pytest.approx(1.0)
+        assert dd._alert_pulse_level(period + 0.01) == pytest.approx(0.0)
+        # Every paint within one step draws the same strength
+        assert dd._alert_pulse_level(3 * step + 0.001) == dd._alert_pulse_level(4 * step - 0.001)
+        assert dd._alert_pulse_level(3 * step) != dd._alert_pulse_level(4 * step)
 
     def test_swap_backend_locked_reopens_on_the_main_screen(self):
         t = _target()

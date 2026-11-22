@@ -66,6 +66,7 @@ from dial_display_compositor import (  # noqa: E402
     _reset_render_caches,
 )
 from dial_display_palette import (  # noqa: E402
+    ALERT_RGB,
     BELL_CRITICAL_RGB,
     BELL_INFO_RGB,
     BELL_WARNING_RGB,
@@ -2418,27 +2419,102 @@ class TestPersistentMuteWash:
         for rect in (layout.footer_down, layout.footer_up):
             assert list(unmuted.crop(rect).getdata()) == list(muted.crop(rect).getdata())
 
-    def test_wash_clearly_visible_over_a_dimmed_mid_grey_base(self, compositor):
-        """Regression: the old row-highlight alpha (21, tuned for the
-        undimmed list chassis) added only about 20 levels over a dimmed
-        mid-grey band -- all but invisible under the white glyph. The
-        dedicated mute-wash alpha must clear that by a wide margin."""
+    def test_wash_is_red_and_clearly_visible_over_a_dimmed_mid_grey_base(self, compositor):
+        """The faint grey wash this replaced all but vanished on a dim
+        panel. At its see-through end the red still stands well clear of
+        the dimmed band, and at its solid end it is the alert red itself."""
         size = (320, 240)
         img = Image.new("RGB", size, (150, 150, 150))
         layout = layout_for(*size, metrics=_RICH_METRICS)
         corner = (layout.footer_mute[0] + 1, layout.footer_mute[3] - 2)
-        unmuted = compositor.compose(
+
+        def frame(**fields):
+            return compositor.compose(
+                img, *size, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, **fields), metrics=_RICH_METRICS,
+            )
+
+        plain = frame(muted=False).getpixel(corner)
+        faint = frame(muted=True, pulse=0.0).getpixel(corner)
+        assert frame(muted=True).getpixel(corner) == ALERT_RGB
+        assert faint[0] - plain[0] >= 40 and faint[1] <= plain[1]
+
+    def test_paused_shows_the_pause_sign_in_the_mute_cell_only(self, compositor):
+        size = (320, 240)
+        img = Image.new("RGB", size, (60, 60, 60))
+        layout = layout_for(*size, metrics=_RICH_METRICS)
+
+        def frame(**fields):
+            return compositor.compose(
+                img, *size, rotate=False, bgr=False, is_artwork=False,
+                overlay=OverlayState(visible=True, **fields), metrics=_RICH_METRICS,
+            )
+
+        paused, muted = frame(paused=True), frame(muted=True)
+        assert list(paused.crop(layout.footer_mute).getdata()) != list(muted.crop(layout.footer_mute).getdata())
+        for rect in (layout.footer_down, layout.footer_up, layout.top_band):
+            assert list(paused.crop(rect).getdata()) == list(muted.crop(rect).getdata())
+
+
+class TestAlertPulse:
+    """A pulse step blends the cell between its see-through and solid ends;
+    nothing outside the cell ever differs, so only the cell is sent."""
+
+    @pytest.fixture(autouse=True)
+    def _clean(self):
+        _reset_render_caches()
+        yield
+        _reset_render_caches()
+
+    @pytest.fixture(params=["rich", "compact"])
+    def setup(self, request):
+        metrics = _RICH_METRICS if request.param == "rich" else _COMPACT_240
+        size = (metrics.width, metrics.height)
+        img = Image.effect_noise(size, 60).convert("RGB")
+        if request.param == "rich":
+            cell = layout_for(*size, metrics=metrics).footer_mute
+        else:
+            cell = compact_layout_for(*size, metrics=metrics).tr
+        return metrics, size, img, cell
+
+    def frame(self, compositor, setup, **fields):
+        metrics, size, img, _cell = setup
+        return compositor.compose(
             img, *size, rotate=False, bgr=False, is_artwork=False,
-            overlay=OverlayState(visible=True, muted=False), metrics=_RICH_METRICS,
+            overlay=OverlayState(visible=True, **fields), metrics=metrics,
         )
-        muted = compositor.compose(
-            img, *size, rotate=False, bgr=False, is_artwork=False,
-            overlay=OverlayState(visible=True, muted=True), metrics=_RICH_METRICS,
-        )
-        old_alpha_delta_summed = 3 * 20   # today's near-invisible delta, per the finding above
-        delta = sum(muted.getpixel(corner)) - sum(unmuted.getpixel(corner))
-        assert delta > old_alpha_delta_summed
-        assert delta >= 3 * 60  # at least 60 levels per channel, summed across RGB
+
+    def outside(self, image, cell):
+        x0, y0, x1, y1 = cell
+        masked = image.copy()
+        masked.paste((0, 0, 0), (x0, y0, x1, y1))
+        return masked.tobytes()
+
+    def test_steps_differ_only_inside_the_cell(self, compositor, setup):
+        cell = setup[3]
+        frames = [self.frame(compositor, setup, muted=True, pulse=p) for p in (0.0, 0.3, 0.7, 1.0)]
+        assert len({f.crop(cell).tobytes() for f in frames}) == 4
+        assert len({self.outside(f, cell) for f in frames}) == 1
+
+    def test_the_solid_end_is_the_frame_composed_directly(self, compositor, setup):
+        stepped = self.frame(compositor, setup, muted=True, pulse=0.999)
+        direct = self.frame(compositor, setup, muted=True)
+        assert self.outside(stepped, setup[3]) == self.outside(direct, setup[3])
+        assert self.frame(compositor, setup, muted=True, pulse=1.0).tobytes() == direct.tobytes()
+
+    def test_the_see_through_end_is_fainter_red(self, compositor, setup):
+        x0, y0, x1, y1 = setup[3]
+        corner = (x0 + 2, y1 - 3)
+        faint = self.frame(compositor, setup, muted=True, pulse=0.0).getpixel(corner)
+        solid = self.frame(compositor, setup, muted=True, pulse=1.0).getpixel(corner)
+        assert solid == ALERT_RGB and faint != solid
+
+    def test_a_press_still_washes_over_the_pulse(self, compositor, setup):
+        x0, y0, x1, y1 = setup[3]
+        corner = (x0 + 2, y1 - 3)
+        plain = self.frame(compositor, setup, muted=True, pulse=0.5).getpixel(corner)
+        pressed = self.frame(compositor, setup, muted=True, pulse=0.5, pressed=TouchZone.MUTE).getpixel(corner)
+        assert sum(pressed) > sum(plain)
 
 
 class TestHeaderNeverSlashedRegardlessOfMuted:

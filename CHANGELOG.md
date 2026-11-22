@@ -107,6 +107,11 @@ Update every appliance and every dial together, as for 0.8.0.
   about 5 seconds of starting, now pauses on its own.
 - new: on the HD dial, when every playing speaker is paused, the mute button
   becomes a slowly pulsing pause sign, and a tap on it starts them all again.
+- new: on the small-screen dial, the mute button glows red while muted,
+  fading slowly between pale and solid red, where it used to show a faint
+  grey. When every playing speaker is paused it shows a red pause sign
+  instead, and a tap starts them all again. Either way the controls stay on
+  screen until the state ends; tapping the artwork still hides them.
 - changed: a speaker left on Automatic plays AirPlay 2 whenever it offers it,
   and AirPlay 1 only when it has no AirPlay 2. Before, a speaker with no
   buffered AirPlay 2 played AirPlay 1. A speaker that plays better on AirPlay

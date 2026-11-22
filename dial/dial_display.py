@@ -120,7 +120,7 @@ from dial_display_windows import bounding_box, dirty_windows, frame_words, plan_
 from dial_core_state import (
     AUTH_UNAUTHORIZED, PIN_ERRORS, OutputRow,
     awaiting_title, title_fallback,
-    eq_gain,
+    eq_gain, paused_ids,
 )
 import dial_artwork
 from dial_core import DialCore, CoreIO
@@ -186,6 +186,22 @@ _PAGE_ORDER = ("main", "repeat", "eq")
 # itself onto these boundaries (the wifi_flash timer); nothing else ticks
 # for it.
 WIFI_FLASH_HALF_PERIOD_S = 0.5
+
+# The mute cell's alert pulse while muted or everything is paused: a smooth
+# fade from see-through red to solid and back once per period, the HD page's
+# own pace, painted at a fixed step (20 frames a second). A step recomposes
+# only the cell (the compositor's _pulse_frame), so only the cell is sent.
+ALERT_PULSE_PERIOD_S = 2.4
+ALERT_PULSE_STEP_S = 0.05
+
+
+def _alert_pulse_level(now: float) -> float:
+    """The alert wash's strength at *now*, 0.0 (see-through) to 1.0 (solid),
+    eased so it lingers at both ends. Taken at the start of *now*'s step, so
+    every paint within one step draws the same frame."""
+    # The nudge keeps a time on a step boundary from rounding into the step before
+    step = math.floor(now / ALERT_PULSE_STEP_S + 1e-6) * ALERT_PULSE_STEP_S
+    return 0.5 - 0.5 * math.cos(2.0 * math.pi * (step % ALERT_PULSE_PERIOD_S) / ALERT_PULSE_PERIOD_S)
 
 # The "Restarting..." screen is meant to end when the reboot takes the panel
 # down. If the reboot request itself failed (nginx down, helper refused),
@@ -601,6 +617,7 @@ class DialDisplay:
             _Timer("controls_hidden", self._controls_hidden_deadline, self._controls_hidden_fire),
             _Timer("controls_shown", self._controls_shown_deadline, self._controls_shown_fire),
             _Timer("wifi_flash", self._wifi_flash_deadline, self._wifi_flashing),
+            _Timer("alert_pulse", self._alert_pulse_deadline, self._alert_pulsing),
             _Timer("due_status", _no_deadline, self._request_due_status),
             _Timer("reveal", self._reveal_deadline, self._reveal_fire),
             # Last: its deadline drops a timer that has run out.
@@ -1496,17 +1513,28 @@ class DialDisplay:
 
     def _held_overlay(self, now: float) -> bool:
         """The held-visible predicate _effective_overlay_locked() applies: always-show on (off
-        compact), or the compact tier's controls window open; a controllable appliance shown; the
-        panel not cleared or asleep; and no artwork-tap hide window running. Plain reads, safe from
-        any thread: the touch thread reaches it through persistent_overlay_shown()."""
+        compact), the compact tier's controls window open, or the mute cell's alert showing (muted,
+        or everything paused, on any tier, so the state cannot be missed); a controllable appliance
+        shown; the panel not cleared or asleep; and no artwork-tap hide window running. Plain reads,
+        safe from any thread: the touch thread reaches it through persistent_overlay_shown()."""
         return (
             (
                 (self._config.always_show_controls and not self._compact_tier())
                 or (self._compact_tier() and not self._compact_controls_hidden())
+                or any(self._alert())
             )
             and self._frame_controllable(self._core.snapshot())
             and not self._controls.hidden(now)
         )
+
+    def _alert(self) -> "tuple[bool, bool]":
+        """(muted, paused) for the appliance shown: its mute as the volume store shows it, and
+        whether everything playing there is paused (paused_ids()), when the mute cell plays them
+        again. Both False with nothing shown. Plain reads, safe from any thread."""
+        snap = self._core.snapshot()
+        if snap.now_playing is None:
+            return False, False
+        return bool(shown_muted(snap.now_playing.service_name)), bool(paused_ids(snap.outputs))
 
     def _frame_controllable(self, snap) -> bool:
         """Whether a controllable appliance is on screen: the snapshot carries a now_playing, the
@@ -1702,6 +1730,19 @@ class DialDisplay:
         now = time.monotonic()
         half = WIFI_FLASH_HALF_PERIOD_S
         return (math.floor(now / half) + 1) * half + DEADLINE_PAD_S
+
+    def _alert_pulsing(self) -> bool:
+        """True while the main screen shows the mute cell's alert (muted, or everything paused):
+        the only time the pulse is drawn and the loop has to wake for it. Lock-free plain reads (a
+        stale read costs one extra repaint, which sends nothing when the frame is unchanged)."""
+        return self._screen == "main" and any(self._alert()) and self._held_overlay(time.monotonic())
+
+    def _alert_pulse_deadline(self) -> "float | None":
+        """The pulse's next step while it is drawn, so the repaint loop wakes onto it."""
+        if not self._alert_pulsing():
+            return None
+        step = ALERT_PULSE_STEP_S
+        return (math.floor(time.monotonic() / step) + 1) * step + DEADLINE_PAD_S
 
     def _reveal_deadline(self) -> "float | None":
         """When the next frame of a reveal slide, or its settled frame, is due."""
@@ -2256,7 +2297,7 @@ class DialDisplay:
         title = now_playing.title if now_playing is not None else ""
         album = now_playing.album if now_playing is not None else ""
         name, volume = self._readout(now_playing.service_name) if now_playing is not None else ("", None)
-        muted = shown_muted(now_playing.service_name) if now_playing is not None else False
+        muted, paused = self._alert()
         pressed = self._pressed_zone()
         # Belt and braces: dots are meaningful only on the main screen —
         # _repaint_current_locked never reaches this merge for the repeat/
@@ -2267,6 +2308,7 @@ class DialDisplay:
         return dataclasses.replace(
             snapshot, visible=True, artist=artist, title=title, album=album, volume=volume, muted=muted,
             name=name, dots=dots, pressed=pressed, eq_pages=snap.eq_available, bell=bell,
+            paused=paused, pulse=_alert_pulse_level(now) if muted or paused else 1.0,
         )
 
     def _paint_locked(self, compose, *lead, metrics=None, after=(), panel_size=False, **options) -> None:

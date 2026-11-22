@@ -123,6 +123,12 @@ class OverlayState:
     bell: the warning bell, or None for none. In the top band (or the compact
         dots quadrant) while the controls are drawn; on a dark disc in the
         corner of the artwork while they are not.
+    paused: everything playing is paused, so the mute cell shows the pause
+        sign and a tap plays them all again. Muted or paused, the cell
+        carries the red alert wash.
+    pulse: where the alert wash is in its pulse, 0.0 (see-through) to 1.0
+        (solid). A paint parameter: the manager owns the clock. The default
+        draws it solid.
     """
 
     visible: bool = False
@@ -136,6 +142,14 @@ class OverlayState:
     album: str = ""
     eq_pages: bool = False
     bell: "BellBadge | None" = None
+    paused: bool = False
+    pulse: float = 1.0
+
+    @property
+    def alert(self) -> bool:
+        """Whether the mute cell carries the alert wash: muted, or everything
+        paused."""
+        return bool(self.muted) or self.paused
 
 
 @dataclass(frozen=True)
@@ -424,7 +438,7 @@ class Body:
     rows: tuple = ()       # BODY_LIST_ROWS / BODY_COMPACT_LIST — same row tuples ListState.rows carries
     album: str = ""        # BODY_NOW_PLAYING — drawn only where the layout has an album rect
     # Compact-tier fields — see the BODY_COMPACT_* constants above.
-    muted: bool = False           # BODY_COMPACT_CONTROLS: the mute cell's inverted-wash state
+    paused: bool = False          # BODY_COMPACT_CONTROLS: the mute cell shows the pause sign
     dots_lit: bool = False        # BODY_COMPACT_CONTROLS: whether the pager-dots cell is tappable
     has_more: bool = False        # BODY_COMPACT_LIST: whether the "more" chevron is lit
     start_enabled: bool = True    # BODY_COMPACT_REPLAY: Restart drawn full-brightness vs dimmed
@@ -453,6 +467,7 @@ class Footer:
     right_enabled: bool = True
     has_prev: bool = False         # FOOTER_LIST_BAR: lights the up chevron
     has_next: bool = False         # FOOTER_LIST_BAR: lights the down chevron
+    paused: bool = False           # FOOTER_VOLUME_MUTE: the mute cell shows the pause sign
 
 
 @dataclass(frozen=True)
@@ -472,7 +487,7 @@ class Frame:
     dim_all: bool = False
     pressed: tuple[Rect, ...] = ()     # rects to wash, in the order they should be drawn
     highlights: tuple[Rect, ...] = ()  # rects to wash at the row-highlight strength, under any press
-    washes: tuple[tuple[Rect, int], ...] = ()  # (rect, alpha) pairs for a persistent state wash, drawn after highlights and before pressed
+    washes: tuple[tuple[Rect, tuple, int], ...] = ()  # (rect, rgb, alpha) for a persistent state wash, drawn after highlights and before pressed
     header: Header | None = None
     body: Body = Body()
     footer: Footer = Footer()

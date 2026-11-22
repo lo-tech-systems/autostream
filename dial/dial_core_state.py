@@ -208,6 +208,18 @@ class OutputsState:
     fetched_at: float
 
 
+def paused_ids(outputs: "OutputsState | None") -> tuple[str, ...]:
+    """The speakers to resume when everything playing here is paused: every
+    speaker that is on and not taken by another appliance is paused or muted,
+    and at least one is paused. Empty otherwise. The HD page applies the same
+    rule (hd-derive.js pausedIds)."""
+    if outputs is None:
+        return ()
+    live = [r for r in outputs.rows if r.selected and not r.remote_in_use]
+    ids = tuple(r.id for r in live if r.paused)
+    return ids if ids and all(r.paused or r.muted for r in live) else ()
+
+
 @dataclass(frozen=True)
 class EqBand:
     id: str                   # "bass" | "treble" on capability 1; "peq1".."peq6" on capability 2

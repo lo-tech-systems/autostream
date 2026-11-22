@@ -77,7 +77,7 @@ from dial_core_state import (
     ACCEPTED_REPLAY_GRACE_S, AUTH_AUTHORIZED, AUTH_UNAUTHORIZED, OUTPUT_KINDS,
     EQ_OPTIMISTIC_WINDOW_S, NOWIFI_PROMPT_STREAK, ActionResult, CoreSnapshot,
     FocusState, FAILURE_DEFER, FAILURE_NOTICE, FAILURE_PIN, FAILURE_SEEN,
-    START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap,
+    START_FAILURE_HOLD_S, NowPlaying, StartFailureNotice, outputs_tap, paused_ids,
     PowerState, TickContext, TransportRequest, WarningState,
     roster_entry, display_order, dots_active, eq_gain,
     reopen_for_pin, start_failure_action,
@@ -129,7 +129,7 @@ _FOCUS_FIELDS = frozenset((
 
 # The remaining single-value fields that can be written the same way.
 _PLAIN_FIELDS = frozenset((
-    "now_playing", "idle_affordance", "dots_active", "outputs_available", "eq_available",
+    "now_playing", "idle_affordance", "dots_active", "outputs_available", "eq_available", "outputs",
 ))
 
 
@@ -461,6 +461,24 @@ class DialCore:
             return ActionResult(False, "wrong_state")
         token = self._clock()
         self._send(appliance_id, rq.output_resume(output_id), token)
+        return ActionResult(True, token=token)
+
+    def resume_paused(self) -> ActionResult:
+        """Play again every speaker of the appliance shown when everything
+        playing there is paused (paused_ids()), as the screen's mute button
+        does then. Refused when the appliance is unknown, lacks the
+        capability or has refused this dial, and when not everything is
+        paused."""
+        outputs = self._snapshot.outputs
+        ids = paused_ids(outputs)
+        if not ids:
+            return ActionResult(False, "wrong_state")
+        refusal = rq.appliance_refusal(self._state.roster, outputs.appliance_id, "dial_outputs")
+        if refusal is not None:
+            return refusal
+        token = self._clock()
+        for output_id in ids:
+            self._send(outputs.appliance_id, rq.output_resume(output_id), token)
         return ActionResult(True, token=token)
 
     def step_output_volume(self, appliance_id: str, output_id: str, delta: int) -> ActionResult:

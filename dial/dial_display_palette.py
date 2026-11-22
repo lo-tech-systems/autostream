@@ -35,13 +35,13 @@ PRESSED_FILL_ALPHA = 70  # out of 255 — a translucent highlight wash.
 ROW_HIGHLIGHT_RGB = (255, 255, 255)
 ROW_HIGHLIGHT_ALPHA = 21
 
-# A persistent STATE wash on a dimmed band (currently: the mute cell while
-# muted) — stronger than the row highlight above, which was tuned for the
-# undimmed list chassis and all but disappears over a dimmed footer band
-# under a white glyph. 96 lifts a mid-dark dimmed region clearly above its
-# surroundings while still reading as lighter, not "already pressed", under
-# the separate momentary press wash (PRESSED_FILL_ALPHA) on top of it.
-MUTE_WASH_ALPHA = 96
+# The mute cell while muted, or while everything playing is paused: a red
+# wash that pulses between see-through and solid, so the state cannot be
+# missed on a dim, low-contrast panel. The white glyph reads at both ends;
+# a press still adds its own white wash on top.
+ALERT_RGB = (220, 40, 40)
+ALERT_ALPHA_LOW = 72
+ALERT_ALPHA_HIGH = 255
 
 # Divider-line colour: pure white, matching the glyph/text colour, so the
 # single boundary line between DOWN and UP reads as clean structure against
@@ -60,12 +60,6 @@ LIST_SEPARATOR_RGB = (48, 48, 48)
 # colour — the same OVERLAY_DIM_FACTOR the overlay's chevrons use for their
 # own disabled state.
 DIMMED_GLYPH_RGB = tuple(round(c * OVERLAY_DIM_FACTOR) for c in GLYPH_RGB)
-
-# The compact tier's muted mute-cell: a solid wash (see the main-screen
-# frame builder) plus the glyph inverted to black, so "muted" reads at a
-# glance on a cell too small for the large tiers' translucent wash to read
-# clearly against a white glyph.
-INVERTED_GLYPH_RGB = (0, 0, 0)
 
 # The idle screen's Wi-Fi glyph while the link is down alternates between
 # all-grey (DIMMED_GLYPH_RGB) and this alarm red — a clear "something is

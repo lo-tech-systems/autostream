@@ -117,14 +117,26 @@ both show a speaker icon, easy to mix up:
 - The **bell**, when the dial has warnings, sits in the top band beside the
   volume (on a compact panel, beside the page dots). Tap it to read them; see
   [The warning bell](#the-warning-bell).
-- The **bottom-right mute button** toggles mute. It always shows the same
-  crossed-speaker icon; when muted, the whole button lights up solid so you
-  can see the state at a glance, rather than the icon itself changing.
+- The **bottom-right mute button** toggles mute. It shows the crossed-speaker
+  icon; when muted, the whole button glows red, fading slowly between pale
+  and solid red, so you can see the state at a glance even on a dim screen.
+  While muted, the controls stay on screen without a tap.
 
-![The same now-playing screen with the mute button lit solid to show muted](images/now-playing-rich-muted.png)
+![The same now-playing screen with the mute button glowing red to show muted](images/now-playing-rich-muted.png)
 
-*Muted: the mute cell (bottom right) fills solid. Nothing else changes:
+*Muted: the mute button (bottom right) glows red. Nothing else changes:
 the appliance is still selected and playing, just silent.*
+
+When every speaker that is playing has paused itself, for example from its
+own remote, the mute button shows a pause sign in place of the speaker icon,
+glowing red in the same way, and the controls stay on screen. Tap it to start
+all of those speakers playing again. A speaker that could only be muted
+rather than paused counts as paused here. If any speaker is still playing,
+the button stays the ordinary mute button.
+
+![The same now-playing screen with the mute button showing a red pause sign](images/now-playing-rich-paused.png)
+
+*Everything paused: a tap on the pause sign starts the speakers again.*
 
 Tapping the artwork itself (the middle of the screen, between the two
 bands) hides both bands for about six seconds, so you can see the artwork
@@ -158,11 +170,15 @@ Tap anywhere to reveal it for about six seconds:
 *Compact controls, revealed. Top left: page dots. Top right: mute. Bottom:
 minus, plus.*
 
-![The same compact controls with the mute cell inverted to show muted](images/now-playing-compact-muted.png)
+![The same compact controls with the mute cell glowing red to show muted](images/now-playing-compact-muted.png)
 
-*Muted: the top-right cell inverts to a solid light background with a dark
-glyph, the same "always the same icon, the cell shows the state" rule as
-the rich mute button.*
+*Muted: the top-right cell glows red, as the mute button does on a larger
+panel, and the grid stays up rather than hiding after six seconds.*
+
+![The same compact controls with a red pause sign in the mute cell](images/now-playing-compact-paused.png)
+
+*Everything paused: the top-right cell shows the pause sign; tap it to start
+the speakers again.*
 
 There's no appliance name and no way to open the outputs list from a
 compact panel; see the notes on each of those sections below.

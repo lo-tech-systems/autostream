@@ -122,8 +122,11 @@ class TouchWiring:
         # DialDisplay lock, so this stays as cheap as the volume callbacks
         # above. on_set_pressed_zone() always runs immediately before this
         # for the MUTE zone (see TouchStateMachine._arm) and already
-        # recorded the press on the pressed channel.
-        self._core.mute_toggle()
+        # recorded the press on the pressed channel. While everything
+        # playing is paused the button shows the pause sign and plays them
+        # all again instead (core.resume_paused()).
+        if not self._core.resume_paused().accepted:
+            self._core.mute_toggle()
         self._display.set_overlay(self._overlay_state(visible=True))
 
     def on_zone_tap(self, zone, index) -> None:

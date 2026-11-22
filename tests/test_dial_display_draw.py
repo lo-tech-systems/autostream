@@ -190,6 +190,7 @@ class TestPlayGlyphTile:
             GLYPH_ARM_DOT,
             GLYPH_MUTE,
             GLYPH_PAGE_DOTS,
+            GLYPH_PAUSE,
             GLYPH_RESTART,
             GLYPH_STOP,
             _GLYPH_PAINTERS,
@@ -197,7 +198,7 @@ class TestPlayGlyphTile:
 
         assert set(_GLYPH_PAINTERS) == {
             GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_PAGE_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
-            GLYPH_SPEAKER, GLYPH_RESTART, GLYPH_STOP, GLYPH_BELL, GLYPH_WIFI,
+            GLYPH_PAUSE, GLYPH_SPEAKER, GLYPH_RESTART, GLYPH_STOP, GLYPH_BELL, GLYPH_WIFI,
         }
 
     def test_tile_has_opaque_pixels_in_the_left_half_and_empty_corners(self):

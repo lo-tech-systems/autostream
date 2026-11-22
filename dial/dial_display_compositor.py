@@ -53,6 +53,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 
+import numpy as np
 from PIL import Image, ImageChops
 
 from dial_display_image import transform_artwork_for_panel
@@ -86,8 +87,9 @@ from dial_display_render import (
     _with_corner_bell,
 )
 from dial_display_palette import (
-    PRESSED_FILL_RGB,
-    MUTE_WASH_ALPHA,
+    ALERT_ALPHA_HIGH,
+    ALERT_ALPHA_LOW,
+    ALERT_RGB,
 )
 from dial_display_views import (
     BG_BASE,
@@ -246,18 +248,20 @@ class DialDisplayCompositor:
 
         if metrics.content_tier == CONTENT_COMPACT:
             frame = _compact_controls_frame(overlay, image.width, image.height, metrics)
-            return _compose_frame(
-                image, image.width, image.height, frame, rotate=False, bgr=False, metrics=metrics,
-            )
-        if reveal_progress >= 1.0:
+        elif reveal_progress >= 1.0:
             # The bands have left the panel: the same frame a hidden overlay
             # produces, through the same call.
             return _with_corner_bell(image, overlay, metrics)
-        frame = _now_playing_frame(overlay, image.width, image.height, metrics)
-        if not reveal_progress > 0.0:
+        else:
+            frame = _now_playing_frame(overlay, image.width, image.height, metrics)
+        if metrics.content_tier == CONTENT_COMPACT or not reveal_progress > 0.0:
+            if overlay.alert and overlay.pulse < 1.0:
+                return _pulse_frame(image, frame, metrics, overlay.pulse)
             return _compose_frame(
                 image, image.width, image.height, frame, rotate=False, bgr=False, metrics=metrics,
             )
+        # A slide draws the alert wash solid: its layers are memoised per
+        # frame, which a pulse step would change.
         layout = layout_for(image.width, image.height, metrics=metrics)
         layers = _reveal_layers(
             frame, image.width, image.height, metrics,
@@ -555,6 +559,52 @@ def _reset_render_caches() -> None:
     _timer_fit.cache_clear()
     _reveal_layers.cache_clear()
     dial_display_reveal._reset_shrunk_base()
+    global _alert_memo
+    _alert_memo = None
+
+
+# The two ends of the mute cell's alert pulse for one base and frame, so a
+# pulse step composes nothing: (base, frame, the solid end, then the cell of
+# the see-through end and of the solid end as arrays). Holding the base keeps
+# its identity from being reused while the entry lives, as _shrunk_base does.
+_alert_memo: "tuple | None" = None
+
+
+def _alert_washes(cell: Rect, alpha: int) -> tuple:
+    return ((cell, ALERT_RGB, alpha),)
+
+
+def _alert_cell(metrics: LayoutMetrics, width: int, height: int) -> Rect:
+    """The mute cell the alert wash covers on the playing screen."""
+    if metrics.content_tier == CONTENT_COMPACT:
+        return compact_layout_for(width, height, metrics=metrics).tr
+    return layout_for(width, height, metrics=metrics).footer_mute
+
+
+def _pulse_frame(image, frame: Frame, metrics: LayoutMetrics, pulse: float) -> Image.Image:
+    """*frame* (which carries the solid alert wash) over *image* with the
+    wash at *pulse* of the way from see-through to solid. Every drawing step
+    after the wash is linear in the pixel behind it (see _reveal_layers), so
+    the cell at any strength is the blend of the two ends; both ends are
+    composed once per base and frame and the rest of the panel is the solid
+    end's own pixels, so a step changes nothing outside the cell."""
+    global _alert_memo
+    memo = _alert_memo
+    if memo is None or memo[0] is not image or memo[1] != frame:
+        cell = _alert_cell(metrics, image.width, image.height)
+        low = dataclasses.replace(frame, washes=_alert_washes(cell, ALERT_ALPHA_LOW))
+        see = _compose_frame(image, image.width, image.height, low, rotate=False, bgr=False, metrics=metrics)
+        solid = _compose_frame(image, image.width, image.height, frame, rotate=False, bgr=False, metrics=metrics)
+        memo = (image, frame, solid, cell,
+                np.asarray(see.crop(cell), dtype=np.float32), np.asarray(solid.crop(cell), dtype=np.float32))
+        _alert_memo = memo
+    solid, cell, lo, hi = memo[2:]
+    out = solid.copy()
+    if pulse < 1.0:
+        t = np.float32(max(0.0, pulse))
+        blended = (lo + (hi - lo) * t + np.float32(0.5)).astype(np.uint8)
+        out.paste(Image.fromarray(blended, "RGB"), cell[:2])
+    return out
 
 
 @functools.lru_cache(maxsize=2)
@@ -642,8 +692,8 @@ def _compose_frame(
         _dim_rect(img, (0, 0, width, height))
     for rect in frame.highlights:
         _draw_row_highlight(img, rect)
-    for rect, alpha in frame.washes:
-        _draw_wash(img, rect, PRESSED_FILL_RGB, alpha)
+    for rect, rgb, alpha in frame.washes:
+        _draw_wash(img, rect, rgb, alpha)
     for rect in frame.pressed:
         _draw_pressed_highlight(img, rect)
     if frame.header is not None:
@@ -682,18 +732,18 @@ def _main_pressed_rects(
 
 def _compact_controls_frame(overlay: OverlayState, width: int, height: int, metrics: LayoutMetrics) -> Frame:
     """The compact tier's playing screen: dimmed base behind, the mute
-    cell's own solid wash when muted (before the body's inverted glyph
-    draws over it — see _compose_frame's draw order), pressed resolved
-    against the compact MAIN table automatically (GEOMETRY_MAIN itself
-    branches on the tier)."""
+    cell's solid alert wash when muted or paused (before the body's glyph
+    draws over it — see _compose_frame's draw order; _pulse_frame fades
+    it), pressed resolved against the compact MAIN table automatically
+    (GEOMETRY_MAIN itself branches on the tier)."""
     c = compact_layout_for(width, height, metrics=metrics)
     return Frame(
         background=BG_BASE,
         dim_all=True,
         pressed=_main_pressed_rects(overlay.pressed, width, height, metrics),
-        washes=((c.tr, 255),) if overlay.muted else (),
+        washes=_alert_washes(c.tr, ALERT_ALPHA_HIGH) if overlay.alert else (),
         header=None,
-        body=Body(BODY_COMPACT_CONTROLS, muted=bool(overlay.muted), dots_lit=overlay.dots, bell=overlay.bell),
+        body=Body(BODY_COMPACT_CONTROLS, paused=overlay.paused, dots_lit=overlay.dots, bell=overlay.bell),
         footer=Footer(FOOTER_NONE),
     )
 
@@ -705,20 +755,17 @@ def _now_playing_frame(overlay: OverlayState, width: int, height: int, metrics: 
         dim_top=True,
         dim_bottom=True,
         pressed=_main_pressed_rects(overlay.pressed, width, height, metrics),
-        # The persistent mute wash: brighter than the dimmed footer band
-        # while muted, independent of any genuine touch — a tap still adds
-        # its own momentary wash on top (see _compose_frame's draw order).
-        # A dedicated (stronger) strength from the row-highlight wash below,
-        # which was tuned for the undimmed list chassis and all but
-        # disappears over a dimmed footer band under a white glyph.
-        washes=((layout.footer_mute, MUTE_WASH_ALPHA),) if overlay.muted else (),
+        # The alert wash while muted or paused, independent of any genuine
+        # touch — a tap still adds its own momentary wash on top (see
+        # _compose_frame's draw order). Solid here; _pulse_frame fades it.
+        washes=_alert_washes(layout.footer_mute, ALERT_ALPHA_HIGH) if overlay.alert else (),
         header=Header(
             name=overlay.name, volume=overlay.volume,
             dots_filled=0 if overlay.dots else None,
             dots_count=3 if overlay.eq_pages else 2, bell=overlay.bell,
         ),
         body=Body(BODY_NOW_PLAYING, title=overlay.title, artist=overlay.artist, album=overlay.album),
-        footer=Footer(FOOTER_VOLUME_MUTE),
+        footer=Footer(FOOTER_VOLUME_MUTE, paused=overlay.paused),
     )
 
 
