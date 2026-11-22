@@ -9,7 +9,10 @@ NO_SPEAKER_STOP_SECONDS, the monitor is asked to stop repeat. That disarms
 it, fades out a replay and keeps the recording, so Repeat can be pressed
 again. A speaker can be off for any reason: switched off, given up on, or
 turned off by the receiver Pause timeout, which nudges this check to act at
-once instead of waiting.
+once instead of waiting. A speaker that is wanted but not taking the audio
+(failed, or being retried) counts as off, where the player's rows say so; a
+default speaker that is retried for the whole session would otherwise keep
+the replay going to nobody.
 
 run_check() is called from the coordinator loop's interval table; nudge()
 may be called from any thread.
@@ -99,7 +102,7 @@ def run_check() -> None:
         replaying, armed = _repeat_flags(snap.repeat.block)
         capturing = any(e.capturing for e in snap.inputs.entries)
         if not _watch.check(
-            speaker_on=bool(snap.outputs.selected_units()),
+            speaker_on=bool(snap.outputs.playing_units()),
             playing=replaying or capturing,
             stop_wanted=replaying or armed,
         ):

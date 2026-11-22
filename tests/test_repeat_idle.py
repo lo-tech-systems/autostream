@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "core"))
 
 import autostream_repeat_idle as repeat_idle
 from autostream_state import Origin
-from output_fakes import row
+from output_fakes import group_row, row
 
 
 class Clock:
@@ -173,7 +173,9 @@ class TestRunCheck:
             repeat_idle.run_check()
         assert sub.call_count == 1
 
-    def test_a_selected_speaker_keeps_it_playing(self, fake_store, watch):
+    def test_a_selected_speaker_without_a_session_keeps_it_playing(self, fake_store, watch):
+        # Upstream OwnTone: its rows carry no session, so a selected speaker
+        # counts as taking the audio, as before
         clock, _ = watch
         self._state(fake_store, selected=True, replay=True)
         with patch.object(repeat_idle, "submit") as sub:
@@ -181,6 +183,47 @@ class TestRunCheck:
             clock.t += 600
             repeat_idle.run_check()
         sub.assert_not_called()
+
+    @staticmethod
+    def _replay_to(fake_store, session_state):
+        """A replay with one selected speaker whose row has a session."""
+        fake_store.outputs([group_row(1, session_state, selected=True)])
+        fake_store.repeat({"enabled": True, "armed": False, "replay": {"active": True, "fading_out": False}})
+        fake_store.inputs([fake_store.input_entry(1, capturing=False)])
+
+    @pytest.mark.parametrize("state", ["streaming", "connected"])
+    def test_a_speaker_taking_the_audio_keeps_it_playing(self, fake_store, watch, state):
+        clock, _ = watch
+        self._replay_to(fake_store, state)
+        with patch.object(repeat_idle, "submit") as sub:
+            repeat_idle.run_check()
+            clock.t += 600
+            repeat_idle.run_check()
+        sub.assert_not_called()
+
+    @pytest.mark.parametrize("state", ["failed", "connecting", "stopped", "password"])
+    def test_a_selected_speaker_not_taking_the_audio_counts_as_off(self, fake_store, watch, state):
+        # A default speaker kept wanted while it is retried, or one that fails
+        clock, _ = watch
+        self._replay_to(fake_store, state)
+        with patch.object(repeat_idle, "submit") as sub:
+            repeat_idle.run_check()
+            clock.t += 300
+            repeat_idle.run_check()
+        assert sub.call_count == 1
+
+    def test_retries_that_never_reach_the_speaker_do_not_reset_the_count(self, fake_store, watch):
+        # Each retry reads connecting for a few seconds, then failed again
+        clock, _ = watch
+        start = clock.t
+        with patch.object(repeat_idle, "submit") as sub:
+            while clock.t - start < 300:
+                self._replay_to(fake_store, "connecting" if (clock.t - start) % 30 < 4 else "failed")
+                repeat_idle.run_check()
+                clock.t += 2
+            self._replay_to(fake_store, "failed")
+            repeat_idle.run_check()
+        assert sub.call_count == 1
 
     def test_armed_while_idle_is_left_alone(self, fake_store, watch):
         clock, _ = watch

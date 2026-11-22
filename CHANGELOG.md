@@ -92,6 +92,10 @@ Update every appliance and every dial together, as for 0.8.0.
   missing speaker back without interrupting the one playing.
 - changed: a speaker that comes back while its group is paused stays paused
   with the rest of the group.
+- fixed: a replay, or a session with repeat on, whose speakers are switched on
+  but can't be reached is stopped after 5 minutes like one with no speakers
+  on. Before, a default speaker being retried kept it going to nobody for as
+  long as the speaker was still listed.
 
 ## Version 0.8.0-beta.1 - 2026-11-18
 

@@ -292,6 +292,15 @@ class OutputsPart:
         """The units that are desired selected and that the player has."""
         return tuple(u for u in self.units if u.selected and not u.offline)
 
+    def playing_units(self) -> tuple[OutputUnitView, ...]:
+        """The selected units the player has that take the audio. Judged per
+        row: a row with a session (owntone-mini) counts while it is
+        connected or streaming, so a speaker being retried or failing does
+        not; a row with none (upstream OwnTone) counts while selected, as in
+        selected_units()."""
+        return tuple(u for u in self.selected_units()
+                     if u.reported.session_state in ("", "connected", "streaming"))
+
     def reported_rows(self) -> tuple[OutputInfo, ...]:
         """The player's last row of every unit that has one, in row order."""
         return tuple(u.reported for u in self.units if u.reported is not None)
