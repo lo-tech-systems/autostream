@@ -187,7 +187,7 @@ class TestPlayGlyphTile:
 
     def test_every_glyph_kind_has_a_registered_painter(self):
         from dial_display_draw import (
-            GLYPH_ARM_DOT,
+            GLYPH_SWITCH,
             GLYPH_MUTE,
             GLYPH_PAGE_DOTS,
             GLYPH_PAUSE,
@@ -197,7 +197,7 @@ class TestPlayGlyphTile:
         )
 
         assert set(_GLYPH_PAINTERS) == {
-            GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_PAGE_DOTS, GLYPH_ARM_DOT, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
+            GLYPH_CHEVRON, GLYPH_TWO_DOTS, GLYPH_PAGE_DOTS, GLYPH_SWITCH, GLYPH_PLAY, GLYPH_CROSS, GLYPH_MUTE,
             GLYPH_PAUSE, GLYPH_SPEAKER, GLYPH_RESTART, GLYPH_STOP, GLYPH_BELL, GLYPH_WIFI,
         }
 

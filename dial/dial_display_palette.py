@@ -43,6 +43,17 @@ ALERT_RGB = (220, 40, 40)
 ALERT_ALPHA_LOW = 72
 ALERT_ALPHA_HIGH = 255
 
+# An on/off switch: while on, a white track and a white knob ringed in
+# SWITCH_RING_RGB so it stands out from the track; while off, a white
+# outline track and a plain white knob.
+SWITCH_RING_RGB = (28, 28, 28)
+
+# The compact repeat page's "Repeat Play" row while armed: lit with a white
+# wash that still lets the artwork show, under a dark label.
+ARMED_ROW_RGB = (255, 255, 255)
+ARMED_ROW_ALPHA = 166
+ARMED_LABEL_RGB = (16, 16, 16)
+
 # Divider-line colour: pure white, matching the glyph/text colour, so the
 # single boundary line between DOWN and UP reads as clean structure against
 # the dimmed backdrop rather than blending into it.

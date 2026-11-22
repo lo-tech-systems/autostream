@@ -465,28 +465,25 @@ class TestRepeatSurface:
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.NAME
 
-    def test_repeat_zone_at_resolves_row(self):
+    def test_repeat_zone_at_resolves_the_switch_half_of_the_bottom_band(self):
+        # The enable layout's "Repeat Play" switch: its half of the bottom
+        # band toggles it, the label's half is dead
         layout = repeat_layout_for(160, 128)
-        x0, y0, x1, y1 = layout.row
-        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-        assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.REPEAT_PLAY
+        x0, y0, x1, y1 = layout.toggle
+        assert layout.toggle == layout.stop
+        assert repeat_zone_at((x0 + x1) // 2, (y0 + y1) // 2, 160, 128) == TouchZone.REPEAT_PLAY
+        sx0, sy0, sx1, sy1 = layout.start
+        assert repeat_zone_at((sx0 + sx1) // 2, (sy0 + sy1) // 2, 160, 128) is None
 
-    def test_repeat_artwork_is_hit_only_outside_the_row(self):
-        """On the rich tier the row leaves gaps of artwork above and below
-        it: a tap in a gap is an artwork tap, a tap in the row is still the
-        row."""
+    @pytest.mark.parametrize("geometry", [GEOMETRY_REPEAT, GEOMETRY_REPEAT_REPLAY])
+    def test_repeat_middle_is_artwork_in_both_layouts(self, geometry):
+        """The artwork shows between the bands whether or not a replay
+        runs, so a tap in the middle is an artwork tap in either."""
         metrics = metrics_for(320, 240, 0.1778)
         layout = repeat_layout_for(320, 240, metrics=metrics)
-        # The top band's controls reach below the band; the artwork gap is
-        # what is left between that reach and the row.
-        reach_bottom = metrics.band_h + metrics.band_h // 3
-        assert layout.row[1] > reach_bottom >= layout.top_band[3]
-        gap_y = (reach_bottom + layout.row[1]) // 2
         row_y = (layout.row[1] + layout.row[3]) // 2
-        hit = hit_test(GEOMETRY_REPEAT, 160, gap_y, 320, 240, metrics=metrics)
+        hit = hit_test(geometry, 160, row_y, 320, 240, metrics=metrics)
         assert hit is not None and hit.zone == TouchZone.ARTWORK
-        hit = hit_test(GEOMETRY_REPEAT, 160, row_y, 320, 240, metrics=metrics)
-        assert hit is not None and hit.zone == TouchZone.REPEAT_PLAY
 
     def test_repeat_zone_at_resolves_outputs(self):
         """The top band's volume readout opens the outputs list on the
@@ -498,12 +495,14 @@ class TestRepeatSurface:
         cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
         assert repeat_zone_at(cx, cy, 160, 128) == TouchZone.OUTPUTS
 
-    def test_repeat_zone_at_resolves_start_and_stop(self):
+    def test_replaying_resolves_start_and_stop(self):
         layout = repeat_layout_for(160, 128)
         sx0, sy0, sx1, sy1 = layout.start
-        assert repeat_zone_at((sx0 + sx1) // 2, (sy0 + sy1) // 2, 160, 128) == TouchZone.REPEAT_START
+        hit = hit_test(GEOMETRY_REPEAT_REPLAY, (sx0 + sx1) // 2, (sy0 + sy1) // 2, 160, 128)
+        assert hit is not None and hit.zone == TouchZone.REPEAT_START
         tx0, ty0, tx1, ty1 = layout.stop
-        assert repeat_zone_at((tx0 + tx1) // 2, (ty0 + ty1) // 2, 160, 128) == TouchZone.REPEAT_STOP
+        hit = hit_test(GEOMETRY_REPEAT_REPLAY, (tx0 + tx1) // 2, (ty0 + ty1) // 2, 160, 128)
+        assert hit is not None and hit.zone == TouchZone.REPEAT_STOP
 
     def test_repeat_zone_at_dead_zone_returns_none(self):
         layout = repeat_layout_for(160, 128)
@@ -656,6 +655,16 @@ class TestZoneRectsOrder:
             (TouchZone.NAME, None),
             (TouchZone.OUTPUTS, None),
             (TouchZone.REPEAT_PLAY, None),
+            (TouchZone.ARTWORK, None),
+        ]
+
+    def test_repeat_replay_order(self):
+        entries = zone_rects_for(GEOMETRY_REPEAT_REPLAY, 160, 128)
+        assert [(e.zone, e.index) for e in entries] == [
+            (TouchZone.BAND_BELL, None),
+            (TouchZone.DOTS, None),
+            (TouchZone.NAME, None),
+            (TouchZone.OUTPUTS, None),
             (TouchZone.REPEAT_START, None),
             (TouchZone.REPEAT_STOP, None),
             (TouchZone.ARTWORK, None),
@@ -714,10 +723,12 @@ class TestZoneRectsMatchLayoutFields:
         assert entries[TouchZone.DOTS] == layout.dots
         assert entries[TouchZone.NAME] == layout.name
         assert entries[TouchZone.OUTPUTS] == layout.volume_cluster
-        assert entries[TouchZone.REPEAT_PLAY] == layout.row
-        assert entries[TouchZone.REPEAT_START] == layout.start
-        assert entries[TouchZone.REPEAT_STOP] == layout.stop
+        assert entries[TouchZone.REPEAT_PLAY] == layout.toggle
         assert entries[TouchZone.ARTWORK] == layout.artwork == layout_for(width, height).artwork
+        replay = {e.zone: e.rect for e in zone_rects_for(GEOMETRY_REPEAT_REPLAY, width, height)}
+        assert replay[TouchZone.REPEAT_START] == layout.start
+        assert replay[TouchZone.REPEAT_STOP] == layout.stop
+        assert replay[TouchZone.ARTWORK] == layout.artwork
 
     @pytest.mark.parametrize("width,height", PROFILE_SIZES)
     def test_idle_rect_is_layout_field(self, width, height):
@@ -2100,11 +2111,12 @@ class TestCompactZoneTables:
                     near_h = abs(y - p.divider_y) <= m
                     assert near_v or near_h, (x, y)
 
-    def test_repeat_replay_equals_repeat_off_compact(self):
+    def test_repeat_replay_swaps_the_switch_for_restart_and_stop_off_compact(self):
         for width, height in PROFILE_SIZES:
-            assert zone_rects_for(GEOMETRY_REPEAT_REPLAY, width, height) == zone_rects_for(
-                GEOMETRY_REPEAT, width, height,
-            )
+            play = {e.zone for e in zone_rects_for(GEOMETRY_REPEAT, width, height)}
+            replay = {e.zone for e in zone_rects_for(GEOMETRY_REPEAT_REPLAY, width, height)}
+            assert play - replay == {TouchZone.REPEAT_PLAY}
+            assert replay - play == {TouchZone.REPEAT_START, TouchZone.REPEAT_STOP}
 
     def test_zone_rects_for_is_pure(self):
         for metrics in (_COMPACT_240x240, _COMPACT_128x128):

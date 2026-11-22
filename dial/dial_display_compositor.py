@@ -90,6 +90,8 @@ from dial_display_palette import (
     ALERT_ALPHA_HIGH,
     ALERT_ALPHA_LOW,
     ALERT_RGB,
+    ARMED_ROW_ALPHA,
+    ARMED_ROW_RGB,
 )
 from dial_display_views import (
     BG_BASE,
@@ -103,6 +105,7 @@ from dial_display_views import (
     BODY_IDLE_BADGE,
     BODY_INFO_VALUE,
     BODY_LIST_ROWS,
+    BODY_NONE,
     BODY_NOW_PLAYING,
     BODY_REPEAT_LINE,
     BODY_TOGGLE_ROW,
@@ -114,6 +117,7 @@ from dial_display_views import (
     FOOTER_LIST_BAR,
     FOOTER_LIST_RAIL,
     FOOTER_NONE,
+    FOOTER_TOGGLE,
     FOOTER_VOLUME,
     FOOTER_VOLUME_MUTE,
     Footer,
@@ -317,16 +321,16 @@ class DialDisplayCompositor:
     ):
         """Build one display-ready frame for the repeat screen.
 
-        Draws the shared top band (dots, name, mute/volume readout — see
-        _draw_top_band_content()) over either a flat dark background
-        (LIST_BG_RGB, the same chassis colour as compose_list()) for the
-        enable layout — the "Repeat Play" row, with a hollow or solid dot
-        marker depending on `state.armed` — or, for the replaying layout,
-        *base* (the current artwork frame or the logo, already panel-sized;
-        None falls back to the same flat background), dimmed the same way
-        compose()'s overlay dims the main screen's bands, with the
-        Restart/Stop labels and the centred position line drawn on top.
-        rotate/bgr are applied last, in the same order compose() uses.
+        Draws *base* (the current artwork frame or the logo, already
+        panel-sized; None falls back to a flat dark background) with the
+        top and bottom bands dimmed the same way compose()'s overlay dims
+        the main screen's, the shared top band (dots, name, mute/volume
+        readout — see _draw_top_band_content()) in the top one, and in the
+        bottom one either the enable layout's "Repeat Play" label and its
+        switch (on or off by `state.armed`) or the replaying layout's
+        Restart/Stop labels, which also draws the centred position line
+        over the artwork. rotate/bgr are applied last, in the same order
+        compose() uses.
         Never raises: a font, glyph or base-image failure degrades to a
         plainer frame, matching compose()'s own discipline. metrics: see
         compose().
@@ -338,13 +342,12 @@ class DialDisplayCompositor:
         artwork/logo, no header/body/footer at all. A parameter, not
         attribute state, so the compositor stays stateless either way.
 
-        reveal_progress: the artwork-tap reveal's progress, meaningful only
-        for the replaying layout off the compact tier (the enable layout
-        has no artwork to reveal and the compact tier no bands): between 0
-        and 1 the top and bottom bands' chrome slides off and the position
-        line fades, exactly as compose() does for the now-playing overlay;
-        0 (the default) is the ordinary frame and 1 the same bare frame
-        controls=False gives. Ignored elsewhere.
+        reveal_progress: the artwork-tap reveal's progress, meaningful off
+        the compact tier (which has no bands): between 0 and 1 the top and
+        bottom bands' chrome slides off and any position line fades,
+        exactly as compose() does for the now-playing overlay; 0 (the
+        default) is the ordinary frame and 1 the same bare frame
+        controls=False gives. Ignored on compact.
 
         output_size: as compose()'s, for this screen's own reveal slide.
         """
@@ -353,11 +356,7 @@ class DialDisplayCompositor:
         if not controls:
             return _finish(_new_frame(base, width, height, BG_BASE), rotate, bgr)
         frame = _repeat_frame(state, width, height, metrics)
-        if (
-            metrics.content_tier != CONTENT_COMPACT
-            and state.layout == "replaying"
-            and reveal_progress > 0.0
-        ):
+        if metrics.content_tier != CONTENT_COMPACT and reveal_progress > 0.0:
             if reveal_progress >= 1.0:
                 # The chrome has left the panel: the same bare frame
                 # controls=False produces, through the same call.
@@ -776,13 +775,11 @@ def _repeat_pressed_rects(
     the fade-out-in-flight Stop wash layered on top of it when replaying —
     same order the two highlights are drawn in today. Resolved against
     GEOMETRY_REPEAT_REPLAY, rather than GEOMETRY_REPEAT, exactly when the
-    compact tier's own replaying layout is showing — the only tier/layout
-    combination the two geometries actually disagree about (see
-    dial_touch_layout.zone_rects_for)."""
+    replaying layout is showing (see dial_touch_layout.zone_rects_for)."""
     if metrics is None:
         metrics = metrics_for(width, height)
     replaying = state.layout == "replaying"
-    geometry = GEOMETRY_REPEAT_REPLAY if (metrics.content_tier == CONTENT_COMPACT and replaying) else GEOMETRY_REPEAT
+    geometry = GEOMETRY_REPEAT_REPLAY if replaying else GEOMETRY_REPEAT
     rects = []
     rect = _zone_rect(geometry, state.pressed, None, width, height, metrics)
     if rect is not None:
@@ -800,17 +797,21 @@ def _compact_repeat_frame(state: RepeatViewState, width: int, height: int, metri
     rendering discipline), no header (no NAME/OUTPUTS on compact), pressed
     resolved against
     whichever of GEOMETRY_REPEAT/GEOMETRY_REPEAT_REPLAY _repeat_pressed_
-    rects picks for this state."""
+    rects picks for this state. While armed, the enable layout's "Repeat
+    Play" row is lit (ARMED_ROW_ALPHA), under its dark label."""
     replaying = state.layout == "replaying"
     body = (
         Body(BODY_COMPACT_REPLAY, line=state.line, start_enabled=state.start_enabled, stop_enabled=state.stop_enabled)
         if replaying
         else Body(BODY_COMPACT_TOGGLE, armed=state.armed, label="Repeat Play")
     )
+    lit = not replaying and state.armed
     return Frame(
         background=BG_BASE,
         dim_all=True,
         pressed=_repeat_pressed_rects(state, width, height, metrics),
+        washes=((compact_layout_for(width, height, metrics=metrics).bottom_row, ARMED_ROW_RGB, ARMED_ROW_ALPHA),)
+        if lit else (),
         header=None,
         body=body,
         footer=Footer(FOOTER_NONE),
@@ -828,12 +829,12 @@ def _repeat_frame(state: RepeatViewState, width: int, height: int, metrics: Layo
             left_enabled=state.start_enabled, right_enabled=state.stop_enabled,
         )
     else:
-        body = Body(BODY_TOGGLE_ROW, armed=state.armed, label="Repeat Play")
-        footer = Footer(FOOTER_NONE)
+        body = Body(BODY_NONE)
+        footer = Footer(FOOTER_TOGGLE, left_text="Repeat Play", armed=state.armed)
     return Frame(
-        background=BG_BASE if replaying else BG_CHASSIS,
+        background=BG_BASE,
         dim_top=True,
-        dim_bottom=replaying,
+        dim_bottom=True,
         pressed=_repeat_pressed_rects(state, width, height, metrics),
         header=Header(
             name=state.name, volume=state.volume, dots_filled=1,

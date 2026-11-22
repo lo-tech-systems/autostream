@@ -36,11 +36,9 @@ from dial_touch_surfaces import (
 )
 
 # The repeat screen's two surfaces, treated as one set by the repeat-close
-# reveal rule below: a flip between them (the compact tier's own enable <->
-# replaying transition) is not a close, so it must not fire the reveal —
-# only leaving the set entirely (to "hidden"/"held", a genuine DOTS-tap
-# close) does. Off the compact tier only SURFACE_REPEAT is ever reported, so
-# this set is a strict superset of the old exact-match check.
+# reveal rule below: a flip between them (the enable <-> replaying
+# transition) is not a close, so it must not fire the reveal — only leaving
+# the set entirely (to "hidden"/"held", a genuine DOTS-tap close) does.
 _REPEAT_SURFACES = frozenset((SURFACE_REPEAT, SURFACE_REPEAT_REPLAY))
 
 

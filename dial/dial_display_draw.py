@@ -35,6 +35,7 @@ from dial_display_palette import (
     OVERLAY_DIM_FACTOR,
     BELL_WARNING_RGB,
     BELL_CRITICAL_RGB,
+    SWITCH_RING_RGB,
 )
 from dial_display_views import BG_BASE, BellBadge
 from dial_layout_metrics import LayoutMetrics
@@ -454,7 +455,7 @@ def _halo_layer(text: str, font, local_xy: tuple[int, int], w: int, h: int, stro
 GLYPH_CHEVRON = "chevron"              # params: (direction, lit)
 GLYPH_TWO_DOTS = "two_dots"            # params: (filled,) or (filled, color)
 GLYPH_PAGE_DOTS = "page_dots"          # params: (count, filled) or (count, filled, color)
-GLYPH_ARM_DOT = "arm_dot"              # params: (armed,)
+GLYPH_SWITCH = "switch"                # params: (on,) — an on/off switch, drawn into its own (wide) box
 GLYPH_PLAY = "play"                    # params: () — the selector's "playing" row marker
 GLYPH_CROSS = "cross"                  # params: () — the rail's back/cancel control
 GLYPH_MUTE = "mute"                    # params: () or (color,) — the main screen's footer mute cell
@@ -604,18 +605,32 @@ def _draw_page_dots(draw: ImageDraw.ImageDraw, w: int, h: int, count: int, fille
             draw.ellipse(box, outline=color, width=max(1, r // 3))
 
 
-def _draw_arm_dot(draw: ImageDraw.ImageDraw, w: int, h: int, armed: bool) -> None:
-    """The enable layout's "Repeat Play" row marker: solid white when
-    *armed* (the appliance will auto-start a replay on its own), hollow
-    (outline only) when disarmed — radius 0.16 of the box. Rendered into a
-    (w, h) canvas — see _draw_glyph."""
-    r = max(2, round(min(w, h) * 0.16))
-    cx, cy = w / 2.0, h / 2.0
-    box = [cx - r, cy - r, cx + r, cy + r]
-    if armed:
-        draw.ellipse(box, fill=GLYPH_RGB)
-    else:
-        draw.ellipse(box, outline=GLYPH_RGB, width=max(1, r // 3))
+# An on/off switch's proportions, as the HD dial draws it: a 48 x 27 track
+# with a knob 2.5 in from its ends.
+SWITCH_ASPECT = 48 / 27
+_SWITCH_KNOB_INSET = 2.5 / 27
+
+
+def _draw_switch(draw: ImageDraw.ImageDraw, w: int, h: int, on: bool) -> None:
+    """An on/off switch filling a (w, h) canvas (w = SWITCH_ASPECT * h).
+    On: a white track with the knob at the right, white and ringed in
+    SWITCH_RING_RGB so it stands out from the track. Off: a white outline
+    track with a plain white knob at the left over a soft shadow. Drawn
+    back to front onto the transparent canvas, each shape replacing what is
+    under it — see _draw_glyph."""
+    rad = h // 2
+    line = max(2, round(h / 14))
+    box = (0, 0, w - 1, h - 1)
+    gap = h * _SWITCH_KNOB_INSET
+    knob = h - 2 * gap
+    x = (w - gap - knob) if on else gap
+    if on:
+        draw.rounded_rectangle(box, radius=rad, fill=GLYPH_RGB)
+        draw.ellipse((x, gap, x + knob, gap + knob), fill=GLYPH_RGB, outline=SWITCH_RING_RGB, width=line)
+        return
+    draw.ellipse((x, gap + line, x + knob, gap + knob + line), fill=(0, 0, 0, 90))
+    draw.rounded_rectangle(box, radius=rad, outline=GLYPH_RGB, width=line)
+    draw.ellipse((x, gap, x + knob, gap + knob), fill=GLYPH_RGB)
 
 
 def _draw_cross_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
@@ -817,7 +832,7 @@ _GLYPH_PAINTERS = {
     GLYPH_CHEVRON: _draw_chevron,
     GLYPH_TWO_DOTS: _draw_two_dots,
     GLYPH_PAGE_DOTS: _draw_page_dots,
-    GLYPH_ARM_DOT: _draw_arm_dot,
+    GLYPH_SWITCH: _draw_switch,
     GLYPH_PLAY: _draw_play_glyph,
     GLYPH_CROSS: _draw_cross_glyph,
     GLYPH_MUTE: _draw_mute_glyph,

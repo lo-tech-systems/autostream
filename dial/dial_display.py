@@ -945,8 +945,8 @@ class DialDisplay:
 
         A secondary screen's tuple is fixed by its policy row (ScreenPolicy.surface); a row that
         asks for the outputs zone still gates it on the snapshot's outputs_available. A row with
-        ScreenPolicy.replay_surface reports that tuple exactly while the compact tier's replaying
-        layout is painted (self._repeat_layout_shown == "replaying").
+        ScreenPolicy.replay_surface reports that tuple exactly while its replaying layout is
+        painted (self._repeat_layout_shown == "replaying").
 
         Two overrides come first. On the compact tier, once the controls window has lapsed
         (_compact_controls_hidden()), main and repeat report plain "hidden". The repeat screen's
@@ -966,11 +966,7 @@ class DialDisplay:
             return SurfaceState(_card_surface(len(card.buttons) if card is not None else 1), False, False, False, False)
         policy = _policy(self._screen)
         if policy.surface is not None:
-            if (
-                policy.replay_surface is not None
-                and self._compact_tier()
-                and self._repeat_layout_shown == "replaying"
-            ):
+            if policy.replay_surface is not None and self._repeat_layout_shown == "replaying":
                 s = policy.replay_surface
             else:
                 s = policy.surface
@@ -1011,11 +1007,12 @@ class DialDisplay:
         timer). On the rich and large tiers the bands slide off and back (ControlsReveal.advance());
         the slide belongs to the painters and nothing is stamped here.
 
-        A no-op off the two screens with artwork to reveal (main, and the replay screen exactly
-        while a replay runs) and on the compact tier, which has no artwork zone to tap."""
+        A no-op off the two screens with artwork to reveal (main, and the repeat screen while a
+        replay runs or its enable layout shows) and on the compact tier, which has no artwork zone
+        to tap."""
         screen = self._screen
         if screen == "repeat":
-            if not self._repeat_replaying_lockfree():
+            if not (self._repeat_replaying_lockfree() or self._repeat_layout_shown == "enable"):
                 return
         elif screen != "main":
             return
@@ -1143,19 +1140,16 @@ class DialDisplay:
         """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a REPEAT_PLAY
         tap): toggle arm/disarm — only meaningful in the enable layout
         (a live source recording/pending, or idle with the daemon still
-        enabled); a tap here while the replaying/hold layout is showing
-        (no "Repeat Play" row drawn) is a no-op. Enqueues on the core's
-        request lane — no lock, no I/O on this thread."""
+        enabled); the replaying/hold layout's own geometry has no
+        REPEAT_PLAY zone, and one that lands as the layout changes is a
+        no-op. Enqueues on the core's request lane — no lock, no I/O on
+        this thread."""
         found = self._repeat_tap_record()
         if found is None:
             return
         screen, rec = found
         if rec.state in ("recording", "pending", "idle"):
             self._core.set_repeat_armed(screen.appliance_id, not rec.armed)
-        elif rec.state == "replaying":
-            # In the replaying layout this row is the position line over
-            # the artwork, not a toggle: a tap on it is an artwork tap.
-            self.hide_controls()
 
     def repeat_start_tap(self) -> None:
         """Touch-thread entry (dial_touch_wiring's on_zone_tap, for a REPEAT_START
@@ -2519,29 +2513,27 @@ class DialDisplay:
         _display_locked(). Like the other secondary screens it bypasses _display_locked() and never
         picks up the main overlay. Caller holds self._lock.
 
-        Passes self._current_base_image as `base`: the replaying layout draws it dimmed behind the
-        counter, the enable layout ignores it. Stamps self._repeat_layout_shown from the freshly
-        built view, for touch_surface(), and commits the view's counter_second as the repeat line's
+        Passes self._current_base_image as `base`: both layouts draw it behind their bands (on
+        compact, dimmed behind the grid). Stamps self._repeat_layout_shown from the freshly built
+        view, for touch_surface(), and commits the view's counter_second as the repeat line's
         painted second, the reference the counter's timer advances against (None for a layout with
         no running counter, so the next replaying frame re-anchors).
 
-        An artwork-tap hide window hides the replaying layout's controls as it hides main's, with
-        the same slide on the rich and large tiers (ControlsReveal.advance()); the counter keeps
-        counting underneath. The window ends at the first paint that finds no replay running, and
-        that paint does not animate, so the controls snap back. The touch surface is the ordinary
-        one for the whole of a slide-in (touch_surface())."""
+        An artwork-tap hide window hides the enable layout's bands, or a running replay's, as it
+        hides main's, with the same slide on the rich and large tiers (ControlsReveal.advance());
+        a replay's counter keeps counting underneath. The window ends at the first paint that finds
+        neither (a replay stopped, so Restart must be tappable again), and that paint does not
+        animate, so the controls snap back. The touch surface is the ordinary one for the whole of
+        a slide-in (touch_surface())."""
         now = time.monotonic()
         view = dataclasses.replace(self._build_repeat_view_locked(self._repeat_screen, now), bell=self._bell_badge())
         self._repeat_layout_shown = view.layout
         metrics = self._layout_metrics()
-        # Only a running replay has artwork behind its controls to reveal:
-        # a window still open when the replay stops (Restart must be
-        # tappable again) or the layout changes ends at once.
-        replaying = view.layout == "replaying" and view.counter_second is not None
-        if self._controls.hidden(now) and not replaying:
+        revealable = view.layout == "enable" or (view.layout == "replaying" and view.counter_second is not None)
+        if self._controls.hidden(now) and not revealable:
             self._controls.end_hide()
         steady = not self._compact_controls_hidden() and not self._controls.hidden(now)
-        animating, progress = self._controls.advance(now, steady, replaying and self._slide_tier())
+        animating, progress = self._controls.advance(now, steady, revealable and self._slide_tier())
         controls = steady or animating
         self._paint_locked(
             self._compositor.compose_repeat, metrics=metrics, after=(view,), panel_size=True,
@@ -2561,8 +2553,8 @@ class DialDisplay:
         """Build the compositor's RepeatViewState from the repeat store's current record for
         *screen*: no or unavailable record, or a live source (recording, pending, idle), draws the
         enable layout (the top band plus the "Repeat Play" row); hold, replaying and fading_out draw
-        the replaying layout (the Restart/Stop row and the position line). The row's dot marker
-        reads `armed`, never `state`. The volume feeds the top band's readout, addressed at
+        the replaying layout (the Restart/Stop row and the position line). The "Repeat Play"
+        switch reads `armed`, never `state`. The volume feeds the top band's readout, addressed at
         *screen*'s own appliance, since the screens can disagree about the focused appliance until
         the next fold. Caller holds self._lock (called from _display_repeat_locked)."""
         pressed = self._pressed_zone()
@@ -3592,10 +3584,10 @@ SCREEN_POLICIES: dict[str, ScreenPolicy] = {
         inactivity_timeout_s=None, touch_extends_timeout=False,
         when_nothing_plays=IDLE_KEEP_WITH_FOCUS, defers_sleep=False,
         close_reveals_overlay=True, closes_on_focus_clear=True, back_to="main",
-        # The compact tier's own replaying layout: time/back where DOTS
-        # would be, Restart/Stop in place of the enable layout's own row —
-        # see GEOMETRY_REPEAT_REPLAY and touch_surface().
-        replay_surface=(SURFACE_REPEAT_REPLAY, True, True, False),
+        # The replaying layout: Restart/Stop in place of the enable layout's
+        # "Repeat Play" control (on compact, time/back where DOTS would be)
+        # — see GEOMETRY_REPEAT_REPLAY and touch_surface().
+        replay_surface=(SURFACE_REPEAT_REPLAY, True, True, True),
     ),
     # The EQ page: a third page, reached from the same dots as the repeat
     # screen (see cycle_pages()), rich/large only. No inactivity timeout —

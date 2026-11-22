@@ -17,7 +17,6 @@ import functools
 from PIL import Image, ImageDraw, ImageEnhance
 
 from dial_display_draw import (
-    GLYPH_ARM_DOT,
     GLYPH_BELL,
     GLYPH_CHEVRON,
     GLYPH_CROSS,
@@ -28,8 +27,10 @@ from dial_display_draw import (
     GLYPH_RESTART,
     GLYPH_SPEAKER,
     GLYPH_STOP,
+    GLYPH_SWITCH,
     GLYPH_TWO_DOTS,
     GLYPH_WIFI,
+    SWITCH_ASPECT,
     _LANCZOS,
     _centred_box,
     _BELL_RGB,
@@ -53,6 +54,7 @@ from dial_display_draw import (
     _wrap_words,
 )
 from dial_display_palette import (
+    ARMED_LABEL_RGB,
     GLYPH_RGB,
     LOGO_BACKGROUND_RGB,
     DIVIDER_RGB,
@@ -83,6 +85,7 @@ from dial_display_views import (
     FOOTER_LIST_BAR,
     FOOTER_LIST_RAIL,
     FOOTER_NONE,
+    FOOTER_TOGGLE,
     FOOTER_VOLUME,
     FOOTER_VOLUME_MUTE,
     Footer,
@@ -331,39 +334,35 @@ def _body_now_playing(img: Image.Image, metrics: LayoutMetrics, body: Body) -> N
     _draw_text_with_halo(img, layout.artist, body.artist, font, metrics)
 
 
-def _draw_toggle_row(
-    img: Image.Image, metrics: LayoutMetrics, row_rect: tuple[int, int, int, int], label: str, armed: bool,
-    *, dot_box: int | None = None,
-) -> None:
-    """A label plus an on/off dot marker drawn into *row_rect* — shared by
-    the repeat screen's "Repeat Play" enable row, the per-output detail
-    page's own enable row (both pass repeat_layout_for(...).row) and the
-    compact tier's own enable screen (which passes its bottom_row instead).
+# An on/off switch's height as a fraction of the bottom band's, wherever it
+# is drawn, so the per-output page's switch matches the repeat screen's.
+_SWITCH_BAND_FRACTION = 0.62
 
-    *dot_box* sizes the arm-dot's own box, width only — its height still
-    always spans the full *row_rect*, so the dot itself (drawn centred
-    within that box by _draw_arm_dot) stays vertically centred on the row
-    either way. None (every non-compact caller) keeps today's box: the
-    row's own height, giving a square box exactly as before. The compact
-    tier's own row is far taller relative to its own width than the base
-    tier's row ever is, so its own caller (_body_compact_toggle) passes a
-    smaller fixed width instead — the row is a single touch zone regardless
-    of how big the dot itself is drawn, so shrinking it costs nothing but
-    frees the width "Repeat Play" needs to fit without truncating."""
+
+def _draw_toggle_row(
+    img: Image.Image, metrics: LayoutMetrics, row_rect: tuple[int, int, int, int], label: str, on: bool,
+) -> None:
+    """A label plus its on/off switch drawn into *row_rect*, the switch
+    right-aligned and vertically centred — shared by the per-output detail
+    page's own enable row (repeat_layout_for(...).row) and the repeat
+    screen's enable layout (its bottom band). The switch is the same size
+    in either, a fixed fraction of the bottom band's height."""
     pad = metrics.pad
     row_font = _load_font(metrics.font_body)
     draw = ImageDraw.Draw(img)
-    box_w = dot_box if dot_box is not None else row_rect[3] - row_rect[1]
-    dot_rect = (row_rect[2] - pad - box_w, row_rect[1], row_rect[2] - pad, row_rect[3])
-    label_rect = (row_rect[0], row_rect[1], dot_rect[0] - pad, row_rect[3])
+    band = repeat_layout_for(metrics.width, metrics.height, metrics=metrics).bottom_band
+    sh = max(4, round((band[3] - band[1]) * _SWITCH_BAND_FRACTION))
+    sw = round(sh * SWITCH_ASPECT)
+    top = (row_rect[1] + row_rect[3]) // 2 - sh // 2
+    switch_rect = (row_rect[2] - pad - sw, top, row_rect[2] - pad, top + sh)
+    label_rect = (row_rect[0], row_rect[1], switch_rect[0] - pad, row_rect[3])
     _draw_label(draw, label_rect, label, row_font, pad)
-    _draw_glyph(img, dot_rect, GLYPH_ARM_DOT, armed, supersample=metrics.supersample)
+    _draw_glyph(img, switch_rect, GLYPH_SWITCH, on, supersample=metrics.supersample)
 
 
 def _body_toggle_row(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
-    """A label plus an on/off dot marker on the shared toggle-row rect —
-    the repeat screen's "Repeat Play" enable row and the per-output detail
-    page's own enable row are the same layout with a different label."""
+    """A label plus its on/off switch on the shared toggle-row rect — the
+    per-output detail page's own enable row."""
     layout = repeat_layout_for(metrics.width, metrics.height, metrics=metrics)
     _draw_toggle_row(img, metrics, layout.row, body.label, body.armed)
 
@@ -694,16 +693,15 @@ def _body_compact_list(img: Image.Image, metrics: LayoutMetrics, body: Body) -> 
 
 def _body_compact_toggle(img: Image.Image, metrics: LayoutMetrics, body: Body) -> None:
     """The compact tier's repeat-enable screen: the back control (second
-    dot lit) top-left, "Repeat Play" plus its arm dot spanning the full
-    bottom row — no separate cancel; the top-right cell is left empty. The
-    arm dot's own box is capped at metrics.icon (the same reference every
-    other compact icon-sized glyph already uses) rather than the row's own
-    height: that row is far taller relative to its own width than the base
-    tier's row ever is, so the label needs the width back to fit "Repeat
-    Play" whole (see _draw_toggle_row's own dot_box paragraph)."""
+    dot lit) top-left, "Repeat Play" centred on the full bottom row, the
+    whole row its control — no separate cancel; the top-right cell is left
+    empty. While armed the row is lit (a Frame.washes entry, drawn before
+    this body) and the label dark on it; disarmed, the label is white on
+    the dimmed artwork."""
     c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
     _draw_glyph(img, _compact_glyph_box(c.tl), GLYPH_TWO_DOTS, 1, GLYPH_RGB, supersample=metrics.supersample)
-    _draw_toggle_row(img, metrics, c.bottom_row, body.label, body.armed, dot_box=metrics.icon)
+    color = ARMED_LABEL_RGB if body.armed else GLYPH_RGB
+    _draw_label_centered(ImageDraw.Draw(img), c.bottom_row, body.label, _load_font(metrics.font_body), color)
     _draw_compact_dividers(img, c, metrics, vertical="top")
 
 
@@ -1121,6 +1119,13 @@ def _footer_volume_mute(img: Image.Image, layout, metrics: LayoutMetrics, footer
     _draw_band_divider(draw, layout, metrics, layout.footer_dividers)
 
 
+def _footer_toggle(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
+    """The repeat screen's enable layout: its label left and its on/off
+    switch right across the whole bottom band, no divider. The switch's half
+    of the band is the control (the REPEAT_PLAY zone)."""
+    _draw_toggle_row(img, metrics, layout.bottom_band, footer.left_text, footer.armed)
+
+
 def _footer_labels(img: Image.Image, layout, metrics: LayoutMetrics, footer: Footer) -> None:
     font = _load_font(metrics.font_readout)
     left_color = _tone(footer.left_enabled)
@@ -1166,6 +1171,7 @@ _FOOTER_RENDERERS = {
     FOOTER_NONE: _footer_none,
     FOOTER_VOLUME: _footer_volume,
     FOOTER_VOLUME_MUTE: _footer_volume_mute,
+    FOOTER_TOGGLE: _footer_toggle,
     FOOTER_LABELS: _footer_labels,
     FOOTER_LIST_BAR: _footer_list_bar,
     FOOTER_LIST_RAIL: _footer_list_rail,

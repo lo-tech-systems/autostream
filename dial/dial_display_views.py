@@ -284,8 +284,8 @@ class OutputViewState:
         place of the pager dots (see Header.back).
     output_name: this output's own name — the toggle row's label.
     selected: whether this output is currently enabled — the toggle row's
-        dot marker (solid when True, hollow when False, the same glyph the
-        repeat screen's "Repeat Play" row uses).
+        switch, on or off (the same switch the repeat screen's "Repeat
+        Play" uses).
     level: this output's own volume (0-100), or None when disabled (no
         level to show) — drawn in the header's readout in place of the
         master-volume digits the main/repeat screens show there. There is
@@ -377,14 +377,14 @@ BG_CHASSIS = "chassis"    # flat LIST_BG_RGB fill, no caller image involved
 # bands, dispatched through _BODY_RENDERERS.
 BODY_NONE = "none"
 BODY_NOW_PLAYING = "now_playing"   # title + artist lines with halo
-BODY_TOGGLE_ROW = "toggle_row"     # a label + arm dot for any on/off row (repeat, per-output)
+BODY_TOGGLE_ROW = "toggle_row"     # a label + on/off switch on the middle row (per-output)
 BODY_REPEAT_LINE = "repeat_line"   # centred "m:ss / m:ss" with halo
 BODY_LIST_ROWS = "list_rows"       # selector/picker rows
 BODY_IDLE_BADGE = "idle_badge"     # the idle screen's own corner glyphs: the warning bell and the Wi-Fi status
 # Compact-tier (2x2) bodies — see the module's compact frame builders below.
 BODY_COMPACT_CONTROLS = "compact_controls"  # the playing screen: dots/mute/minus/plus
 BODY_COMPACT_LIST = "compact_list"          # the replay picker's two rows + more/cancel
-BODY_COMPACT_TOGGLE = "compact_toggle"      # the repeat screen's "Repeat Play" row + cancel
+BODY_COMPACT_TOGGLE = "compact_toggle"      # the repeat screen's "Repeat Play" row (lit while armed) + back
 BODY_COMPACT_REPLAY = "compact_replay"      # the repeat screen's time line + Restart/Stop
 BODY_INFO_VALUE = "info_value"              # the compact info page's own drill-in: label + wrapped value
 BODY_EQ_BARS = "eq_bars"                    # the EQ page's own bass/treble bar rows
@@ -396,6 +396,7 @@ BODY_CENTRED_LABEL = "centred_label"        # one string centred on the whole pa
 FOOTER_NONE = "none"
 FOOTER_VOLUME = "volume"           # minus | plus glyphs + divider (two-way: repeat, per-output detail)
 FOOTER_VOLUME_MUTE = "volume_mute"  # minus | plus | mute glyphs + two dividers (main screen, three-way)
+FOOTER_TOGGLE = "toggle"           # a label left, its on/off switch right (the repeat screen's enable layout)
 FOOTER_LABELS = "labels"           # left | right centred labels + divider
 FOOTER_LIST_BAR = "list_bar"       # back | down | up chevrons
 FOOTER_LIST_RAIL = "list_rail"     # up chevron | cross | down chevron on the right rail
@@ -461,13 +462,14 @@ class Footer:
     entirely by `kind` — see the FOOTER_* constants and _FOOTER_RENDERERS."""
 
     kind: str = FOOTER_NONE
-    left_text: str = ""            # FOOTER_LABELS
+    left_text: str = ""            # FOOTER_LABELS / FOOTER_TOGGLE (the switch's label)
     right_text: str = ""           # FOOTER_LABELS
     left_enabled: bool = True      # FOOTER_LABELS: full brightness vs dimmed
     right_enabled: bool = True
     has_prev: bool = False         # FOOTER_LIST_BAR: lights the up chevron
     has_next: bool = False         # FOOTER_LIST_BAR: lights the down chevron
     paused: bool = False           # FOOTER_VOLUME_MUTE: the mute cell shows the pause sign
+    armed: bool = False            # FOOTER_TOGGLE: the switch is on
 
 
 @dataclass(frozen=True)

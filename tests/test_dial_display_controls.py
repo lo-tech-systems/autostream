@@ -916,31 +916,53 @@ class TestReplayReveal:
             fb.width, fb.height, view, rotate=False, bgr=False, base=base, metrics=metrics, controls=False,
         )
 
-    def test_line_tap_while_replaying_hides(self):
+    def test_artwork_tap_while_replaying_hides(self):
+        display, fb, base = self._opened()
+        with patch("dial_display.time.monotonic", _FakeClock(1000.0)):
+            _repaint(display)
+            display.hide_controls()
+            assert display._controls.hidden_until == pytest.approx(1000.0 + ddc.CONTROLS_HIDE_SECONDS)
+
+    def test_hold_layout_does_not_hide(self):
+        display, fb, base = self._opened(state="hold")
+        with patch("dial_display.time.monotonic", _FakeClock(1000.0)):
+            _repaint(display)
+            display.hide_controls()
+            assert display._controls.hidden_until == 0.0
+
+    def test_enable_layout_hides_its_bands_too(self):
+        # A live source: the artwork shows between the bands, so an artwork
+        # tap hides them as on main
+        display, fb, base = self._opened(state="recording")
+        clock = _FakeClock(1000.0)
+        with patch_monotonic(clock):
+            _repaint(display)
+            assert display._repeat_layout_shown == "enable"
+            display.hide_controls()
+            assert display._controls.hidden_until == pytest.approx(1000.0 + ddc.CONTROLS_HIDE_SECONDS)
+            _repaint(display)
+            assert display._controls.started_at == 1000.0
+            clock.t = 1000.0 + ddc.REVEAL_ANIMATION_S + 0.05
+            _repaint(display)
+            assert _pixels(fb.displayed[-1]) == _pixels(self._bare(display, fb, base))
+
+    def test_a_toggle_tap_while_replaying_does_nothing(self):
+        # The replaying layout's geometry has no REPEAT_PLAY zone; one that
+        # lands as the layout changes neither arms nor hides
         display, fb, base = self._opened()
         with patch("dial_display.time.monotonic", _FakeClock(1000.0)):
             display.repeat_toggle_tap()
-            assert display._controls.hidden_until == pytest.approx(1000.0 + ddc.CONTROLS_HIDE_SECONDS)
-
-    def test_hold_and_enable_layouts_do_not_hide(self):
-        display, fb, base = self._opened(state="hold")
-        with patch("dial_display.time.monotonic", _FakeClock(1000.0)):
-            display.repeat_toggle_tap()
-            display.hide_controls()
-            assert display._controls.hidden_until == 0.0
-            self._seed("idle", 1000.0)
-            display.repeat_toggle_tap()
-            display.hide_controls()
             assert display._controls.hidden_until == 0.0
 
     def test_touch_surface_reports_hidden_while_the_window_holds(self):
         display, fb, base = self._opened()
         with patch("dial_display.time.monotonic", _FakeClock(1000.0)):
-            assert display.touch_surface()[0] == "repeat"
+            _repaint(display)
+            assert display.touch_surface()[0] == "repeat_replay"
             display.hide_controls()
             assert display.touch_surface() == ("hidden", True, display.core.snapshot().dots_active, display.core.snapshot().outputs_available, False)
             display.set_overlay(OverlayState(visible=True))
-            assert display.touch_surface()[0] == "repeat"
+            assert display.touch_surface()[0] == "repeat_replay"
 
     def test_repeat_frames_slide_then_bare(self):
         display, fb, base = self._opened()
@@ -949,7 +971,7 @@ class TestReplayReveal:
         with patch_monotonic(clock):
             _repaint(display)
             shown = fb.displayed[-1]
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             assert _pixels(fb.displayed[-1]) == _pixels(shown)
             assert display._controls.started_at == 1000.0
@@ -975,7 +997,7 @@ class TestReplayReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + ddc.REVEAL_ANIMATION_S + 0.05
             _repaint(display)
@@ -997,13 +1019,13 @@ class TestReplayReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             self._seed("hold", 1000.0)
             _repaint(display)
             assert display._controls.hidden_until == 0.0
             assert display._controls.started_at == 0.0
-            assert display.touch_surface()[0] == "repeat"
+            assert display.touch_surface()[0] == "repeat_replay"
             assert _pixels(fb.displayed[-1]) != _pixels(self._bare(display, fb, base))
 
     def test_screen_change_ends_the_window(self):
@@ -1011,7 +1033,7 @@ class TestReplayReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             display.pop_secondary("repeat")
             _repaint(display)
@@ -1024,13 +1046,13 @@ class TestReplayReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + ddc.CONTROLS_HIDE_SECONDS + 0.1
             self._seed("replaying", clock.t)
             display.fire_timer_for_tests("controls_hidden")
             _repaint(display)
-            assert display.touch_surface()[0] == "repeat"
+            assert display.touch_surface()[0] == "repeat_replay"
 
     def test_window_expiry_slides_the_controls_in(self):
         display, fb, base = self._opened()
@@ -1039,7 +1061,7 @@ class TestReplayReveal:
         with patch_monotonic(clock):
             _repaint(display)
             shown = fb.displayed[-1]
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + ddc.REVEAL_ANIMATION_S + 0.05
             _repaint(display)
@@ -1063,7 +1085,7 @@ class TestReplayReveal:
             assert _pixels(mid) != _pixels(bare)
             assert _pixels(mid) != _pixels(shown)
             assert _rows_equal(mid, bare, (0, band_h - dy, fb.width, band_h))
-            assert display.touch_surface()[0] == "repeat"
+            assert display.touch_surface()[0] == "repeat_replay"
 
             clock.t = t_expiry + ddc.REVEAL_ANIMATION_S + 0.05
             self._seed("replaying", clock.t)
@@ -1076,7 +1098,7 @@ class TestReplayReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + ddc.REVEAL_ANIMATION_S + 0.05
             _repaint(display)
@@ -1100,7 +1122,7 @@ class TestReplayReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             clock.t = 1000.2
             self._seed("replaying", clock.t)
@@ -1118,7 +1140,7 @@ class TestReplayReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             clock.t = 1000.0 + ddc.REVEAL_ANIMATION_S + 0.05
             _repaint(display)
@@ -1133,7 +1155,7 @@ class TestReplayReveal:
             # Stopping mid slide-in snaps too.
             self._seed("replaying", clock.t)
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             clock.t += ddc.REVEAL_ANIMATION_S + 0.05
             _repaint(display)
@@ -1153,7 +1175,7 @@ class TestReplayReveal:
         clock = _FakeClock(1000.0)
         with patch_monotonic(clock):
             _repaint(display)
-            display.repeat_toggle_tap()
+            display.hide_controls()
             _repaint(display)
             assert display._controls.started_at == 0.0
             assert _pixels(fb.displayed[-1]) == _pixels(self._bare(display, fb, base))

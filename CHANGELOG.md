@@ -116,6 +116,12 @@ Update every appliance and every dial together, as for 0.8.0.
   lighter slash that has a clear gap either side where it crosses the
   speaker. The speaker in it and in the volume readout is drawn with a proper
   cone; before, the cone was pinched in the middle.
+- changed: on the small-screen dial, the repeat page shows the artwork while
+  playing live, as it does while replaying, with "Repeat Play" and an on/off
+  switch in the bottom bar where it used to be a dot on a black screen. Tap
+  the right-hand half of the bar to flip it; tapping the artwork hides the
+  bars. A speaker's own page uses the same switch. On the smallest screens
+  the "Repeat Play" row lights up while repeat is on.
 - changed: a speaker left on Automatic plays AirPlay 2 whenever it offers it,
   and AirPlay 1 only when it has no AirPlay 2. Before, a speaker with no
   buffered AirPlay 2 played AirPlay 1. A speaker that plays better on AirPlay

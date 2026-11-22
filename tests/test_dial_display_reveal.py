@@ -378,15 +378,28 @@ class TestRepeatRevealProgress:
             bare.getdata()
         )
 
-    @pytest.mark.parametrize("metrics", [_RICH_METRICS, _COMPACT_240])
-    def test_enable_layout_and_compact_ignore_progress(self, compositor, metrics):
+    def test_compact_ignores_progress(self, compositor):
+        metrics = _COMPACT_240
         w, h = metrics.width, metrics.height
         base = _reveal_base_image(metrics)
-        state = _repeat_state() if metrics is _RICH_METRICS else _replaying_state()
         kw = dict(rotate=False, bgr=False, base=base, metrics=metrics)
-        zero = compositor.compose_repeat(w, h, state, **kw)
+        for state in (_repeat_state(), _replaying_state()):
+            zero = compositor.compose_repeat(w, h, state, **kw)
+            half = compositor.compose_repeat(w, h, state, reveal_progress=0.5, **kw)
+            assert list(zero.getdata()) == list(half.getdata())
+
+    def test_enable_layout_slides_its_bands_too(self, compositor):
+        # The artwork shows between the bands while playing live as well
+        metrics = _RICH_METRICS
+        w, h = metrics.width, metrics.height
+        kw = dict(rotate=False, bgr=False, base=_reveal_base_image(metrics), metrics=metrics)
+        state = _repeat_state()
+        shown = compositor.compose_repeat(w, h, state, **kw)
+        bare = compositor.compose_repeat(w, h, state, controls=False, **kw)
         half = compositor.compose_repeat(w, h, state, reveal_progress=0.5, **kw)
-        assert list(zero.getdata()) == list(half.getdata())
+        assert list(half.getdata()) not in (list(shown.getdata()), list(bare.getdata()))
+        assert list(compositor.compose_repeat(w, h, state, reveal_progress=1.0, **kw).getdata()) == list(
+            bare.getdata())
 
     def test_none_base_slides_a_chassis(self, compositor):
         metrics = _RICH_METRICS

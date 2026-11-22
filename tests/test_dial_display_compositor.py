@@ -965,18 +965,21 @@ class TestPressedRectsFollowRenderedMetrics:
 
 
 # ---------------------------------------------------------------------------
-# BODY_TOGGLE_ROW: the repeat screen's row.
+# FOOTER_TOGGLE: the repeat screen's "Repeat Play" switch.
 # ---------------------------------------------------------------------------
 
 class TestRepeatScreenToggleRow:
-    def test_repeat_screen_still_draws_repeat_play_label(self):
-        """Regression guard: _repeat_frame must still pass the literal
-        label, not an empty one, now that the renderer reads body.label
-        instead of a hardcoded string."""
+    def test_repeat_screen_draws_its_switch_in_the_bottom_band(self):
+        """The enable layout: the artwork between dimmed bands, "Repeat
+        Play" and its switch in the bottom one, which carries armed."""
         from dial_display_compositor import _repeat_frame
-        frame = _repeat_frame(_repeat_state(layout="enable", armed=False), 160, 128, metrics_for(160, 128))
-        assert frame.body.kind == BODY_TOGGLE_ROW
-        assert frame.body.label == "Repeat Play"
+        from dial_display_views import BG_BASE, BODY_NONE, FOOTER_TOGGLE
+        for armed in (False, True):
+            frame = _repeat_frame(_repeat_state(layout="enable", armed=armed), 160, 128, metrics_for(160, 128))
+            assert frame.background == BG_BASE and frame.dim_top and frame.dim_bottom
+            assert frame.body.kind == BODY_NONE
+            assert (frame.footer.kind, frame.footer.left_text, frame.footer.armed) == (
+                FOOTER_TOGGLE, "Repeat Play", armed)
 
 
 # ---------------------------------------------------------------------------

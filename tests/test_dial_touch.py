@@ -1442,7 +1442,7 @@ def _rect_center(rect) -> tuple[int, int]:
 
 DOTS_XY = _rect_center(zones_for(WIDTH, HEIGHT)[TouchZone.DOTS])
 NAME_XY = _rect_center(zones_for(WIDTH, HEIGHT)[TouchZone.NAME])
-REPEAT_PLAY_XY = _rect_center(_REPEAT_LAYOUT.row)
+REPEAT_PLAY_XY = _rect_center(_REPEAT_LAYOUT.toggle)
 REPEAT_START_XY = _rect_center(_REPEAT_LAYOUT.start)
 REPEAT_STOP_XY = _rect_center(_REPEAT_LAYOUT.stop)
 # The repeat screen's own OUTPUTS zone is the volume_cluster readout
@@ -1653,13 +1653,14 @@ class TestDotsGating:
 
 class TestRepeatAndIdleZoneTaps:
     def test_repeat_play_start_stop_taps(self):
+        # The switch while playing live; Restart and Stop while replaying
         sm = TouchStateMachine(WIDTH, HEIGHT)
-        for xy, expected_zone in (
-            (REPEAT_PLAY_XY, TouchZone.REPEAT_PLAY),
-            (REPEAT_START_XY, TouchZone.REPEAT_START),
-            (REPEAT_STOP_XY, TouchZone.REPEAT_STOP),
+        for surface, xy, expected_zone in (
+            (SURFACE_REPEAT, REPEAT_PLAY_XY, TouchZone.REPEAT_PLAY),
+            (SURFACE_REPEAT_REPLAY, REPEAT_START_XY, TouchZone.REPEAT_START),
+            (SURFACE_REPEAT_REPLAY, REPEAT_STOP_XY, TouchZone.REPEAT_STOP),
         ):
-            sm.set_surface(SURFACE_REPEAT, False, now=0.0)
+            sm.set_surface(surface, False, now=0.0)
             sm.on_filter_event(release_event(), now=0.0)
             actions = sm.on_filter_event(press_event(xy), now=0.1)
             tap = next(a for a in actions if a.kind == ACTION_ZONE_TAP)

@@ -690,7 +690,7 @@ class TestInfoValueView:
 
 class TestCompactRepeatEnable:
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
-    def test_label_and_arm_dot_present_on_the_full_width_bottom_row(self, compositor, metrics):
+    def test_the_bottom_row_is_lit_while_armed_with_a_dark_label(self, compositor, metrics):
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
         disarmed = compositor.compose_repeat(
             metrics.width, metrics.height, _repeat_state(layout="enable", armed=False),
@@ -700,34 +700,28 @@ class TestCompactRepeatEnable:
             metrics.width, metrics.height, _repeat_state(layout="enable", armed=True),
             rotate=False, bgr=False, metrics=metrics,
         )
-        assert list(disarmed.crop(c.bottom_row).getdata()) != list(armed.crop(c.bottom_row).getdata())
-        assert _has_near_white_pixel(armed.crop(c.bottom_row))
+        x0, y0, x1, y1 = c.bottom_row
+        corner = (x0 + 2, y1 - 3)
+        assert sum(armed.getpixel(corner)) > sum(disarmed.getpixel(corner)) + 3 * 100
+        # Disarmed: a white label on the dimmed artwork; armed: a dark one
+        assert _has_near_white_pixel(disarmed.crop(c.bottom_row))
+        assert any(max(p) < 60 for p in armed.crop(c.bottom_row).getdata())
+        # Only the bottom row changes
+        assert list(disarmed.crop(c.tl).getdata()) == list(armed.crop(c.tl).getdata())
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_repeat_play_label_fits_the_row_without_truncation(self, metrics):
-        # Regression test for a real bug: the label used to be truncated to
-        # "Repea..." because the arm-dot box was the row's own (much taller,
-        # on compact, than the base tier's row ever is) height, leaving too
-        # little width for the label. _draw_toggle_row's compact caller now
-        # passes a smaller, fixed-width dot_box (metrics.icon) instead -- see
-        # _body_compact_toggle. Mirrors that function's own arithmetic
-        # exactly so a regression in the wiring (not just the geometry
-        # rule) would be caught.
+        # The label is centred on the full bottom row with no control beside
+        # it, so the whole row less its padding is the label's room
         c = compact_layout_for(metrics.width, metrics.height, metrics=metrics)
-        pad = metrics.pad
-        row_rect = c.bottom_row
-        dot_box = metrics.icon
-        dot_x0 = row_rect[2] - pad - dot_box
-        label_rect_x1 = dot_x0 - pad
-        label_max_w = (label_rect_x1 - row_rect[0]) - pad  # _draw_label's own max_w
+        row_w = c.bottom_row[2] - c.bottom_row[0]
 
         from PIL import ImageDraw
         font = _load_font(metrics.font_body)
         draw = ImageDraw.Draw(Image.new("RGB", (metrics.width, metrics.height)))
         bbox = draw.textbbox((0, 0), "Repeat Play", font=font)
         text_w = bbox[2] - bbox[0]
-        assert text_w <= label_max_w, (text_w, label_max_w)
-        assert _truncate_to_width(draw, "Repeat Play", font, label_max_w) == "Repeat Play"
+        assert text_w <= row_w - 2 * metrics.pad, (text_w, row_w)
 
     @pytest.mark.parametrize("metrics", [_COMPACT_240, _COMPACT_128])
     def test_repeat_play_label_renders_whole_not_ellipsised(self, compositor, metrics):

@@ -68821,7 +68821,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "repeat",
+        "repeat_replay",
         true,
         true,
         true,
@@ -68878,7 +68878,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "repeat",
+        "repeat_replay",
         true,
         true,
         true,
@@ -68935,7 +68935,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "repeat",
+        "repeat_replay",
         true,
         true,
         true,
@@ -90581,7 +90581,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "repeat",
+        "repeat_replay",
         true,
         true,
         false,
@@ -91109,7 +91109,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "repeat",
+        "repeat_replay",
         true,
         true,
         false,
@@ -91166,7 +91166,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "repeat",
+        "repeat_replay",
         true,
         true,
         false,
@@ -91228,7 +91228,7 @@
       "showing": "logo",
       "source_artwork_url": "",
       "touch_surface": [
-        "repeat",
+        "repeat_replay",
         true,
         true,
         false,

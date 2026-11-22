@@ -1090,7 +1090,7 @@ class TestScreenPolicyTable:
     def test_only_repeat_has_a_replay_surface(self):
         with_replay = {name for name, policy in SCREEN_POLICIES.items() if policy.replay_surface is not None}
         assert with_replay == {"repeat"}
-        assert SCREEN_POLICIES["repeat"].replay_surface == ("repeat_replay", True, True, False)
+        assert SCREEN_POLICIES["repeat"].replay_surface == ("repeat_replay", True, True, True)
 
 
 class TestCompactWrapPaging:

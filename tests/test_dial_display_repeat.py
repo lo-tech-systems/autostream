@@ -1246,7 +1246,9 @@ class TestCompactRepeatSurfaceFlip:
             display._repaint_current_locked()
         assert display.touch_surface()[0] == "repeat"
 
-    def test_never_reports_repeat_replay_off_compact(self):
+    def test_reports_repeat_replay_off_compact_too(self):
+        # Restart and Stop sit where the enable layout's switch is, so the
+        # larger tiers have their own replaying geometry as well
         aid = "5" * 20
         t = _target(name="Kitchen", service_name="Kitchen", appliance_id=aid)
         display, fb, gt = make_display(targets=[t])  # base tier, 160x128
@@ -1255,10 +1257,11 @@ class TestCompactRepeatSurfaceFlip:
         display.cycle_pages()
         with display._lock:
             display._repaint_current_locked()
+        assert display.touch_surface()[0] == "repeat"
         seed_repeat(aid, _repeat_obj(state="replaying", replay={"active": True, "position_seconds": 1.0, "duration_seconds": 30.0}))
         with display._lock:
             display._repaint_current_locked()
-        assert display.touch_surface()[0] == "repeat"
+        assert display.touch_surface()[0] == "repeat_replay"
 
 
 class TestCompactTimeTapBack:

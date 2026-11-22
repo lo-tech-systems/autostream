@@ -257,16 +257,20 @@ layouts depending on state.
 Shown while a live source is recording, pending, or idle with repeat
 switched on:
 
-![Repeat enable screen: "Repeat Play" label with a solid dot showing it's armed](images/repeat-enable-rich.png)
+![Repeat enable screen: the artwork with "Repeat Play" and an on switch in the bottom bar](images/repeat-enable-rich.png)
 
-*Rich: the toggle row. A solid dot means armed; a hollow ring means
-disarmed. Tap the row to flip it. The appliance disarms repeat by itself
+*Rich: the artwork, with "Repeat Play" and its switch in the bottom bar.
+The switch is white with its knob at the right when repeat is armed, and
+an outline with its knob at the left when it's disarmed. Tap the right-hand
+half of the bar to flip it. Tapping the artwork hides the bars for a few
+seconds, as on the now-playing page. The appliance disarms repeat by itself
 once no speaker has been on for 5 minutes, keeping the recording.*
 
-![The same enable screen on a compact panel](images/repeat-enable-compact.png)
+![The same enable screen on a compact panel, the "Repeat Play" row lit](images/repeat-enable-compact.png)
 
-*Compact: the same toggle spans the whole bottom row, with the dots cell
-top left to back out.*
+*Compact: "Repeat Play" fills the whole bottom row. While repeat is armed
+the row is lit, with dark text; disarmed, the text is white on the
+artwork. Tap the row to flip it, or the dots cell top left to back out.*
 
 ### Replaying
 
@@ -328,10 +332,10 @@ shows **Muted** in place of its level.
 
 Tap any other row to open that output's own detail page:
 
-![Output detail page: the output's name and an enable dot, with minus / plus below](images/outputs-detail-rich.png)
+![Output detail page: the output's name and an on switch, with minus / plus below](images/outputs-detail-rich.png)
 
-*The output's own toggle (solid dot = on) and its own minus/plus,
-independent of the appliance's master volume shown top right.*
+*The output's own switch (white, knob at the right = on) and its own
+minus/plus, independent of the appliance's master volume shown top right.*
 
 Tap the X (where the page dots normally sit) to go back to the list, or the
 row itself to switch that output on or off. Compact panels have no volume

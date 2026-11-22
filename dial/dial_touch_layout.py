@@ -231,11 +231,8 @@ CARD_BUTTON_ZONES = (TouchZone.CARD_BUTTON_0, TouchZone.CARD_BUTTON_1, TouchZone
 GEOMETRY_MAIN = "main"
 GEOMETRY_LIST = "list"
 GEOMETRY_REPEAT = "repeat"
-# The repeat screen's OWN replaying-layout geometry. Off the compact tier
-# this is identical, byte for byte, to GEOMETRY_REPEAT — the large tiers
-# share one row/start/stop table between the enable and replaying layouts —
-# so the name is valid everywhere; only the compact tier gives the two
-# repeat-screen states different rectangles (see _repeat_replay_zone_rects).
+# The repeat screen's OWN replaying-layout geometry: Restart/Stop where the
+# enable layout has its "Repeat Play" control (see _repeat_replay_zone_rects).
 GEOMETRY_REPEAT_REPLAY = "repeat_replay"
 GEOMETRY_IDLE = "idle"
 GEOMETRY_OUTPUT = "output"
@@ -443,15 +440,12 @@ def _repeat_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" 
             ZoneRect(TouchZone.DOTS, c.tl),
             ZoneRect(TouchZone.REPEAT_PLAY, c.bottom_row),
         )
+    # The enable layout: the artwork between the bands, "Repeat Play" and
+    # its switch in the bottom band. The switch's half of the band toggles
+    # it; the label's half is dead. An artwork tap hides the bands.
     layout = repeat_layout_for(width, height, metrics=metrics)
     return _top_band_rects(layout, metrics) + (
-        ZoneRect(TouchZone.REPEAT_PLAY, layout.row),
-        ZoneRect(TouchZone.REPEAT_START, layout.start),
-        ZoneRect(TouchZone.REPEAT_STOP, layout.stop),
-        # Last: the row above already owns most of the strip, so this only
-        # catches the gaps between the row and the bands; a tap there is an
-        # artwork tap, meaningful only while a replay runs (the display
-        # decides, as for every zone here).
+        ZoneRect(TouchZone.REPEAT_PLAY, layout.toggle),
         ZoneRect(TouchZone.ARTWORK, layout.artwork),
     )
 
@@ -460,12 +454,11 @@ def _repeat_replay_zone_rects(
     width: int, height: int, metrics: "LayoutMetrics | None" = None,
 ) -> tuple[ZoneRect, ...]:
     """GEOMETRY_REPEAT_REPLAY: the repeat screen's OWN replaying-layout
-    table. Off the compact tier this is _repeat_zone_rects() itself, byte
-    for byte — the large tiers share one row/start/stop table between the
-    enable and replaying layouts, so there is nothing of its own to
-    describe there; only compact gives the replaying layout different
-    rectangles, its own 2x2: back top-left, time top-right (display-only —
-    absent from the table), Restart bottom-left, Stop bottom-right."""
+    table. Off the compact tier: the top band, Restart and Stop in the two
+    halves of the bottom band, and the artwork between (a tap there hides
+    the bands while a replay runs; the display decides). Compact has its
+    own 2x2: back top-left, time top-right (display-only — absent from the
+    table), Restart bottom-left, Stop bottom-right."""
     if metrics is None:
         metrics = metrics_for(width, height)
     if metrics.content_tier == CONTENT_COMPACT:
@@ -475,7 +468,12 @@ def _repeat_replay_zone_rects(
             ZoneRect(TouchZone.REPEAT_START, c.bl),
             ZoneRect(TouchZone.REPEAT_STOP, c.br),
         )
-    return _repeat_zone_rects(width, height, metrics=metrics)
+    layout = repeat_layout_for(width, height, metrics=metrics)
+    return _top_band_rects(layout, metrics) + (
+        ZoneRect(TouchZone.REPEAT_START, layout.start),
+        ZoneRect(TouchZone.REPEAT_STOP, layout.stop),
+        ZoneRect(TouchZone.ARTWORK, layout.artwork),
+    )
 
 
 def _idle_zone_rects(width: int, height: int, metrics: "LayoutMetrics | None" = None) -> tuple[ZoneRect, ...]:
@@ -642,13 +640,13 @@ class RepeatLayout:
     geometry as the main screen's top band): the dots and the name label
     stay tappable here (== the DOTS/NAME zones); the volume cluster opens
     the outputs list, same as main (== the OUTPUTS zone in
-    the REPEAT geometry). `row` is the full-width middle row used by the
-    enable layout's "Repeat Play" toggle (== the REPEAT_PLAY zone); `line`
-    shares that same rectangle for the replaying layout's centred
-    "m:ss / m:ss" position text — only one of the two layouts is ever on
-    screen at a time, so the two never actually compete for it. `start`/
-    `stop` are exactly the DOWN/UP zone rectangles, relabelled Restart/Stop
-    text glyphs for the replaying layout."""
+    the REPEAT geometry). `row` is the full-width middle row (the
+    per-output page's toggle row reuses it); `line` shares that same
+    rectangle for the replaying layout's centred "m:ss / m:ss" position
+    text. `start`/`stop` are exactly the DOWN/UP zone rectangles, relabelled
+    Restart/Stop text glyphs for the replaying layout; `toggle` is the same
+    right half of the bottom band, where the enable layout draws its
+    "Repeat Play" switch (== the REPEAT_PLAY zone)."""
 
     dots: Rect
     name: Rect
@@ -657,6 +655,7 @@ class RepeatLayout:
     line: Rect
     start: Rect
     stop: Rect
+    toggle: Rect
     divider_x: int
     top_band: Rect
     bottom_band: Rect
@@ -1139,6 +1138,7 @@ def repeat_layout_for(width: int, height: int, metrics: "LayoutMetrics | None" =
         line=row,
         start=layout.down,
         stop=layout.up,
+        toggle=layout.up,
         divider_x=layout.divider_x,
         top_band=layout.top_band,
         bottom_band=layout.bottom_band,

@@ -1088,13 +1088,24 @@ class TestRowWash:
         assert bright(playing_only) == bright(current_and_playing)
 
 
-def _repeat_dot_rect(layout, width=160, height=128):
-    """The enable layout's "Repeat Play" row dot marker rect — mirrors the
-    geometry _body_repeat_row() itself computes."""
-    pad = metrics_for(width, height).pad
-    row = layout.row
-    dot_box = row[3] - row[1]
-    return (row[2] - pad - dot_box, row[1], row[2] - pad, row[3])
+def _switch_rect(row, width=160, height=128):
+    """The on/off switch's rect when drawn in *row* — mirrors the geometry
+    _draw_toggle_row() itself computes."""
+    from dial_display_draw import SWITCH_ASPECT
+    from dial_display_render import _SWITCH_BAND_FRACTION
+    metrics = metrics_for(width, height)
+    band = repeat_layout_for(width, height, metrics=metrics).bottom_band
+    sh = max(4, round((band[3] - band[1]) * _SWITCH_BAND_FRACTION))
+    sw = round(sh * SWITCH_ASPECT)
+    top = (row[1] + row[3]) // 2 - sh // 2
+    return (row[2] - metrics.pad - sw, top, row[2] - metrics.pad, top + sh)
+
+
+def _switch_knob_probe(row, width=160, height=128):
+    """Where the knob sits while on (the track's right end); while off the
+    track's inside shows through there."""
+    x0, y0, x1, y1 = _switch_rect(row, width, height)
+    return (x1 - (y1 - y0) // 2, (y0 + y1) // 2)
 
 
 class TestComposeRepeatEnableLayout:
@@ -1108,20 +1119,27 @@ class TestComposeRepeatEnableLayout:
         result = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
         assert result.size == (160, 128)
 
-    def test_row_dot_hollow_when_unarmed(self, compositor):
+    def test_switch_off_shows_the_band_inside_its_track(self, compositor):
         layout = repeat_layout_for(160, 128)
-        x0, y0, x1, y1 = _repeat_dot_rect(layout)
-        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        probe = _switch_knob_probe(layout.bottom_band)
         result = compositor.compose_repeat(160, 128, _repeat_state(armed=False), rotate=False, bgr=False)
-        # Hollow: the centre stays background, only the outline is drawn.
-        assert result.getpixel((cx, cy)) == (16, 16, 16)
+        # The outline track is hollow: the dark band shows through
+        assert max(result.getpixel(probe)) < 100
 
-    def test_row_dot_solid_when_armed(self, compositor):
+    def test_switch_on_has_its_white_knob_at_the_right(self, compositor):
         layout = repeat_layout_for(160, 128)
-        x0, y0, x1, y1 = _repeat_dot_rect(layout)
-        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        probe = _switch_knob_probe(layout.bottom_band)
         result = compositor.compose_repeat(160, 128, _repeat_state(armed=True), rotate=False, bgr=False)
-        assert result.getpixel((cx, cy)) == (255, 255, 255)
+        assert result.getpixel(probe) == (255, 255, 255)
+
+    def test_the_switch_is_in_the_bottom_band_and_the_middle_is_artwork(self, compositor):
+        layout = repeat_layout_for(160, 128)
+        base = Image.new("RGB", (160, 128), (200, 50, 50))
+        on = compositor.compose_repeat(160, 128, _repeat_state(armed=True), base=base, rotate=False, bgr=False)
+        off = compositor.compose_repeat(160, 128, _repeat_state(armed=False), base=base, rotate=False, bgr=False)
+        assert list(on.crop(layout.toggle).getdata()) != list(off.crop(layout.toggle).getdata())
+        assert list(on.crop(layout.row).getdata()) == list(off.crop(layout.row).getdata())
+        assert on.getpixel((layout.row[0] + 2, (layout.row[1] + layout.row[3]) // 2)) == (200, 50, 50)
 
     def test_row_content_differs_between_layouts(self, compositor):
         layout = repeat_layout_for(160, 128)
@@ -1147,22 +1165,14 @@ class TestComposeRepeatEnableLayout:
         blank = Image.new("RGB", (160, 128), (16, 16, 16))
         assert list(result.crop(layout.dots).getdata()) != list(blank.crop(layout.dots).getdata())
 
-    def test_pressed_row_highlight(self, compositor):
+    def test_pressed_switch_highlights_its_half_of_the_band(self, compositor):
         layout = repeat_layout_for(160, 128)
         unpressed = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
         pressed = compositor.compose_repeat(
             160, 128, _repeat_state(pressed=TouchZone.REPEAT_PLAY), rotate=False, bgr=False,
         )
-        assert list(unpressed.crop(layout.row).getdata()) != list(pressed.crop(layout.row).getdata())
-
-    def test_no_volume_buttons_drawn(self, compositor):
-        """The enable layout has no bottom +/- volume controls — the top
-        band's mute/volume readout is display-only on this screen."""
-        layout = repeat_layout_for(160, 128)
-        flat_bg = Image.new("RGB", (160, 128), (16, 16, 16))
-        result = compositor.compose_repeat(160, 128, _repeat_state(), rotate=False, bgr=False)
-        assert list(result.crop(layout.start).getdata()) == list(flat_bg.crop(layout.start).getdata())
-        assert list(result.crop(layout.stop).getdata()) == list(flat_bg.crop(layout.stop).getdata())
+        assert list(unpressed.crop(layout.toggle).getdata()) != list(pressed.crop(layout.toggle).getdata())
+        assert list(unpressed.crop(layout.row).getdata()) == list(pressed.crop(layout.row).getdata())
 
     def test_never_raises_with_no_font(self, compositor):
         with patch("dial_display_draw.ImageFont.truetype", side_effect=OSError("no font")), \
@@ -1334,13 +1344,13 @@ class TestComposeRepeatReplayingLayout:
         probe = (layout.row[0] + 2, (layout.row[1] + layout.row[3]) // 2)
         assert result.getpixel(probe) == (200, 50, 50)
 
-    def test_base_image_ignored_in_enable_layout(self, compositor):
+    def test_base_image_drawn_in_enable_layout_too(self, compositor):
         layout = repeat_layout_for(160, 128)
         base = Image.new("RGB", (160, 128), (200, 50, 50))
         state = _repeat_state(layout="enable")
         result = compositor.compose_repeat(160, 128, state, base=base, rotate=False, bgr=False)
         probe = (layout.row[0] + 2, (layout.row[1] + layout.row[3]) // 2)
-        assert result.getpixel(probe) == (16, 16, 16)
+        assert result.getpixel(probe) == (200, 50, 50)
 
     def test_top_and_bottom_bands_dim_the_base_image(self, compositor):
         layout = repeat_layout_for(160, 128)
