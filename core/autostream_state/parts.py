@@ -30,6 +30,7 @@ from track_id.models import (
 
 from .freeze import FrozenDict, thaw
 from .origin import Origin
+from .player_model import taking_audio
 
 
 # ---------------------------------------------------------------------------
@@ -293,13 +294,11 @@ class OutputsPart:
         return tuple(u for u in self.units if u.selected and not u.offline)
 
     def playing_units(self) -> tuple[OutputUnitView, ...]:
-        """The selected units the player has that take the audio. Judged per
-        row: a row with a session (owntone-mini) counts while it is
-        connected or streaming, so a speaker being retried or failing does
-        not; a row with none (upstream OwnTone) counts while selected, as in
-        selected_units()."""
-        return tuple(u for u in self.selected_units()
-                     if u.reported.session_state in ("", "connected", "streaming"))
+        """The selected units the player has that take the audio, judged per
+        row (player_model.taking_audio): a speaker being retried or failing
+        does not count; with a player whose rows carry no session (upstream
+        OwnTone) every selected unit does, as in selected_units()."""
+        return tuple(u for u in self.selected_units() if taking_audio(u.reported))
 
     def reported_rows(self) -> tuple[OutputInfo, ...]:
         """The player's last row of every unit that has one, in row order."""
