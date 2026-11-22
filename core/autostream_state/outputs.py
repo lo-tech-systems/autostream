@@ -75,7 +75,10 @@ LOG = logging.getLogger("autostream.outputs")
 READ_TIMEOUT_S = 10.0
 WRITE_TIMEOUT_S = 3.0
 SAFETY_READ_S = 60.0
-START_PENDING_S = 120.0
+# A start the player accepted but never reports on ends after this long. Above
+# owntone-mini's slowest give-up: three attempts with every request at its
+# limit, and its two retry gaps between them, take about 116 s
+START_PENDING_S = 150.0
 DEBOUNCE_S = 2.0
 DEVICE_VOLUME_MARK_S = 2.0
 ABSENT_KEEP_S = 60.0

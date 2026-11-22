@@ -83,15 +83,19 @@ Update every appliance and every dial together, as for 0.8.0.
 - fixed: a stereo pair, or HomePods with their Apple TV, no longer show as
   failed and off while one of the speakers plays. One that fails to start
   while the other plays is tried again a few seconds later.
-- changed: a speaker that drops out is tried again once, 5 seconds later.
-  After that, a speaker you chose is switched off and a message says it
-  failed; a default speaker keeps being tried again while the session plays,
+- changed: a speaker that fails to start or drops out is tried again twice,
+  2 seconds and then 3 seconds later. After that, a speaker you chose is
+  switched off and a message says it failed; a default speaker keeps being tried again while the session plays,
   after 10, 20 and 30 seconds and then every 30 seconds, with no message.
 - new: a default stereo pair, or HomePods behind an Apple TV, with one of its
   speakers missing is asked again on the same schedule, which brings the
   missing speaker back without interrupting the one playing.
 - changed: a speaker that comes back while its group is paused stays paused
   with the rest of the group.
+- changed: a speaker left on Automatic plays AirPlay 2 whenever it offers it,
+  and AirPlay 1 only when it has no AirPlay 2. Before, a speaker with no
+  buffered AirPlay 2 played AirPlay 1. A speaker that plays better on AirPlay
+  1 can be set to it in its speaker settings.
 - fixed: a replay, or a session with repeat on, whose speakers are switched on
   but can't be reached is stopped after 5 minutes like one with no speakers
   on. Before, a default speaker being retried kept it going to nobody for as

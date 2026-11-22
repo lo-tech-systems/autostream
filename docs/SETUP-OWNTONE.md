@@ -76,7 +76,9 @@ don't see them.
 With buffered audio off, or on a speaker that doesn't support it, the mode
 drop-down offers:
 
-- **Auto** - let the backend choose the best available transport.
+- **Auto** - AirPlay 2 whenever the speaker offers it (buffered when the
+  speaker supports it and buffered audio is on), AirPlay 1 only when it has
+  no AirPlay 2.
 - **AirPlay** - force classic AirPlay 1.
 - **AirPlay 2** - force standard AirPlay 2.
 

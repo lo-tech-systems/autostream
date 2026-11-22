@@ -2035,7 +2035,7 @@ class TestReconcile:
         w.fb.results = [error("timeout")]
         w.a.select("1", Origin.SESSION, volume=30)
         put(w, [group_row(1, "stopped", selected=False)])
-        at(w, 121)
+        at(w, START_PENDING_S + 1)
         u = snap().unit("1")
         assert u.selected is True and u.availability == "failed"
         assert snap().start_failure is None
@@ -2047,7 +2047,7 @@ class TestReconcile:
         w.fb.results = [error("timeout")]
         w.a.select("1", Origin.USER, volume=30)
         put(w, [group_row(1, "stopped", selected=False)])
-        at(w, 121)
+        at(w, START_PENDING_S + 1)
         assert snap().unit("1").selected is False
         assert snap().start_failure.reason == "timed_out"
 
