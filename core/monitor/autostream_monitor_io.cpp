@@ -1991,23 +1991,16 @@ void InputChannel::apply_output_chain(int out_frames)
     // ── Apply per-channel EQ ──────────────────────────────────
     // Check whether _eq_chain has published a new band list since
     // the last block.  If so, rebuild local filters with freshly
-    // zeroed delay-line state.  The shared_ptr comparison is a
-    // pointer equality check — no allocation.
+    // zeroed delay-line state, leaving out every band at 0 dB, so a
+    // flat EQ costs nothing and touches nothing. The shared_ptr
+    // comparison is a pointer equality check — no allocation.
     auto latest_bands = _eq_chain.get_bands();
     if (latest_bands != _current_eq_bands)
     {
         _current_eq_bands = latest_bands;
         _local_filters.clear();
         if (latest_bands)
-        {
-            float sr = _eq_chain.sample_rate();
-            for (const auto& band : *latest_bands)
-            {
-                BiquadFilter f;
-                f.configure(band, sr);
-                _local_filters.push_back(f);
-            }
-        }
+            build_eq_filters(*latest_bands, _eq_chain.sample_rate(), _local_filters);
     }
     for (auto& filter : _local_filters)
         filter.process(_float_out.data(), out_frames);

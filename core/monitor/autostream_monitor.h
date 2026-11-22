@@ -204,6 +204,18 @@ private:
     float                                        _sample_rate = 0.0f;
 };
 
+// True for a band that leaves the audio as it is: a Peak, LowShelf or
+// HighShelf at exactly 0 dB. A LowPass or HighPass always shapes the audio.
+bool eq_band_is_identity(const EqBand& band);
+
+// Replaces `filters` with one freshly reset filter per band that is not an
+// identity band, in band order. An identity biquad is not exact in float, so
+// leaving it out keeps a flat band from touching the audio at all, and the
+// bands that are set still run. Each caller rebuilds whenever a new band
+// list is published, so a band moved off 0 dB is back from the next block.
+void build_eq_filters(const std::vector<EqBand>& bands, float sample_rate,
+                      std::vector<BiquadFilter>& filters);
+
 
 // =============================================================================
 // OutputGainState

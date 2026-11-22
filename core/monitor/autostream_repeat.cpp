@@ -2823,14 +2823,8 @@ ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
         ctx.replay_eq_bands_cache = ctx.live_dsp.eq_bands;
         ctx.replay_filters.clear();
         if (ctx.replay_eq_bands_cache)
-        {
-            for (const auto& band : *ctx.replay_eq_bands_cache)
-            {
-                BiquadFilter f;
-                f.configure(band, ctx.live_dsp.eq_sample_rate);
-                ctx.replay_filters.push_back(f);
-            }
-        }
+            build_eq_filters(*ctx.replay_eq_bands_cache, ctx.live_dsp.eq_sample_rate,
+                             ctx.replay_filters);
     }
 
     ctx.pcm_staging.clear();

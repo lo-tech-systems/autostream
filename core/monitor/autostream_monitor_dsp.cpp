@@ -163,6 +163,27 @@ void EqChain::set_bands(const std::vector<EqBand>& bands, float sample_rate)
     _sample_rate = sample_rate;
 }
 
+bool eq_band_is_identity(const EqBand& band)
+{
+    if (band.type == EqBand::Type::LowPass || band.type == EqBand::Type::HighPass)
+        return false;
+    return band.gain_db == 0.0f;
+}
+
+void build_eq_filters(const std::vector<EqBand>& bands, float sample_rate,
+                      std::vector<BiquadFilter>& filters)
+{
+    filters.clear();
+    for (const auto& band : bands)
+    {
+        if (eq_band_is_identity(band))
+            continue;
+        BiquadFilter f;
+        f.configure(band, sample_rate);
+        filters.push_back(f);
+    }
+}
+
 std::shared_ptr<const std::vector<EqBand>> EqChain::get_bands() const
 {
     // Return a copy of the shared_ptr; the refcount increment is the only
@@ -193,12 +214,7 @@ void OutputProcessor::set_bands(const std::vector<EqBand>& bands, float sample_r
     bool is_flat = true;
     for (const auto& b : bands)
     {
-        if (b.type == EqBand::Type::LowPass || b.type == EqBand::Type::HighPass)
-        {
-            is_flat = false;
-            break;
-        }
-        if (b.gain_db != 0.0f)
+        if (!eq_band_is_identity(b))
         {
             is_flat = false;
             break;
@@ -236,15 +252,7 @@ void OutputProcessor::apply(float* samples, int n_frames)
             _current_bands = latest;
             _local_filters.clear();
             if (latest)
-            {
-                float sr = _eq_chain.sample_rate();
-                for (const auto& band : *latest)
-                {
-                    BiquadFilter f;
-                    f.configure(band, sr);
-                    _local_filters.push_back(f);
-                }
-            }
+                build_eq_filters(*latest, _eq_chain.sample_rate(), _local_filters);
         }
 
         for (auto& filter : _local_filters)

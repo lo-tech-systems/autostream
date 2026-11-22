@@ -1801,6 +1801,149 @@ static void test_float_to_s16_vs_float_to_s32_shifted_scaling_equivalence()
 }
 
 // ---------------------------------------------------------------------------
+// Flat-band bypass
+// ---------------------------------------------------------------------------
+
+static EqBand make_band(EqBand::Type type, float freq_hz, float gain_db)
+{
+    EqBand b;
+    b.type    = type;
+    b.freq_hz = freq_hz;
+    b.gain_db = gain_db;
+    b.q       = 0.707f;
+    return b;
+}
+
+// Interleaved stereo test signal: a few tones, different on each channel.
+static std::vector<float> music(int frames)
+{
+    std::vector<float> s(static_cast<size_t>(frames) * 2);
+    for (int f = 0; f < frames; ++f)
+    {
+        double t = f / 48000.0;
+        s[f * 2]     = static_cast<float>(0.3 * std::sin(2 * M_PI * 110 * t) + 0.2 * std::sin(2 * M_PI * 3100 * t));
+        s[f * 2 + 1] = static_cast<float>(0.25 * std::sin(2 * M_PI * 440 * t + 0.4) + 0.1 * std::sin(2 * M_PI * 9000 * t));
+    }
+    return s;
+}
+
+static void run(std::vector<BiquadFilter>& filters, std::vector<float>& samples)
+{
+    for (auto& f : filters)
+        f.process(samples.data(), static_cast<int>(samples.size() / 2));
+}
+
+static void test_identity_bands()
+{
+    CHECK(eq_band_is_identity(make_band(EqBand::Type::Peak, 1000.0f, 0.0f)), "a Peak at 0 dB is identity");
+    CHECK(eq_band_is_identity(make_band(EqBand::Type::LowShelf, 100.0f, 0.0f)), "a LowShelf at 0 dB is identity");
+    CHECK(eq_band_is_identity(make_band(EqBand::Type::HighShelf, 8000.0f, -0.0f)), "a HighShelf at -0 dB is identity");
+    CHECK(!eq_band_is_identity(make_band(EqBand::Type::Peak, 1000.0f, 0.5f)), "a Peak at 0.5 dB is not");
+    CHECK(!eq_band_is_identity(make_band(EqBand::Type::LowPass, 8000.0f, 0.0f)), "a LowPass never is");
+    CHECK(!eq_band_is_identity(make_band(EqBand::Type::HighPass, 30.0f, 0.0f)), "a HighPass never is");
+}
+
+static void test_flat_bands_are_left_out()
+{
+    std::vector<BiquadFilter> filters(5);
+    build_eq_filters({make_band(EqBand::Type::LowShelf, 100.0f, 0.0f),
+                      make_band(EqBand::Type::Peak, 1000.0f, 0.0f),
+                      make_band(EqBand::Type::HighShelf, 8000.0f, 0.0f)},
+                     48000.0f, filters);
+    CHECK(filters.empty(), "a flat three-band EQ builds no filters");
+
+    auto in = music(4800);
+    auto out = in;
+    run(filters, out);
+    CHECK(out == in, "and leaves the audio bit-exact");
+}
+
+static void test_only_the_set_band_runs()
+{
+    // Low shelf flat, mid +3 dB, treble flat: the result must equal the mid
+    // band on its own, exactly.
+    std::vector<BiquadFilter> skipped;
+    build_eq_filters({make_band(EqBand::Type::LowShelf, 100.0f, 0.0f),
+                      make_band(EqBand::Type::Peak, 1000.0f, 3.0f),
+                      make_band(EqBand::Type::HighShelf, 8000.0f, 0.0f)},
+                     48000.0f, skipped);
+    CHECK(skipped.size() == 1, "one filter for the one band that is set");
+
+    std::vector<BiquadFilter> alone;
+    build_eq_filters({make_band(EqBand::Type::Peak, 1000.0f, 3.0f)}, 48000.0f, alone);
+
+    auto a = music(4800);
+    auto b = a;
+    run(skipped, a);
+    run(alone, b);
+    CHECK(a == b, "the flat bands contribute nothing at all");
+}
+
+static void test_bands_keep_their_order()
+{
+    std::vector<BiquadFilter> filters;
+    build_eq_filters({make_band(EqBand::Type::LowShelf, 100.0f, 4.0f),
+                      make_band(EqBand::Type::Peak, 1000.0f, 0.0f),
+                      make_band(EqBand::Type::HighShelf, 8000.0f, -2.0f)},
+                     48000.0f, filters);
+    CHECK(filters.size() == 2, "two bands are set");
+
+    BiquadFilter low;
+    low.configure(make_band(EqBand::Type::LowShelf, 100.0f, 4.0f), 48000.0f);
+    BiquadFilter high;
+    high.configure(make_band(EqBand::Type::HighShelf, 8000.0f, -2.0f), 48000.0f);
+    std::vector<BiquadFilter> expected = {low, high};
+
+    auto a = music(4800);
+    auto b = a;
+    run(filters, a);
+    run(expected, b);
+    CHECK(a == b, "the set bands run in their original order");
+}
+
+static void test_a_band_moved_off_zero_runs_again()
+{
+    // A live change publishes a new band list and the caller rebuilds: the
+    // band that was skipped is filtering again straight away.
+    std::vector<BiquadFilter> filters;
+    build_eq_filters({make_band(EqBand::Type::Peak, 1000.0f, 0.0f)}, 48000.0f, filters);
+    CHECK(filters.empty(), "skipped while flat");
+    build_eq_filters({make_band(EqBand::Type::Peak, 1000.0f, 6.0f)}, 48000.0f, filters);
+    CHECK(filters.size() == 1, "back as soon as it is set");
+
+    auto a = music(4800);
+    auto in = a;
+    run(filters, a);
+    CHECK(a != in, "and it changes the audio");
+}
+
+static void test_low_and_high_pass_are_never_skipped()
+{
+    std::vector<BiquadFilter> filters;
+    build_eq_filters({make_band(EqBand::Type::HighPass, 30.0f, 0.0f),
+                      make_band(EqBand::Type::LowPass, 15000.0f, 0.0f)},
+                     48000.0f, filters);
+    CHECK(filters.size() == 2, "both filters are built");
+}
+
+static void test_output_eq_stays_flat_for_zero_bands()
+{
+    OutputProcessor p;
+    p.set_bands({make_band(EqBand::Type::LowShelf, 100.0f, 0.0f),
+                 make_band(EqBand::Type::Peak, 1000.0f, 0.0f)}, 48000.0f);
+    auto in = music(480);
+    auto out = in;
+    p.apply(out.data(), 480);
+    CHECK(out == in, "a flat output EQ leaves the audio bit-exact");
+
+    p.set_bands({make_band(EqBand::Type::LowShelf, 100.0f, 0.0f),
+                 make_band(EqBand::Type::Peak, 1000.0f, 4.0f)}, 48000.0f);
+    out = in;
+    p.apply(out.data(), 480);
+    CHECK(out != in, "a band set on the output EQ takes effect");
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -1821,6 +1964,15 @@ int main()
     test_biquad_inf_input_does_not_crash();
     test_biquad_extreme_positive_gain_does_not_crash();
     test_biquad_extreme_negative_gain_does_not_crash();
+
+    // Flat-band bypass
+    test_identity_bands();
+    test_flat_bands_are_left_out();
+    test_only_the_set_band_runs();
+    test_bands_keep_their_order();
+    test_a_band_moved_off_zero_runs_again();
+    test_low_and_high_pass_are_never_skipped();
+    test_output_eq_stays_flat_for_zero_bands();
 
     // EqChain
     test_eq_chain_empty_on_construction();
