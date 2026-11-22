@@ -3084,6 +3084,11 @@ class DialDisplay:
                         self._screen_request = "outputs"
             if state is not None:
                 self._overlay_signal.set()
+            if self._screen == "main" and bool(paused_ids(new.outputs)) != bool(paused_ids(prev.outputs)):
+                # Everything playing paused, or one of them playing again:
+                # the mute cell's pause sign and its pulse come or go, and
+                # with them the controls they hold up
+                self._overlay_signal.set()
         if (new.outputs_request != prev.outputs_request and self._outputs is not None
                 and self._screen in ("outputs", "output")):
             # The value a tap shows goes once the appliance's state has caught

@@ -1222,6 +1222,31 @@ class TestLogoOverlayGating:
         assert display.persistent_overlay_shown() is False
         assert display._alert_pulse_deadline() is None
 
+    def test_everything_paused_coming_or_going_repaints_the_main_screen(self):
+        """The pulse stops waking the loop the moment the state clears, so
+        the change itself must repaint, or the last pulse frame stays up;
+        and the start must repaint to bring held controls up."""
+        import dataclasses
+        t = _target()
+        display, fb, gt = make_display(targets=[t])
+        display.enable()
+        _poll_with_artwork(display, fb)
+        base = display.core.snapshot()
+        paused = dataclasses.replace(base, outputs=OutputsState(
+            "a", (OutputRow("1", "Lounge", True, 40, paused=True),), True, 0.0))
+        playing = dataclasses.replace(base, outputs=OutputsState(
+            "a", (OutputRow("1", "Lounge", True, 40),), True, 0.0))
+        for prev, new in ((playing, paused), (paused, playing)):
+            display._overlay_signal.consume()
+            display._follow_screen_data(prev, new)
+            assert display._overlay_signal.is_set()
+        # A change that leaves everything paused as it was asks for nothing
+        louder = dataclasses.replace(base, outputs=OutputsState(
+            "a", (OutputRow("1", "Lounge", True, 50),), True, 0.0))
+        display._overlay_signal.consume()
+        display._follow_screen_data(playing, louder)
+        assert not display._overlay_signal.is_set()
+
     def test_the_pulse_wakes_the_loop_on_each_step(self):
         import dial_volume as dv
         t = _target()
