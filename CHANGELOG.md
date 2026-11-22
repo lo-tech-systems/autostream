@@ -1,8 +1,10 @@
 # Changelog
 
-## Version 0.8.1 (not yet released)
+## Version 0.8.0-beta.2 - 2026-11-22
 
-Update every appliance and every dial together, as for 0.8.0.
+Update every appliance and every dial together, as for 0.8.0-beta.1. The
+update rebuilds owntone-mini (now 1.6.1), which takes a long time on a Pi
+Zero 2 W.
 
 ### Highlights
 
@@ -10,6 +12,9 @@ Update every appliance and every dial together, as for 0.8.0.
   for wired devices.
 - Pairing works from either side on one screen: autostream searches and can be
   found at the same time, and nothing pairs until you tap it.
+- A speaker that fails to start or drops out is tried again quickly, and a
+  stereo pair missing one of its speakers is asked again until it comes back.
+- Pause all pauses every speaker, and Play on any of them brings them all back.
 
 ### Inputs
 
@@ -130,6 +135,17 @@ Update every appliance and every dial together, as for 0.8.0.
   but can't be reached is stopped after 5 minutes like one with no speakers
   on. Before, a default speaker being retried kept it going to nobody for as
   long as the speaker was still listed.
+- fixed: an AirPlay 2 speaker played after a pause and resume but still showed
+  Connecting until it was switched off.
+- fixed: the player stopped, taking every speaker with it, when a speaker was
+  started while the network was down.
+- fixed: on the small-screen dial, a speaker just switched on showed the level
+  it had before, often the old master level, rather than the level it starts
+  at.
+
+### System
+
+- changed: owntone-mini 1.6.1.
 
 ## Version 0.8.0-beta.1 - 2026-11-18
 
