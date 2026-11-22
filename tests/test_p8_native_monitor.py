@@ -384,6 +384,19 @@ class TestActivityGateSourceInspection:
         n = io_src.count("_activity_gate.on_block(")
         assert n == 1, f"expected one _activity_gate.on_block( call, found {n}"
 
+    def test_metering_counts_signal_once_per_block(self, io_src):
+        assert io_src.count("_detect_peak.block_peak_and_signal(") == 1
+        assert "_detect_peak.block_peak(" not in io_src
+        repeat_src = _read_source(REPO_ROOT / "core" / "monitor" / "autostream_repeat.cpp")
+        assert "block_peak_and_signal(" not in repeat_src, (
+            "replay's gap detection keeps the plain peak"
+        )
+
+    def test_gate_counts_signal_time(self, io_src):
+        body = self._squash(self._silence_state_body(io_src))
+        assert "signal_time(signal, _capture_rate_hz).seconds" in body
+        assert "else if (signal.frames > 0)" in body
+
     def test_capture_rate_copied_once_in_start(self, io_src):
         needle = "_capture_rate_hz = _alsa.actual_rate();"
         assert io_src.count(needle) == 1, "capture rate must be copied exactly once"

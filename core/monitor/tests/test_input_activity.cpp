@@ -36,11 +36,19 @@ static int g_failed = 0;
 
 static const float kBoundary = -55.0f;
 
-// Feeds one block with a fixed level, for the tests that only count time.
+// Feeds one block with a fixed level, all of it signal, for the tests that
+// only count time.
 static bool feed(ActivityGate& gate, double now, double block_seconds)
 {
     ActivityGateReport r;
-    return gate.on_block(now, block_seconds, 0.5f, 0.01, r);
+    return gate.on_block(now, block_seconds, block_seconds, 0.5f, 0.01, r);
+}
+
+// Feeds one block of which only signal_seconds counted as signal.
+static bool feed_signal(ActivityGate& gate, double now, double block_seconds, double signal_seconds)
+{
+    ActivityGateReport r;
+    return gate.on_block(now, block_seconds, signal_seconds, 0.5f, 0.01, r);
 }
 
 static bool near(double a, double b)
@@ -230,11 +238,12 @@ static void test_fire_reports_what_it_counted()
 {
     ActivityGate gate;
     ActivityGateReport r;
-    CHECK(!gate.on_block(1.000, 0.021, 0.25f, 0.010, r), "first block");
-    CHECK(!gate.on_block(1.021, 0.021, 0.50f, 0.040, r), "second block");
-    CHECK(gate.on_block(1.100, 0.021, 0.10f, 0.004, r), "third block fires");
+    CHECK(!gate.on_block(1.000, 0.021, 0.021, 0.25f, 0.010, r), "first block");
+    CHECK(!gate.on_block(1.021, 0.021, 0.021, 0.50f, 0.040, r), "second block");
+    CHECK(gate.on_block(1.100, 0.021, 0.021, 0.10f, 0.004, r), "third block fires");
     CHECK(r.blocks == 3, "three blocks counted");
     CHECK(near(r.above_seconds, 0.063), "63 ms above the threshold");
+    CHECK(near(r.block_seconds, 0.063), "in 63 ms of blocks");
     CHECK(near(r.span_seconds, 0.121), "the window spans from the start of its first block");
     CHECK(r.peak == 0.50f, "the highest block peak");
     CHECK(near(r.mean_square, 0.018), "mean power weighted by block time");
@@ -245,7 +254,7 @@ static void test_expire_waits_for_the_window()
     ActivityGate gate;
     ActivityGateReport r;
     CHECK(!gate.expire(1.0, r), "nothing open, nothing to report");
-    gate.on_block(1.000, 0.021, 0.30f, 0.020, r);
+    gate.on_block(1.000, 0.021, 0.021, 0.30f, 0.020, r);
     CHECK(!gate.expire(1.5, r), "the window is still open half a second on");
     CHECK(!gate.expire(2.0, r), "exactly one second on is still inside the window");
 }
@@ -254,8 +263,8 @@ static void test_expire_reports_an_unfinished_window_once()
 {
     ActivityGate gate;
     ActivityGateReport r;
-    gate.on_block(1.000, 0.021, 0.30f, 0.020, r);
-    gate.on_block(1.400, 0.021, 0.40f, 0.040, r);
+    gate.on_block(1.000, 0.021, 0.021, 0.30f, 0.020, r);
+    gate.on_block(1.400, 0.021, 0.021, 0.40f, 0.040, r);
     CHECK(gate.expire(2.01, r), "an unfinished window is reported after a second");
     CHECK(r.blocks == 2, "two blocks counted");
     CHECK(near(r.above_seconds, 0.042), "42 ms above the threshold");
@@ -277,6 +286,59 @@ static void test_expire_after_a_fire_or_reset_reports_nothing()
     feed(gate, 6.0, 0.021);
     gate.reset();
     CHECK(!gate.expire(8.0, r), "a reset window is not reported");
+}
+
+static void test_counts_signal_time_not_block_time()
+{
+    ActivityGate gate;
+    ActivityGateReport r;
+    CHECK(!gate.on_block(1.000, 0.046, 0.012, 0.3f, 0.010, r), "12 ms of signal in a 46 ms block");
+    CHECK(gate.expire(2.01, r), "the window runs out");
+    CHECK(near(r.above_seconds, 0.012), "only the signal is counted");
+    CHECK(near(r.block_seconds, 0.046), "the block length is kept for the mean power");
+}
+
+static void test_a_spike_straddling_two_blocks_does_not_fire()
+{
+    for (double required : {0.060, 0.030})
+    {
+        ActivityGate gate;
+        gate.set_required_seconds(required);
+        CHECK(!feed_signal(gate, 1.000, 0.046, 0.012), "the spike's start ends one block");
+        CHECK(!feed_signal(gate, 1.046, 0.046, 0.010), "and its tail starts the next: 22 ms");
+    }
+}
+
+static void test_blocks_full_of_signal_fire_as_before()
+{
+    ActivityGate gate;
+    CHECK(!feed_signal(gate, 1.000, 0.0213, 0.0213), "21 ms");
+    CHECK(!feed_signal(gate, 1.0213, 0.0213, 0.0213), "43 ms");
+    CHECK(feed_signal(gate, 1.0426, 0.0213, 0.0213), "64 ms fires on the third block");
+}
+
+static void test_mean_power_is_weighted_by_block_time()
+{
+    ActivityGate gate;
+    ActivityGateReport r;
+    gate.on_block(1.000, 0.010, 0.005, 0.3f, 0.010, r);
+    gate.on_block(1.100, 0.030, 0.005, 0.3f, 0.050, r);
+    CHECK(gate.expire(2.01, r), "the window runs out");
+    CHECK(near(r.mean_square, (0.010 * 0.010 + 0.050 * 0.030) / 0.040), "weighted by block length");
+}
+
+static void test_signal_time_converts_frames()
+{
+    SignalCount c;
+    c.frames   = 441;
+    c.trailing = 100;
+    c.gap      = true;
+    SignalTime t = signal_time(c, 44100);
+    CHECK(near(t.seconds, 0.010), "441 frames at 44.1 kHz is 10 ms");
+    CHECK(near(t.trailing_seconds, 100.0 / 44100.0), "trailing frames converted");
+    CHECK(t.gap, "the gap is carried");
+    SignalTime none = signal_time(c, 0);
+    CHECK(none.seconds == 0.0 && !none.gap, "no rate, no time");
 }
 
 int main()
@@ -306,6 +368,11 @@ int main()
     test_expire_waits_for_the_window();
     test_expire_reports_an_unfinished_window_once();
     test_expire_after_a_fire_or_reset_reports_nothing();
+    test_counts_signal_time_not_block_time();
+    test_a_spike_straddling_two_blocks_does_not_fire();
+    test_blocks_full_of_signal_fire_as_before();
+    test_mean_power_is_weighted_by_block_time();
+    test_signal_time_converts_frames();
 
     std::fprintf(stdout, "%s — %d/%d tests passed\n",
                  g_failed ? "FAIL" : "PASS",

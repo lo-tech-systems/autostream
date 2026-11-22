@@ -14,6 +14,8 @@
 
 #include <string>
 
+#include "autostream_dc_blocker.h"
+
 // Whether a live edge on this input gets the short replay-interrupt
 // probation window. A named type decides it outright; with no type the
 // silence threshold is compared with the boundary older releases used.
@@ -40,20 +42,42 @@ inline constexpr int kStartAfterDefaultMs = 60;
 inline constexpr int kStartAfterMinMs     = 30;
 inline constexpr int kStartAfterMaxMs     = 250;
 
+// One block's signal (see DcBlockedPeak::block_peak_and_signal) in seconds.
+struct SignalTime
+{
+    double seconds          = 0.0;    // signal counted in the block
+    double trailing_seconds = 0.0;    // the run of signal that ends the block
+    bool   gap              = false;  // the block held a quiet stretch longer than the hold
+};
+
+inline SignalTime signal_time(const SignalCount& count, int rate_hz)
+{
+    SignalTime t;
+    if (rate_hz <= 0)
+        return t;
+    const double frame_seconds = 1.0 / static_cast<double>(rate_hz);
+    t.seconds          = count.frames * frame_seconds;
+    t.trailing_seconds = count.trailing * frame_seconds;
+    t.gap              = count.gap;
+    return t;
+}
+
 // What one window of the activity gate counted.
 struct ActivityGateReport
 {
-    double above_seconds = 0.0;   // time in the counted blocks
+    double above_seconds = 0.0;   // signal counted in the window's blocks
+    double block_seconds = 0.0;   // length of those blocks
     double span_seconds  = 0.0;   // start of the window's first block to the end of its last counted one
     float  peak          = 0.0f;  // highest counted block peak, linear full scale
     double mean_square   = 0.0;   // time-weighted mean power of the counted blocks, linear full scale
     int    blocks        = 0;
 };
 
-// Accumulates the time an input has spent at or above its silence
-// threshold while it is not yet active. Fed only with qualifying blocks:
-// blocks below the threshold are not fed and reset nothing, so a quiet
-// passage whose peaks straddle the threshold still accumulates. The
+// Accumulates the signal an input has carried while it is not yet active:
+// only the time that counted as signal within each block, so a spike
+// counts its own length however the audio happens to be split into blocks.
+// Fed only with blocks that hold some signal: the others reset nothing, so
+// a quiet passage whose peaks straddle the threshold still accumulates. The
 // running total restarts when more than kWindowSeconds have passed since
 // the block that opened it. Block times are taken at the end of each
 // block, so a window starts one block length before its first time.
@@ -90,9 +114,10 @@ public:
         return true;
     }
 
-    // Counts one block at or above the threshold. Returns true on the call
-    // that completes the requirement, with that window in `out`, and resets.
-    bool on_block(double now_seconds, double block_seconds,
+    // Counts one block that holds signal_seconds of signal. Returns true on
+    // the call that completes the requirement, with that window in `out`,
+    // and resets.
+    bool on_block(double now_seconds, double block_seconds, double signal_seconds,
                   float peak, double mean_square, ActivityGateReport& out)
     {
         if (!_open || now_seconds - _window_open > kWindowSeconds)
@@ -102,7 +127,8 @@ public:
             _window_open = now_seconds;
             _first_block = block_seconds;
         }
-        _report.above_seconds += block_seconds;
+        _report.above_seconds += signal_seconds;
+        _report.block_seconds += block_seconds;
         _report.span_seconds   = now_seconds - _window_open + _first_block;
         _report.blocks        += 1;
         if (peak > _report.peak)
@@ -122,7 +148,7 @@ private:
     ActivityGateReport finished_report() const
     {
         ActivityGateReport r = _report;
-        r.mean_square = (r.above_seconds > 0.0) ? _power_time / r.above_seconds : 0.0;
+        r.mean_square = (r.block_seconds > 0.0) ? _power_time / r.block_seconds : 0.0;
         return r;
     }
 

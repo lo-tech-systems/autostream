@@ -3455,22 +3455,27 @@ private:
     // offset removed, into _current_peak_sample and the _poll_peak_sample
     // CAS loop). Returns the detection peak as a linear amplitude in
     // [0.0, 1.0] -- see compute_peak_sample()'s comment (the float domain).
-    float update_metering(int frames_in);
+    // Reads the silence threshold once for the iteration into
+    // silence_threshold_sample, and counts the block's signal against it in
+    // the same pass into `signal`.
+    float update_metering(int frames_in, float& silence_threshold_sample, SignalCount& signal);
 
     // Silence/activity state machine: updates _last_above_threshold_time and
     // derives is_above_threshold / should_capture (activity threshold x
     // _allow_capture gate, unchanged). Also returns the config snapshot
-    // (silence_threshold_sample, track_change_silence_seconds) the caller and
-    // handle_session_edges() need, read exactly once per iteration as today.
+    // (track_change_silence_seconds) the caller and handle_session_edges()
+    // need, read exactly once per iteration as today.
     // peak_sample/silence_threshold_sample are linear amplitudes in
     // [0.0, 1.0], not int16-scale sample counts -- see compute_peak_sample().
-    // frames_in sizes the block for the activity gate. start_report says
-    // why the input became active on this block, or that a gate window
-    // closed without it; the caller logs it, since this method must not.
+    // frames_in sizes the block and `signal` is what the activity gate
+    // counts of it. start_report says why the input became active on this
+    // block, or that a gate window closed without it; the caller logs it,
+    // since this method must not.
     bool update_silence_state(float                peak_sample,
                                int                  frames_in,
+                               const SignalCount&   signal,
                                double               now,
-                               float&               silence_threshold_sample,
+                               float                silence_threshold_sample,
                                bool&                is_above_threshold,
                                float&               track_change_silence_seconds,
                                ActivityStartReport& start_report);

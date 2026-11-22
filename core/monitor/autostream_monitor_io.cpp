@@ -1374,15 +1374,16 @@ void InputChannel::process_thread_func()
         // ── Peak-level metering for the block just read ───────────────────────
         // Linear amplitude in [0.0, 1.0], not an int16-scale sample
         // count -- see compute_peak_sample()'s comment.
-        float peak_sample = update_metering(frames_in);
+        float       silence_threshold_sample = 0.0f;
+        SignalCount signal;
+        float peak_sample = update_metering(frames_in, silence_threshold_sample, signal);
 
         // ── Silence state machine ─────────────────────────────────────────────
         double now = get_monotonic_time();
-        float silence_threshold_sample = 0.0f;
         bool  is_above_threshold = false;
         float track_change_silence_seconds = 0.0f;
         ActivityStartReport start_report;
-        bool should_capture = update_silence_state(peak_sample, frames_in, now,
+        bool should_capture = update_silence_state(peak_sample, frames_in, signal, now,
                                                      silence_threshold_sample,
                                                      is_above_threshold,
                                                      track_change_silence_seconds,
@@ -1517,16 +1518,23 @@ bool InputChannel::drain_capture_ring(int& frames_in)
 // CAS loop and the return value. Callers (silence state, track-gap
 // detection, the recorder tap's above-threshold flag) use the returned
 // value, computed exactly once per iteration, and the level the Setup page
-// shows is the one they compare with the threshold.
+// shows is the one they compare with the threshold. The same pass counts
+// the block's signal against the threshold for the activity gate.
 //
-float InputChannel::update_metering(int frames_in)
+float InputChannel::update_metering(int frames_in, float& silence_threshold_sample,
+                                    SignalCount& signal)
 {
+    // _silence_threshold_sample is published atomically by configure(); read
+    // once here for the whole iteration.
+    silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
+
     // ── Compute peak sample levels ────────────────────────────────────────
     // Linear amplitudes in [0.0, 1.0]; see compute_peak_sample()'s
     // comment. Still no log10 here -- that stays deferred to get_status().
     float raw_peak    = compute_peak_sample(_pcm_in.data(), frames_in, /*channels=*/2);
-    float peak_sample = _detect_peak.block_peak(_pcm_in.data(), frames_in, /*channels=*/2,
-                                                2147483648.0);  // 2^31, full int32 scale
+    float peak_sample = _detect_peak.block_peak_and_signal(_pcm_in.data(), frames_in, /*channels=*/2,
+                                                           2147483648.0,  // 2^31, full int32 scale
+                                                           silence_threshold_sample, signal);
     _current_peak_sample.store(peak_sample, std::memory_order_relaxed);
 
     // Accumulate poll-window peak — reset by get_status() via exchange(0).
@@ -1556,22 +1564,23 @@ float InputChannel::update_metering(int frames_in)
 //
 // Silence/activity state machine (activity threshold x _allow_capture gate,
 // unchanged). Updates _last_above_threshold_time and returns should_capture;
-// also hands back the per-iteration config snapshot (silence_threshold_sample,
-// track_change_silence_seconds) and is_above_threshold that
+// also hands back the per-iteration config snapshot
+// (track_change_silence_seconds) and is_above_threshold that
 // handle_session_edges() and the status-snapshot update need, read exactly
 // once per iteration as today.
 //
 bool InputChannel::update_silence_state(float                peak_sample,
                                          int                  frames_in,
+                                         const SignalCount&   signal,
                                          double               now,
-                                         float&               silence_threshold_sample,
+                                         float                silence_threshold_sample,
                                          bool&                is_above_threshold,
                                          float&               track_change_silence_seconds,
                                          ActivityStartReport& start_report)
 {
     start_report = ActivityStartReport{};
-    // _silence_threshold_sample is published atomically by configure(), so
-    // we only need to lock here to read silence_seconds and track_change_silence_seconds.
+    // The threshold arrives from update_metering(); lock here only to read
+    // silence_seconds and track_change_silence_seconds.
     int silence_seconds;
     int minimum_playback_seconds;
     {
@@ -1580,7 +1589,6 @@ bool InputChannel::update_silence_state(float                peak_sample,
         track_change_silence_seconds = _config.track_change_silence_seconds;
         minimum_playback_seconds     = _config.minimum_playback_seconds;
     }
-    silence_threshold_sample = _silence_threshold_sample.load(std::memory_order_relaxed);
 
     // The gate's running total is only meaningful against one threshold,
     // one type and one Start after; discard it when any of them changes.
@@ -1611,20 +1619,23 @@ bool InputChannel::update_silence_state(float                peak_sample,
     // Plain float comparison (still no log10/trig on this hot path). An
     // active input is refreshed by any single block at the threshold; a
     // gated input that is not yet active must first accumulate enough
-    // above-threshold time. Mean power is worked out only for a block the
-    // gate counts and for the block that makes an ungated input active.
-    if (peak_sample >= silence_threshold_sample)
+    // signal, counted within each block by update_metering(), so a spike
+    // counts its own length however the blocks fall. Mean power is worked
+    // out only for a block the gate counts and for the block that makes an
+    // ungated input active.
+    if (!gated || was_active || _capture_rate_hz <= 0)
     {
-        double block_seconds = (_capture_rate_hz > 0)
-            ? static_cast<double>(frames_in) / static_cast<double>(_capture_rate_hz)
-            : 0.0;
-        if (!gated || was_active || _capture_rate_hz <= 0)
+        if (peak_sample >= silence_threshold_sample)
         {
             if (!was_active)
             {
+                double block_seconds = (_capture_rate_hz > 0)
+                    ? static_cast<double>(frames_in) / static_cast<double>(_capture_rate_hz)
+                    : 0.0;
                 start_report.kind               = ActivityStartReport::Kind::Ungated;
                 start_report.gate               = ActivityGateReport{};
                 start_report.gate.above_seconds = block_seconds;
+                start_report.gate.block_seconds = block_seconds;
                 start_report.gate.span_seconds  = block_seconds;
                 start_report.gate.peak          = peak_sample;
                 start_report.gate.mean_square   = compute_mean_square(_pcm_in.data(), frames_in, 2);
@@ -1632,9 +1643,15 @@ bool InputChannel::update_silence_state(float                peak_sample,
             }
             _last_above_threshold_time = now;
         }
-        else if (_activity_gate.on_block(now, block_seconds, peak_sample,
-                                         compute_mean_square(_pcm_in.data(), frames_in, 2),
-                                         start_report.gate))
+    }
+    else if (signal.frames > 0)
+    {
+        double block_seconds = static_cast<double>(frames_in) / static_cast<double>(_capture_rate_hz);
+        if (_activity_gate.on_block(now, block_seconds,
+                                    signal_time(signal, _capture_rate_hz).seconds,
+                                    peak_sample,
+                                    compute_mean_square(_pcm_in.data(), frames_in, 2),
+                                    start_report.gate))
         {
             start_report.kind = ActivityStartReport::Kind::Fired;
             _last_above_threshold_time = now;
