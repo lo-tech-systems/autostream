@@ -50,6 +50,9 @@ Update every appliance and every dial together, as for 0.8.0.
   click through. Steady music still starts after the set time; a start can be
   noticed up to about 21 ms later on a wired input, or about 46 ms on
   Bluetooth.
+- changed: an input's equaliser bands at 0 dB are skipped, live and on
+  replay, so a flat equaliser leaves the audio exactly as it was. A band
+  moved off 0 dB takes effect straight away.
 - fixed: a live input interrupting a replay needs a quarter of a second of
   unbroken sound (1.25 seconds for a turntable), now measured in the audio
   itself. A burst of Bluetooth audio after a short drop-out could count the
