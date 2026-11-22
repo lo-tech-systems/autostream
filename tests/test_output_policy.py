@@ -381,6 +381,63 @@ class TestPauseAllHoldsTheOthers:
         assert [u.id for u in snap().units if u.selected] == []
 
 
+class TestAPauseWhileStartingPausesThatSpeakerAlone:
+    """An Apple TV whose TV is off pauses itself as soon as it is started.
+    A Pause from a speaker switched on here that is not playing yet, or has
+    played for under START_PAUSE_S, holds that speaker and leaves the others
+    playing, whatever the device pause setting says."""
+
+    @staticmethod
+    def rows(state3, selected3):
+        return [
+            group_row(1, "streaming", selected=True, volume_percent=40, session_holdable=True),
+            group_row(2, "streaming", selected=True, volume_percent=30, session_holdable=True),
+            group_row(3, state3, selected=selected3, volume_percent=20, session_holdable=True),
+        ]
+
+    def switch_on(self, w, state3, at):
+        """Speaker 3 switched on here, then read in *state3* at *at*."""
+        w.a.merge_for_tests(self.rows("stopped", False), boot="b0", now=T0)
+        w.a.note_session(True)
+        w.a.select("3", Origin.USER, volume=20)
+        w.a.merge_for_tests(self.rows(state3, True), now=at)
+
+    def test_a_pause_before_it_plays_holds_it_alone(self, w, caplog):
+        self.switch_on(w, "connecting", T0 + 1)
+        with caplog.at_level(logging.INFO, logger="autostream.output_policy"):
+            deliver(w, event("paus", id="3", received=T0 + 2))
+        p = snap()
+        assert p.unit("3").held and not p.unit("1").held and not p.unit("2").held
+        assert any("paused while starting" in r.getMessage() for r in caplog.records)
+
+    def test_a_pause_soon_after_it_starts_playing_holds_it_alone(self, w):
+        self.switch_on(w, "streaming", T0 + 1)
+        deliver(w, event("paus", id="3", received=T0 + 1 + policy_module.START_PAUSE_S - 1))
+        p = snap()
+        assert p.unit("3").held and not p.unit("1").held and not p.unit("2").held
+
+    def test_a_pause_once_it_has_played_a_while_pauses_them_all(self, w):
+        self.switch_on(w, "streaming", T0 + 1)
+        deliver(w, event("paus", id="3", received=T0 + 1 + policy_module.START_PAUSE_S + 1))
+        p = snap()
+        assert p.unit("3").held and p.unit("1").held and p.unit("2").held
+
+    def test_its_play_starts_it_and_the_others_were_never_touched(self, w):
+        self.switch_on(w, "connecting", T0 + 1)
+        deliver(w, event("paus", id="3", received=T0 + 2))
+        w.fb.calls.clear()
+        deliver(w, event("play", id="3", received=T0 + 30))
+        p = snap()
+        assert not p.unit("3").held and w.pol.paused_units() == ()
+        assert w.fb.calls == [("set_output_hold", ("3", False), {"timeout": 3.0})]
+
+    def test_a_speaker_found_playing_is_not_starting(self, w):
+        # Rows 1 and 2 were read playing, never switched on here, and cannot
+        # be held, so the Pause from 1 mutes 2 too
+        deliver(w, event("paus", id="1", received=T0 + 1))
+        assert snap().unit("2").muted
+
+
 class TestReset:
     def test_a_reset_of_an_untouched_policy_does_nothing(self):
         pol = policy_module.OutputPolicy()

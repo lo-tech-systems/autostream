@@ -52,6 +52,10 @@ stereo pair, or an Apple TV with its HomePods, counts as one speaker.
   - With this off, only that speaker pauses and the others carry on.
   - With it on, the other playing speakers pause too and show as **Paused**, and Play on any
     of them brings them all back. A speaker you had already muted stays muted.
+  - A speaker that pauses as it starts, before it plays or within about 5 seconds of
+    starting, pauses on its own even with this on. An Apple TV whose TV is switched off
+    does this, and it is not someone pressing Pause. Once the TV is on, press Play on the
+    Apple TV's remote, or switch it off and on here.
 
   Switching a paused speaker off and on again also starts it, and on a small-screen dial a
   tap on the speaker in its speaker list does the same as Play. A speaker that streams in

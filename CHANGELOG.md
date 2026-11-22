@@ -100,6 +100,10 @@ Update every appliance and every dial together, as for 0.8.0.
   Play on the speaker paused first brought them back.
 - new: a speaker that is on but muted shows Muted on the Home page and on
   both dials' speaker lists, where it used to show On or its level.
+- fixed: an Apple TV started while its TV is off pauses itself at once, and
+  with "Pause all speakers when pause is pressed on a speaker" on that paused
+  every speaker. A speaker that pauses as it starts, before it plays or within
+  about 5 seconds of starting, now pauses on its own.
 - changed: a speaker left on Automatic plays AirPlay 2 whenever it offers it,
   and AirPlay 1 only when it has no AirPlay 2. Before, a speaker with no
   buffered AirPlay 2 played AirPlay 1. A speaker that plays better on AirPlay

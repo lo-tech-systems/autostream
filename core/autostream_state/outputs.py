@@ -182,6 +182,7 @@ class UnitMarks:
     select_seq: int       # +1 each time the desired selection goes from off to on
     mute_token: int       # the token of the unit's current mute; 0 when not muted
     mute_joined: bool     # the current mute came from joining a muted selection
+    first_played_at: Optional[float] = None  # when it first played after it was last switched on here
 
 
 class PolicyHook(Protocol):
@@ -332,6 +333,8 @@ class UnitState:
     report_used_at: float = 0.0       # report_at of the last report a spread considered
     ok_since: float = 0.0             # when the unit last started playing
     was_streaming: bool = False
+    switched_on: bool = False         # selected here at least once, not only found playing
+    first_played_at: Optional[float] = None  # when it first played after it was last switched on here
     absent_since: Optional[float] = None
     start_pending_until: float = 0.0
     desired_seq: int = 0
@@ -980,7 +983,7 @@ class OutputAuthority:
             u = self._units.get(unit_id)
             if u is None:
                 return None
-            return UnitMarks(u.select_seq, u.desired.mute_token, u.desired.mute_joined)
+            return UnitMarks(u.select_seq, u.desired.mute_token, u.desired.mute_joined, u.first_played_at)
 
     # -- intents -------------------------------------------------------------
 
@@ -1064,6 +1067,8 @@ class OutputAuthority:
         if not d.selected:
             u.select_seq += 1
             d.held = False
+            u.switched_on = True
+            u.first_played_at = None
         d.selected = True
         u.retry_allowed = cause != Origin.USER
         self._new_attempt_locked(u)
@@ -2027,6 +2032,8 @@ class OutputAuthority:
         result_shown = model.result_shown(row, avail)
         if u.was_streaming and not was:
             u.ok_since = now
+        if u.was_streaming and u.switched_on and u.first_played_at is None:
+            u.first_played_at = now
         if u.start_pending_until > 0.0:
             pending = PendingStart.WAIT if result_shown else model.pending_start(row)
             if result_shown or pending is PendingStart.NO_WAIT:

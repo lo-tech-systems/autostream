@@ -10,7 +10,10 @@ its own Play does not start it again. So a Pause always holds that speaker:
 the player sends it no audio until the hold ends. A speaker the player
 cannot hold is muted instead. The device pause setting says whether the
 other playing speakers pause too: each is held, or muted when it cannot be
-held (one already muted is left as it is). A Play on any speaker that Pause
+held (one already muted is left as it is). A Pause from a speaker that is
+still starting (switched on here and not playing yet, or playing for under
+START_PAUSE_S) pauses it alone: an Apple TV whose TV is off pauses itself as
+soon as it is started, which is not a person's Pause. A Play on any speaker that Pause
 held or muted ends every hold it made, which restarts those speakers at the
 live position, and unmutes the speakers it muted. A Play from a speaker
 that is not paused is ignored: an Apple TV sends one when its own screens
@@ -54,6 +57,9 @@ LOG = logging.getLogger("autostream.output_policy")
 
 _OWNER = "autostream_output_policy"
 _REQUESTER = "policy"
+# A Pause from a speaker that started playing less than this long ago pauses
+# that speaker alone, whatever the device pause setting says
+START_PAUSE_S = 5.0
 
 
 @dataclass
@@ -83,6 +89,15 @@ class EventContext:
 
 def _requester(unit_id: str) -> str:
     return f"device:{unit_id}"
+
+
+def _starting(unit, marks, now: float) -> bool:
+    """Whether a speaker switched on here is still starting: not playing yet,
+    or playing for less than START_PAUSE_S. One found already playing is not."""
+    if unit.connecting:
+        return True
+    played = marks.first_played_at if marks is not None else None
+    return played is not None and now - played < START_PAUSE_S
 
 
 def _names(outputs: OutputsPart, unit_ids) -> str:
@@ -343,7 +358,12 @@ class OutputPolicy:
             since_token = muted.token_at
         others = "nothing else changed"
         others_held: dict = {}
-        if scope == DEVICE_PAUSE_ALL:
+        marks = authority.unit_marks(uid)
+        if scope == DEVICE_PAUSE_ALL and _starting(unit, marks, ctx.now):
+            # Not a person's Pause: an Apple TV whose TV is off pauses itself
+            # as soon as it is started, so the others play on
+            others = "nothing else paused, as it paused while starting"
+        elif scope == DEVICE_PAUSE_ALL:
             others_held, others_muted, others_token = self._pause_others(uid, ctx.outputs, intent.requester)
             tokens.update(others_muted)
             if since_token is None:
@@ -354,7 +374,6 @@ class OutputPolicy:
             if others_muted:
                 parts.append(_names(ctx.outputs, others_muted) + " muted")
             others = ", ".join(parts) or others
-        marks = authority.unit_marks(uid)
         entry = PauseEntry(
             unit_id=uid, name=who, by=by, at=ctx.now,
             select_seq=marks.select_seq if marks is not None else 0,
