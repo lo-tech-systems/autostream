@@ -36,6 +36,31 @@ def _no_hd_listener():
         yield
 
 
+@pytest.fixture(autouse=True)
+def _no_real_gpio():
+    """main() imports autostream_dial_gpio lazily and, on a host with
+    gpiozero, would claim real pins and start gpiozero's own threads. Stand
+    in a module whose setup fails as it does without gpiozero. Tests that
+    check the wiring fake the import themselves, which takes precedence."""
+    import types
+    stub = types.ModuleType("autostream_dial_gpio")
+    stub.setup_rotary_encoder = lambda *args, **kwargs: None
+    stub.setup_button = lambda *args, **kwargs: None
+    # Only this one entry is swapped and put back: restoring the whole of
+    # sys.modules would unload everything a test imported and make the
+    # next test import it all again.
+    missing = object()
+    saved = sys.modules.get("autostream_dial_gpio", missing)
+    sys.modules["autostream_dial_gpio"] = stub
+    try:
+        yield
+    finally:
+        if saved is missing:
+            sys.modules.pop("autostream_dial_gpio", None)
+        else:
+            sys.modules["autostream_dial_gpio"] = saved
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -274,24 +299,24 @@ class TestOptionalGpioSetup:
 # ---------------------------------------------------------------------------
 
 class TestSignalHandlers:
-    def test_sigterm_sets_shutdown_event(self):
-        """SIGTERM handler sets the shutdown event without blocking."""
+    @staticmethod
+    def _run_and_signal(sig):
+        """Run main(), deliver `sig` through the handler main() installed, and
+        return the shutdown event main() handed to its signal handlers. The
+        event is taken from that call, not from the Event constructor: the
+        display, the inputs and this test's own thread all construct Events
+        too, in an order that depends on what the host has installed."""
         import dial_main as dm
 
         cfg = _make_cfg()
-        captured = {}
         installed = {}
 
-        class _CapEvent(threading.Event):
-            def __init__(self):
-                super().__init__()
-                captured["ev"] = self
-
+        class _QuickWaitEvent(threading.Event):
             def wait(self, timeout=None):
                 return super().wait(timeout=0.01)
 
-        def _capture_signal(sig, handler):
-            installed[sig] = handler
+        def _capture_signal(signum, handler):
+            installed[signum] = handler
 
         with patch("dial_main._configure_logging"), \
              patch("dial_main.load_config", return_value=cfg), \
@@ -303,66 +328,33 @@ class TestSignalHandlers:
              patch("dial_main.PeerRegistry"), \
              patch("dial_main.start_network_worker"), \
              patch("dial_main.DialControlServer") as mock_ctrl_cls, \
+             patch("dial_main._install_signal_handlers",
+                   wraps=dm._install_signal_handlers) as install, \
              patch("dial_main.signal.signal", side_effect=_capture_signal), \
-             patch("threading.Event", _CapEvent):
+             patch("threading.Event", _QuickWaitEvent):
             mock_ctrl_cls.return_value = MagicMock()
 
             def _fire_signal():
                 time.sleep(0.05)
-                handler = installed.get(signal.SIGTERM)
+                handler = installed.get(sig)
                 if handler:
-                    handler(signal.SIGTERM, None)
+                    handler(sig, None)
 
             threading.Thread(target=_fire_signal, daemon=True).start()
             dm.main()
 
-        assert "ev" in captured
-        assert captured["ev"].is_set(), "SIGTERM must set the shutdown event"
+        install.assert_called_once()
+        return install.call_args.args[0]
+
+    def test_sigterm_sets_shutdown_event(self):
+        """SIGTERM handler sets the shutdown event without blocking."""
+        assert self._run_and_signal(signal.SIGTERM).is_set(), \
+            "SIGTERM must set the shutdown event"
 
     def test_sigint_sets_shutdown_event(self):
         """SIGINT handler sets the shutdown event without blocking."""
-        import dial_main as dm
-
-        cfg = _make_cfg()
-        captured = {}
-        installed = {}
-
-        class _CapEvent(threading.Event):
-            def __init__(self):
-                super().__init__()
-                captured["ev"] = self
-
-            def wait(self, timeout=None):
-                return super().wait(timeout=0.01)
-
-        def _capture_signal(sig, handler):
-            installed[sig] = handler
-
-        with patch("dial_main._configure_logging"), \
-             patch("dial_main.load_config", return_value=cfg), \
-             patch("dial_main._reconcile_update_timer"), \
-             patch("dial_main._announce_self"), \
-             patch("dial_main.DialLED"), \
-             patch("dial_main.DialHTTPServer"), \
-             patch("dial_main.start_volume_worker"), \
-             patch("dial_main.PeerRegistry"), \
-             patch("dial_main.start_network_worker"), \
-             patch("dial_main.DialControlServer") as mock_ctrl_cls, \
-             patch("dial_main.signal.signal", side_effect=_capture_signal), \
-             patch("threading.Event", _CapEvent):
-            mock_ctrl_cls.return_value = MagicMock()
-
-            def _fire_signal():
-                time.sleep(0.05)
-                handler = installed.get(signal.SIGINT)
-                if handler:
-                    handler(signal.SIGINT, None)
-
-            threading.Thread(target=_fire_signal, daemon=True).start()
-            dm.main()
-
-        assert "ev" in captured
-        assert captured["ev"].is_set(), "SIGINT must set the shutdown event"
+        assert self._run_and_signal(signal.SIGINT).is_set(), \
+            "SIGINT must set the shutdown event"
 
 
 # ---------------------------------------------------------------------------
