@@ -153,31 +153,6 @@ class TestCommandsSucceed:
         sent_cmd = json.loads(srv.received.strip())
         assert sent_cmd == {"cmd": "status"}
 
-    def test_scan_start_sends_correct_cmd(self, tmp_path):
-        srv = _server(tmp_path, {"ok": True})
-        c = BluetoothClient(srv.socket_path)
-        result = c.scan_start()
-        srv.join()
-        assert result == {"ok": True}
-        assert json.loads(srv.received.strip()) == {"cmd": "scan_start"}
-
-    def test_scan_stop_sends_correct_cmd(self, tmp_path):
-        srv = _server(tmp_path, {"ok": True})
-        c = BluetoothClient(srv.socket_path)
-        result = c.scan_stop()
-        srv.join()
-        assert result == {"ok": True}
-        assert json.loads(srv.received.strip()) == {"cmd": "scan_stop"}
-
-    def test_scan_results_returns_device_list(self, tmp_path):
-        payload = {"ok": True, "devices": [{"mac": "11:22:33:44:55:66", "name": "TT", "rssi": -60, "paired": False}]}
-        srv = _server(tmp_path, payload)
-        c = BluetoothClient(srv.socket_path)
-        result = c.scan_results()
-        srv.join()
-        assert result == payload
-        assert json.loads(srv.received.strip()) == {"cmd": "scan_results"}
-
     def test_pair_sends_mac_field(self, tmp_path):
         srv = _server(tmp_path, {"ok": True})
         c = BluetoothClient(srv.socket_path)
@@ -185,15 +160,6 @@ class TestCommandsSucceed:
         srv.join()
         assert result == {"ok": True}
         assert json.loads(srv.received.strip()) == {"cmd": "pair", "mac": "AA:BB:CC:DD:EE:FF"}
-
-    def test_pair_status_returns_state(self, tmp_path):
-        payload = {"ok": True, "state": "pairing"}
-        srv = _server(tmp_path, payload)
-        c = BluetoothClient(srv.socket_path)
-        result = c.pair_status()
-        srv.join()
-        assert result == payload
-        assert json.loads(srv.received.strip()) == {"cmd": "pair_status"}
 
     @pytest.mark.parametrize("method,cmd", [
         ("window_start", "window_start"), ("window_stop", "window_stop"),
@@ -207,6 +173,10 @@ class TestCommandsSucceed:
         srv.join()
         assert result == payload
         assert json.loads(srv.received.strip()) == {"cmd": cmd}
+
+    @pytest.mark.parametrize("gone", ["scan_start", "scan_stop", "scan_results", "pair_status"])
+    def test_the_scan_commands_are_gone(self, gone):
+        assert not hasattr(BluetoothClient, gone)
 
     def test_forget_sends_correct_cmd(self, tmp_path):
         srv = _server(tmp_path, {"ok": True})

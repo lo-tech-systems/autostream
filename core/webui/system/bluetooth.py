@@ -7,7 +7,7 @@ Bluetooth input endpoints.
 
 Contents:
   - send_bluetooth_status_json         -- GET /api/bluetooth/status
-  - send_bluetooth_pair_status_json    -- GET /api/bluetooth/pair_status
+  - send_bluetooth_pair_window_json    -- GET /api/bluetooth/pair_window
   - send_bluetooth_*_post_json         -- the Bluetooth POST endpoints
 """
 
@@ -43,7 +43,7 @@ from webui.browser import api_settings
 
 # -----------------------------------------------------------------------------
 # Bluetooth input — thin translations onto BluetoothClient plus the
-# sysutils enable/disable/onboard wrappers.  The pairing/scan/forget
+# sysutils enable/disable/onboard wrappers.  The pairing/forget
 # handlers below return {"ok": false, "error": "bluetooth_unavailable"}
 # (tunneled through send_browser_api_error as a semantic 503, following the
 # same pattern as send_network_status_json) when the subsystem isn't
@@ -51,7 +51,7 @@ from webui.browser import api_settings
 # -- callers never see a bare exception.
 # -----------------------------------------------------------------------------
 
-_BLUETOOTH_SCAN_ALLOWED_ACTIONS = frozenset({"start", "stop"})
+_BLUETOOTH_WINDOW_ALLOWED_ACTIONS = frozenset({"start", "stop"})
 _BLUETOOTH_MAC_RE = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
 _BLUETOOTH_SERVICES_ALLOWED_ACTIONS = frozenset({"enable", "disable"})
 _BLUETOOTH_BUFFER_MS_MIN = 100
@@ -109,64 +109,50 @@ def send_bluetooth_status_json(handler, state) -> None:
     })
 
 
-def send_bluetooth_scan_results_json(handler) -> None:
-    """GET /api/bluetooth/scan_results — live device list from the daemon."""
-    if not bluetooth_installed():
-        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
-        return
-    result = BluetoothClient().scan_results()
-    if not isinstance(result, dict) or result.get("ok") is not True:
-        common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
-        return
-    common.send_json(handler, 200, result)
+def send_bluetooth_pair_window_json(handler, state=None) -> None:
+    """GET /api/bluetooth/pair_window -- the pairing screen's poll.
 
+    One round trip to the daemon that is both the window's heartbeat (the
+    daemon closes the window when these stop for thirty seconds) and its
+    list. There is no separate heartbeat route, and this process keeps no
+    window state, so a short WebUI restart is invisible to the window.
 
-def send_bluetooth_pair_status_json(handler, state=None) -> None:
-    """GET /api/bluetooth/pair_status -- live pairing-attempt state from the daemon.
-
-    A ``pair`` POST reply only means pairing *started*; the daemon's own
-    reported outcome ("done" vs "failed") is only known here, via the
-    polled status. So this is the hook point for the post-pairing input
-    auto-enable rules (see ``_bt_pair_auto_configure``), not the POST
-    handler: once the daemon reports ``state == "done"``, apply the rules
-    and surface the outcome under ``input_auto_configure`` so the pairing
-    UI (which polls this endpoint) can show the user what changed. Never
-    fires on "failed" or "in_progress".
-
-    The UI keeps polling this endpoint every couple of seconds until it
-    observes "done" or "failed" and may therefore see "done" more than
-    once (e.g. a slow client tick); that's safe to re-run here because the
-    rules themselves are idempotent -- an input already on the loopback
-    device short-circuits to ``already_configured`` with no further
-    change.
+    Once the window has closed on a successful tap (``last_close.reason ==
+    "paired"``), the post-pairing input auto-enable rules run here (see
+    ``_bt_pair_auto_configure``) and the outcome is surfaced under
+    ``input_auto_configure`` for the screen to show. The screen may see the
+    closed window more than once; the rules are idempotent (an input already
+    on the loopback device short-circuits to ``already_configured``).
     """
     if not bluetooth_installed():
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
-    result = BluetoothClient().pair_status()
+    result = BluetoothClient().window_poll()
     if not isinstance(result, dict) or result.get("ok") is not True:
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
-    if result.get("state") == "done":
+    last_close = result.get("last_close")
+    if result.get("state") == "idle" and isinstance(last_close, dict) \
+            and last_close.get("reason") == "paired":
         try:
             auto = _bt_pair_auto_configure(state)
         except Exception:
-            logging.exception("send_bluetooth_pair_status_json: auto-configure step failed")
+            logging.exception("send_bluetooth_pair_window_json: auto-configure step failed")
             auto = None
         if auto is not None:
             result["input_auto_configure"] = auto
     common.send_json(handler, 200, result)
 
 
-def send_bluetooth_scan_post_json(handler, json_obj) -> None:
-    """POST /api/bluetooth/scan {"action": "start"|"stop"} -- closed action set.
+def send_bluetooth_pair_window_post_json(handler, json_obj) -> None:
+    """POST /api/bluetooth/pair_window {"action": "start"|"stop"}.
 
-    Mirrors ``send_network_setup_json``'s ``_NETWORK_SETUP_ALLOWED_ACTIONS``
-    rejection style: unknown actions or extra keys are rejected before ever
-    touching the daemon.  A daemon reply of ``{"ok": false, "error":
-    "scan_in_progress"}`` (another scan already active) is surfaced as a 409,
-    mirroring ``send_network_setup_json``'s watcher-busy 409; any other
-    non-ok reply stays a 503 ``bluetooth_unavailable``.
+    ``start`` opens the window (or attaches to one already open); a daemon
+    still cleaning up the last window replies ``window_closing``, surfaced
+    as a 409 for the screen to retry on its next poll. ``stop`` is best
+    effort and always succeeds when the daemon answers: a window that has
+    already closed is the goal state. Anything else is a 503
+    ``bluetooth_unavailable``.
     """
     if not bluetooth_installed():
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
@@ -176,19 +162,23 @@ def send_bluetooth_scan_post_json(handler, json_obj) -> None:
         return
     action = json_obj.get("action")
     extra = set(json_obj.keys()) - {"action", "csrf_token"}
-    if action not in _BLUETOOTH_SCAN_ALLOWED_ACTIONS or extra:
+    if action not in _BLUETOOTH_WINDOW_ALLOWED_ACTIONS or extra:
         common.send_browser_api_error(handler, 400, "Invalid action")
         return
 
     client = BluetoothClient()
-    result = client.scan_start() if action == "start" else client.scan_stop()
-    if not isinstance(result, dict) or result.get("ok") is not True:
-        if isinstance(result, dict) and result.get("error") == "scan_in_progress":
-            common.send_browser_api_error(handler, 409, "scan_in_progress")
-            return
+    result = client.window_start() if action == "start" else client.window_stop()
+    if not isinstance(result, dict):
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
-    common.send_json(handler, 200, {"ok": True, "action": action})
+    error = result.get("error")
+    if result.get("ok") is True or (action == "stop" and error == "no_window"):
+        common.send_json(handler, 200, {"ok": True, "action": action})
+        return
+    if error == "window_closing":
+        common.send_browser_api_error(handler, 409, "window_closing")
+        return
+    common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
 
 
 def _bt_pairing_set_field(state, settings, field: str, value) -> tuple[bool, Optional[str]]:
@@ -323,20 +313,23 @@ def _bt_pair_auto_configure(state) -> Optional[dict]:
     return {"action": "enabled", "input": target_input}
 
 
+# Daemon refusals of a tap -> HTTP status. Anything else is a 503.
+_BLUETOOTH_PAIR_ERRORS = {
+    "window_adopting": 409,
+    "no_window": 409,
+    "unknown_device": 404,
+}
+
+
 def send_bluetooth_pair_post_json(handler, json_obj) -> None:
-    """POST /api/bluetooth/pair {"address": <mac>} -- server-side MAC validation.
+    """POST /api/bluetooth/pair {"address": <mac>} -- the user's tap on an
+    entry in the pairing window's list; server-side MAC validation.
 
-    A daemon reply of ``{"ok": false, "error": "pair_in_progress"}`` (a
-    pairing attempt already active) is surfaced as a 409, mirroring
-    ``send_network_setup_json``'s watcher-busy 409; any other non-ok reply
-    stays a 503 ``bluetooth_unavailable``.
-
-    This only means the daemon has *started* pairing, not that it
-    succeeded -- the real outcome is only known once the client polls
-    ``GET /api/bluetooth/pair_status`` and sees ``state == "done"``. It no
-    longer applies the input auto-enable rules for that reason (see
-    ``send_bluetooth_pair_status_json``, which does); this handler's
-    response stays the plain ``{"ok": True}`` shape.
+    This only means the daemon has *started* adopting the device; the
+    outcome arrives through ``GET /api/bluetooth/pair_window``. A tap while
+    another is running is a 409 ``window_adopting``, a tap with no window
+    open a 409 ``no_window``, and a device no longer in the list a 404
+    ``unknown_device``.
     """
     if not bluetooth_installed():
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
@@ -351,11 +344,16 @@ def send_bluetooth_pair_post_json(handler, json_obj) -> None:
         return
 
     result = BluetoothClient().pair(address)
-    if not isinstance(result, dict) or result.get("ok") is not True:
-        if isinstance(result, dict) and result.get("error") == "pair_in_progress":
-            common.send_browser_api_error(handler, 409, "pair_in_progress")
-            return
+    if not isinstance(result, dict):
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
+        return
+    if result.get("ok") is not True:
+        error = str(result.get("error") or "")
+        status = _BLUETOOTH_PAIR_ERRORS.get(error)
+        if status is not None:
+            common.send_browser_api_error(handler, status, error)
+        else:
+            common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
         return
 
     common.send_json(handler, 200, {"ok": True})
@@ -475,12 +473,8 @@ def send_bluetooth_buffer_post_json(handler, json_obj) -> None:
 # -----------------------------------------------------------------------------
 
 
-def _route_get_bluetooth_scan_results(handler, state):
-    send_bluetooth_scan_results_json(handler)
-
-
-def _route_post_bluetooth_scan(handler, state, body_str):
-    send_bluetooth_scan_post_json(handler, common._route_post_json_obj(handler))
+def _route_post_bluetooth_pair_window(handler, state, body_str):
+    send_bluetooth_pair_window_post_json(handler, common._route_post_json_obj(handler))
 
 
 def _route_post_bluetooth_pair(handler, state, body_str):

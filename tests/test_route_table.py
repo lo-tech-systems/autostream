@@ -217,8 +217,7 @@ _BROWSER_GET_EXPECTED = [
     ("/api/align/status",          AuthRequirement.FULL, "api", False, False),
     ("/api/network/status",        AuthRequirement.FULL, "api", False, True),
     ("/api/bluetooth/status",      AuthRequirement.FULL, "api", False, False),
-    ("/api/bluetooth/scan_results", AuthRequirement.FULL, "api", False, False),
-    ("/api/bluetooth/pair_status", AuthRequirement.FULL, "api", False, False),
+    ("/api/bluetooth/pair_window", AuthRequirement.FULL, "api", False, True),
     ("/api/update/check",          AuthRequirement.FULL, "page", False, False),
     ("/api/update/status",         AuthRequirement.FULL, "page", False, False),
 ]
@@ -299,7 +298,7 @@ _BROWSER_POST_EXPECTED = [
     ("/api/align/discard",              AuthRequirement.FULL, False, False),
     ("/api/network/setup",              AuthRequirement.FULL, False, False),
     ("/api/network/roaming",            AuthRequirement.FULL, False, False),
-    ("/api/bluetooth/scan",             AuthRequirement.FULL, False, False),
+    ("/api/bluetooth/pair_window",      AuthRequirement.FULL, False, False),
     ("/api/bluetooth/pair",             AuthRequirement.FULL, False, False),
     ("/api/bluetooth/forget",           AuthRequirement.FULL, False, False),
     ("/api/bluetooth/services",         AuthRequirement.FULL, False, False),

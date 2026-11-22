@@ -280,7 +280,7 @@ def _setup_bluetooth_card_html(
               <button type="button" id="btnBtForget" class="pill-btn small" style="width:100%;{_bt_forget_style}"
                 onclick="btForgetFromCard()">Forget</button>
               <button type="button" id="btnBtPairNew" class="pill-btn small" style="width:100%;margin-top:0.5rem;"
-                onclick="openBtPairingModal(null, null)">Pair new device&hellip;</button>
+                onclick="openBtPairingModal(null, null)">Pair a device&hellip;</button>
               <label style="display:block;margin-top:0.75rem;">
                 <div class="slider-header"><span>Bluetooth Audio Buffer:</span><span id="btBufferVal">{bt_buffer_ms} ms</span></div>
                 <input type="range" id="btBufferRange" min="{BLUETOOTH_BUFFER_MS_MIN}" max="{BLUETOOTH_BUFFER_MS_MAX}"

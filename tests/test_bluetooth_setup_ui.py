@@ -259,9 +259,15 @@ class TestBluetoothEnabledUnpaired:
     def test_pairing_modal_div_present(self, html):
         assert 'id="btPairingModal"' in html
 
-    def test_all_four_panels_present(self, html):
-        for panel in ("btScanPanel", "btConfirmPanel", "btPairingPanel", "btResultPanel"):
+    def test_one_window_panel_and_the_result_panel(self, html):
+        for panel in ("btWindowPanel", "btResultPanel", "btWindowDeviceList", "btWindowCountdown"):
             assert f'id="{panel}"' in html
+        for gone in ("btScanPanel", "btConfirmPanel", "btPairingPanel"):
+            assert gone not in html
+
+    def test_window_wording(self, html):
+        assert "Pair a device" in html
+        assert "It will appear below when autostream finds it" in html
 
     def test_open_bt_pairing_modal_fn_present(self, html):
         assert "function openBtPairingModal(inputIndex, selectEl)" in html
@@ -270,24 +276,50 @@ class TestBluetoothEnabledUnpaired:
         assert "function isBluetoothDevice(value)" in html
         assert BT_LOOPBACK_HW in html
 
-    def test_close_path_clears_scan_and_pair_intervals(self, html):
-        assert "function closeBtPairingModal()" in html
-        assert "_btStopScan();" in html
-        assert "clearInterval(_btPairTimer)" in html
+    def test_close_path_stops_the_poll_and_the_window(self, html):
+        idx = html.find("function closeBtPairingModal()")
+        assert idx != -1
+        body = html[idx: idx + 1500]
+        assert "_btWindowPoller.stop();" in body
+        assert "_btPost('/api/bluetooth/pair_window', {action: 'stop'})" in body
 
-    def test_scan_stop_posted_on_close(self, html):
-        assert "function _btStopScan()" in html
-        assert "/api/bluetooth/scan" in html
-        assert "action: 'stop'" in html
+    def test_window_started_on_open(self, html):
+        assert "_btPost('/api/bluetooth/pair_window', {action: 'start'})" in html
 
-    def test_scan_start_posted_on_open(self, html):
-        assert "action: 'start'" in html
+    def test_the_window_poll_is_the_heartbeat_through_poller(self, html):
+        idx = html.find("var _btWindowPoller = Poller({")
+        assert idx != -1
+        block = html[idx: idx + 400]
+        assert "url: '/api/bluetooth/pair_window'" in block
+        assert "intervalMs: 2000" in block
+        assert "activeOnly: true" in block
+        assert "setInterval" not in html[html.find("// -- Bluetooth pairing window"):
+                                         html.find("function closeBtPairingModal()")]
 
-    def test_scan_results_polled(self, html):
-        assert "/api/bluetooth/scan_results" in html
+    def test_503_stops_polling(self, html):
+        idx = html.find("function _btOnWindowError(res)")
+        body = html[idx: idx + 400]
+        assert "_btStatus(res) === 503" in body
+        assert "return (res && res.body && res.body.error_status)" in html
+        assert "_btWindowPoller.stop();" in body
 
-    def test_pair_status_polled(self, html):
-        assert "/api/bluetooth/pair_status" in html
+    def test_start_while_closing_retries_after_the_poll(self, html):
+        assert "_btStartPending = true;" in html
+
+    def test_comparison_code_shown_with_wants_to_connect(self, html):
+        assert "'Code ' + String(d.passkey).padStart(6, '0')" in html
+        assert "provisional: 'Wants to connect'" in html
+
+    def test_countdown_rendered(self, html):
+        assert "' left'" in html
+
+    def test_two_gestures_select_then_button(self, html):
+        assert "function _btSelectRow(d)" in html
+        assert "okBtn.textContent = 'Pair this device';" in html
+
+    def test_scan_routes_gone(self, html):
+        assert "/api/bluetooth/scan" not in html
+        assert "/api/bluetooth/pair_status" not in html
 
     def test_pair_endpoint_called(self, html):
         assert "/api/bluetooth/pair'" in html
@@ -335,9 +367,10 @@ class TestBluetoothEnabledUnpaired:
     def test_cache_no_store_used(self, html):
         assert "cache: 'no-store'" in html or "cache:'no-store'" in html
 
-    def test_409_treated_as_in_progress(self, html):
-        assert "res.status === 409" in html
-        assert "already in progress" in html
+    def test_409_and_404_on_tap(self, html):
+        assert "status === 409" in html
+        assert "Another device is being paired." in html
+        assert "status === 404" in html
 
     def test_escape_key_closes_modal(self, html):
         assert "'btPairingModal'" in html
@@ -376,9 +409,9 @@ class TestBluetoothEnabledUnpaired:
     def test_successful_pair_updates_data_prev_to_loopback(self, html):
         assert "_btSelectEl.dataset.prev = BT_LOOPBACK_HW;" in html
 
-    # -- input_auto_configure surfaced from pair_status polling --
+    # -- input_auto_configure surfaced from the window poll --
 
-    def test_poll_reads_input_auto_configure_from_pair_status_body(self, html):
+    def test_poll_reads_input_auto_configure_from_the_window_poll(self, html):
         assert "body.input_auto_configure" in html
 
     def test_assigned_message_strings_present(self, html):
@@ -430,7 +463,7 @@ class TestBluetoothEnabledUnpaired:
         assert "refreshInputCardSubs()" in body
 
     def test_no_page_reload_in_poll_handler(self, html):
-        idx = html.find("async function _btPollPairStatus()")
+        idx = html.find("function _btFinish(body)")
         assert idx != -1
         window = html[idx: idx + 2500]
         assert "location.reload" not in window
@@ -841,3 +874,28 @@ class TestUnconfiguredInputPlaceholder:
         )
         # both inputs configured in the default fixture: no placeholder
         assert "select input device" not in html_out
+
+
+# ---------------------------------------------------------------------------
+# Golden: the pairing window's markup
+# ---------------------------------------------------------------------------
+
+_REGENERATE_PAIRING_GOLDEN = False
+_PAIRING_GOLDEN = REPO_ROOT / "tests" / "golden" / "setup_bt_pairing_modal.html"
+
+
+def test_pairing_modal_matches_golden(tmp_path):
+    html = _SetupRenderer().render(
+        tmp_path, bt_enabled=True,
+        bt_status={"adapter_present": True, "paired": None, "link": "disconnected",
+                   "streaming": False, "scanning": False},
+    )
+    start = html.index('<div id="btPairingModal"')
+    end = html.index("\n</div>", start) + len("\n</div>")
+    modal = html[start:end] + "\n"
+    if _REGENERATE_PAIRING_GOLDEN:
+        _PAIRING_GOLDEN.write_text(modal, encoding="utf-8", newline="\n")
+        pytest.skip("golden file regenerated -- set _REGENERATE_PAIRING_GOLDEN back to False")
+    assert _PAIRING_GOLDEN.exists(), (
+        f"{_PAIRING_GOLDEN} missing: set _REGENERATE_PAIRING_GOLDEN=True to create it")
+    assert modal == _PAIRING_GOLDEN.read_text(encoding="utf-8")

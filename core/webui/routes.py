@@ -778,23 +778,14 @@ register(
 
 register(
     Route(
-        path="/api/bluetooth/scan_results",
+        path="/api/bluetooth/pair_window",
         methods=("GET",),
-        handler="webui.system.bluetooth._route_get_bluetooth_scan_results",
+        handler="webui.system.bluetooth.send_bluetooth_pair_window_json",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,
-    )
-)
-
-register(
-    Route(
-        path="/api/bluetooth/pair_status",
-        methods=("GET",),
-        handler="webui.system.bluetooth.send_bluetooth_pair_status_json",
-        auth=AuthRequirement.FULL,
-        kind="api",
-        allow_unconfigured=False,
+        # The pairing screen polls this every 2 s as the window's heartbeat.
+        poll_log=True,
     )
 )
 
@@ -1137,9 +1128,9 @@ register(
 
 register(
     Route(
-        path="/api/bluetooth/scan",
+        path="/api/bluetooth/pair_window",
         methods=("POST",),
-        handler="webui.system.bluetooth._route_post_bluetooth_scan",
+        handler="webui.system.bluetooth._route_post_bluetooth_pair_window",
         auth=AuthRequirement.FULL,
         kind="api",
         allow_unconfigured=False,

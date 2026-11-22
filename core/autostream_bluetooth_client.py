@@ -13,8 +13,8 @@ method here opens a fresh socket, writes one newline-terminated JSON
 request, reads one newline-terminated JSON reply, and closes -- there is no
 persistent connection state to manage between calls.  Any failure (socket
 absent, daemon down, timeout, malformed reply) is swallowed and surfaced as
-``None`` so callers (the relabel hook, the web routes, the background scan
-loop) can degrade gracefully without daemon-specific error handling.
+``None`` so callers (the relabel hook, the web routes, the background
+status loop) can degrade gracefully without daemon-specific error handling.
 
 Also hosts the pinned wire/ALSA constants shared between the coordinator
 (relabel hook) and the web UI, and ``classify_loopback_hw()``/
@@ -200,15 +200,6 @@ class BluetoothClient:
     def status(self) -> Optional[dict]:
         return self._request({"cmd": "status"})
 
-    def scan_start(self) -> Optional[dict]:
-        return self._request({"cmd": "scan_start"})
-
-    def scan_stop(self) -> Optional[dict]:
-        return self._request({"cmd": "scan_stop"})
-
-    def scan_results(self) -> Optional[dict]:
-        return self._request({"cmd": "scan_results"})
-
     def window_start(self) -> Optional[dict]:
         return self._request({"cmd": "window_start"})
 
@@ -220,9 +211,6 @@ class BluetoothClient:
 
     def pair(self, mac: str) -> Optional[dict]:
         return self._request({"cmd": "pair", "mac": mac})
-
-    def pair_status(self) -> Optional[dict]:
-        return self._request({"cmd": "pair_status"})
 
     def forget(self) -> Optional[dict]:
         return self._request({"cmd": "forget"})

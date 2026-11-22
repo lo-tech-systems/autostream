@@ -328,20 +328,16 @@ def send_setup_page(
         _bt_pairing_modal_div = """\
 <div id="btPairingModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="btPairingModalTitle">
   <div class="panel modal-panel">
-    <div class="hdr modal-hdr" id="btPairingModalTitle">Pair Bluetooth Turntable</div>
+    <div class="hdr modal-hdr" id="btPairingModalTitle">Pair a device</div>
     <div class="bd modal-bd">
-      <div id="btScanPanel">
-        <p>Put your turntable in pairing mode. Available devices:</p>
-        <div id="btScanDeviceList" class="bt-device-list">
-          <p class="bt-scan-empty">Scanning&hellip;</p>
+      <div id="btWindowPanel">
+        <p>Put your device in pairing mode. It will appear below when autostream finds it
+          or when it tries to connect.</p>
+        <p id="btWindowCountdown" class="bt-window-countdown"></p>
+        <div id="btWindowDeviceList" class="bt-device-list">
+          <p class="bt-scan-empty">Searching&hellip;</p>
         </div>
-      </div>
-      <div id="btConfirmPanel" style="display:none;">
-        <p>Pair with <strong id="btConfirmDeviceName"></strong>?</p>
-        <p id="btConfirmWarning" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
-      </div>
-      <div id="btPairingPanel" style="display:none;">
-        <p id="btPairingStatusMsg">Pairing&hellip;</p>
+        <p id="btWindowError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
       </div>
       <div id="btResultPanel" style="display:none;">
         <p id="btResultMsg"></p>
@@ -351,7 +347,7 @@ def send_setup_page(
     <div class="ft modal-ft">
       <button type="button" class="btn modal-btn modal-btn-secondary" id="btPairingForget" style="display:none;">Forget</button>
       <button type="button" class="btn modal-btn modal-btn-secondary" id="btPairingCancel">Cancel</button>
-      <button type="button" class="btn modal-btn modal-btn-primary" id="btPairingOk" style="display:none;">Pair</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="btPairingOk" style="display:none;">Pair this device</button>
     </div>
   </div>
 </div>"""

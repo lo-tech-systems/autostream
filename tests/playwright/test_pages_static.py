@@ -564,6 +564,54 @@ class TestSetup:
         finally:
             server.shutdown()
 
+    def test_the_pairing_window_lists_selects_pairs_and_reports(self, page: "Page"):
+        status = {"adapter_present": True, "paired": None, "link": "disconnected",
+                  "streaming": False, "scanning": False}
+        incoming = {"mac": "AA:BB:CC:DD:EE:02", "name": "Portable CD", "source": "incoming",
+                    "state": "provisional", "passkey": 42}
+        window = {"ok": True, "state": "open", "remaining_s": 270, "devices": [incoming],
+                  "adopting": None, "last_close": None, "last_error": None}
+        posts = []
+
+        def _pair_window(route):
+            if route.request.method == "POST":
+                posts.append(json.loads(route.request.post_data or "{}"))
+                route.fulfill(json={"ok": True, "action": posts[-1].get("action")})
+            else:
+                route.fulfill(json=window)
+
+        def _pair(route):
+            posts.append(json.loads(route.request.post_data or "{}"))
+            route.fulfill(json={"ok": True})
+
+        server, base = _serve_setup(bt_enabled=True, bt_status=status)
+        try:
+            errors = _watch_errors(page)
+            page.route("**/api/bluetooth/pair_window", _pair_window)
+            page.route("**/api/bluetooth/pair", _pair)
+            page.goto(f"{base}/")
+            page.wait_for_load_state("networkidle")
+            page.evaluate("openBtPairingModal(null, null)")
+            row = page.locator("#btWindowDeviceList .bt-scan-row")
+            expect(row).to_have_count(1)
+            expect(row.locator(".bt-row-state")).to_have_text("Code 000042 · Wants to connect")
+            expect(page.locator("#btWindowCountdown")).to_have_text("4:30 left")
+            expect(page.locator("#btPairingOk")).to_be_hidden()
+            row.click()
+            expect(page.locator("#btPairingOk")).to_have_text("Pair this device")
+            page.click("#btPairingOk")
+            window.update(state="idle", devices=[], remaining_s=None,
+                          last_close={"reason": "paired", "error": None})
+            page.evaluate("_btWindowPoller.refresh()")
+            expect(page.locator("#btResultMsg")).to_have_text(
+                "Paired with Portable CD (AA:BB:CC:DD:EE:02).")
+            assert {"action": "start"} in posts and {"address": "AA:BB:CC:DD:EE:02"} in posts
+            page.click("#btPairingOk")
+            expect(page.locator("#btPairingModal")).not_to_have_class(_SHOWN)
+            assert errors == []
+        finally:
+            server.shutdown()
+
     def test_bluetooth_absent_leaves_the_pairing_script_out_and_nothing_throws(self, page: "Page"):
         assert "setup_bt_pairing.js" not in _page_stub.render("setup").decode()
         server, base = _serve_setup()

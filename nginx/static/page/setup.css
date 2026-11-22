@@ -103,6 +103,11 @@
         border-radius:6px;margin-bottom:0.4rem;cursor:pointer;}
       .bt-scan-row:hover{background:var(--color-surface-raised);}
       .bt-scan-empty{color:var(--color-text-muted,#888);font-style:italic;}
+      .bt-scan-row.selected{border-color:var(--color-accent,#3a7bd5);background:var(--color-surface-raised);}
+      .bt-row-name{font-weight:600;}
+      .bt-row-mac{font-size:0.75rem;color:var(--color-text-muted,#888);}
+      .bt-row-state{font-size:0.85rem;}
+      .bt-window-countdown{margin:0.25rem 0;font-size:0.85rem;color:var(--color-text-muted,#888);}
     
 #panel-playback { padding-bottom: 4.5rem; }
 .autostart-row { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; padding: 0.3rem 0; }
