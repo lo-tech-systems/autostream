@@ -61,6 +61,7 @@ UNIT_FILE = REPO_ROOT / "system" / "systemd" / "autostream_bluetooth.service"
 MODULES_LOAD_FILE = REPO_ROOT / "system" / "modules-load.d" / "autostream-bluetooth.conf"
 MODPROBE_FILE = REPO_ROOT / "system" / "modprobe.d" / "autostream-bluetooth.conf"
 BLUEZ_CONF_FILE = REPO_ROOT / "system" / "bluetooth" / "autostream.conf"
+BLUEZ_DROPIN_FILE = REPO_ROOT / "system" / "systemd" / "bluetooth.service.d" / "autostream.conf"
 
 BLUETOOTH_SCRIPTS = [BLUETOOTH_SH]
 
@@ -573,6 +574,8 @@ class TestUninstallerBluetooth:
         assert "/etc/modules-load.d/autostream-bluetooth.conf" in src
         assert "/etc/modprobe.d/autostream-bluetooth.conf" in src
         assert "/etc/bluetooth/main.conf.d/autostream.conf" in src
+        assert "/etc/bluetooth/autostream.conf" in src
+        assert "/etc/systemd/system/bluetooth.service.d/autostream.conf" in src
 
     def test_stops_and_disables_bluetooth_service(self):
         assert "stop_and_disable_service autostream_bluetooth.service" in self._src()
@@ -677,3 +680,77 @@ class TestModuleConfigFiles:
         assert "BLUETOOTH_MODE" not in text
         assert "scan window" not in text
         assert "pairing screen is open" in text
+
+
+# ---------------------------------------------------------------------------
+# BlueZ reads only the one config file it is started with, so the settings
+# reach bluetoothd through a bluetooth.service drop-in that passes -f.
+# ---------------------------------------------------------------------------
+
+class TestBluezConfigReachesBluetoothd:
+    def test_dropin_starts_bluetoothd_with_the_autostream_file(self):
+        lines = [l.strip() for l in _src(BLUEZ_DROPIN_FILE).splitlines()
+                 if l.strip() and not l.startswith("#")]
+        assert lines == [
+            "[Service]",
+            "ExecStart=",
+            "ExecStart=/usr/libexec/bluetooth/bluetoothd -f /etc/bluetooth/autostream.conf",
+        ]
+
+    def test_library_installs_to_the_path_the_dropin_names(self):
+        src = _src(BLUETOOTH_SH)
+        assert 'BLUETOOTH_MAIN_CONF_FILE="/etc/bluetooth/autostream.conf"' in src
+        assert 'BLUETOOTH_DROPIN_DIR="/etc/systemd/system/bluetooth.service.d"' in src
+
+    def test_dropin_is_in_place_before_the_daemon_reload(self):
+        src = _src(BLUETOOTH_SH)
+        body = re.search(r"^install_bluetooth_stack\(\)\s*\{.*?\n\}\n", src, re.S | re.M).group(0)
+        assert body.index("_install_bluetooth_main_conf") < body.index("_install_bluetooth_unit")
+        body = re.search(r"^remove_bluetooth_stack\(\)\s*\{.*?\n\}\n", src, re.S | re.M).group(0)
+        assert body.index("_remove_bluetooth_main_conf") < body.index("_remove_bluetooth_unit")
+
+    def _run(self, tmp_path, calls: str):
+        src = tmp_path / "src"
+        (src / "system" / "bluetooth").mkdir(parents=True)
+        (src / "system" / "systemd" / "bluetooth.service.d").mkdir(parents=True)
+        (src / "system" / "bluetooth" / "autostream.conf").write_text("conf\n", encoding="utf-8")
+        (src / "system" / "systemd" / "bluetooth.service.d" / "autostream.conf").write_text(
+            "dropin\n", encoding="utf-8")
+        etc = tmp_path / "etc"
+        legacy = etc / "bluetooth" / "main.conf.d"
+        legacy.mkdir(parents=True)
+        (legacy / "autostream.conf").write_text("old\n", encoding="utf-8")
+        script = f'''
+set -euo pipefail
+info() {{ :; }}
+warn() {{ :; }}
+install() {{
+  local _prev="" _last="" _a
+  for _a in "$@"; do _prev=$_last; _last=$_a; done
+  cp -- "${{_prev}}" "${{_last}}"
+}}
+AUTOSTREAM_DIR="{src.as_posix()}"
+source "{BLUETOOTH_SH.as_posix()}"
+BLUETOOTH_MAIN_CONF_FILE="{(etc / "bluetooth" / "autostream.conf").as_posix()}"
+BLUETOOTH_DROPIN_DIR="{(etc / "systemd" / "bluetooth.service.d").as_posix()}"
+BLUETOOTH_DROPIN_FILE="${{BLUETOOTH_DROPIN_DIR}}/autostream.conf"
+BLUETOOTH_LEGACY_CONF_DIR="{legacy.as_posix()}"
+{calls}
+'''
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, timeout=10)
+        assert r.returncode == 0, r.stderr
+        return etc
+
+    @bash_capable
+    def test_install_writes_both_files_and_clears_the_unread_drop_in(self, tmp_path):
+        etc = self._run(tmp_path, "_install_bluetooth_main_conf")
+        assert (etc / "bluetooth" / "autostream.conf").read_text(encoding="utf-8") == "conf\n"
+        assert (etc / "systemd" / "bluetooth.service.d" / "autostream.conf").read_text(
+            encoding="utf-8") == "dropin\n"
+        assert not (etc / "bluetooth" / "main.conf.d").exists()
+
+    @bash_capable
+    def test_remove_takes_everything_away(self, tmp_path):
+        etc = self._run(tmp_path, "_install_bluetooth_main_conf\n_remove_bluetooth_main_conf")
+        assert not (etc / "bluetooth" / "autostream.conf").exists()
+        assert not (etc / "systemd" / "bluetooth.service.d").exists()

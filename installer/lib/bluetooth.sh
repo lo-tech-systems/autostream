@@ -28,8 +28,11 @@ BLUETOOTH_UNIT_NAME="autostream_bluetooth.service"
 
 BLUETOOTH_MODULES_LOAD_FILE="/etc/modules-load.d/autostream-bluetooth.conf"
 BLUETOOTH_MODPROBE_FILE="/etc/modprobe.d/autostream-bluetooth.conf"
-BLUETOOTH_MAIN_CONF_DIR="/etc/bluetooth/main.conf.d"
-BLUETOOTH_MAIN_CONF_FILE="${BLUETOOTH_MAIN_CONF_DIR}/autostream.conf"
+BLUETOOTH_MAIN_CONF_FILE="/etc/bluetooth/autostream.conf"
+BLUETOOTH_DROPIN_DIR="/etc/systemd/system/bluetooth.service.d"
+BLUETOOTH_DROPIN_FILE="${BLUETOOTH_DROPIN_DIR}/autostream.conf"
+# Written by earlier releases; BlueZ never read it.
+BLUETOOTH_LEGACY_CONF_DIR="/etc/bluetooth/main.conf.d"
 
 # The daemon's modules (platform/bluetooth_*.py) are deployed by
 # install_bluetooth_stack() via _copy_bluetooth_daemon_files(); deploy_phase's
@@ -56,16 +59,27 @@ _remove_bluetooth_module_config() {
   rm -f "${BLUETOOTH_MODULES_LOAD_FILE}" "${BLUETOOTH_MODPROBE_FILE}"
 }
 
+# _install_bluetooth_main_conf: BlueZ reads only its one config file, so
+# bluetoothd is started with -f pointing at autostream's file (through a
+# bluetooth.service drop-in) instead of editing the package's main.conf. The
+# drop-in takes effect the next time bluetoothd starts; an update reboots.
 _install_bluetooth_main_conf() {
-  info "Configuring BlueZ main.conf.d for Bluetooth input"
-  mkdir -p "${BLUETOOTH_MAIN_CONF_DIR}"
+  info "Configuring BlueZ for Bluetooth input"
   install -m 0644 -o root -g root \
       "${AUTOSTREAM_DIR}/system/bluetooth/autostream.conf" \
       "${BLUETOOTH_MAIN_CONF_FILE}"
+  mkdir -p "${BLUETOOTH_DROPIN_DIR}"
+  install -m 0644 -o root -g root \
+      "${AUTOSTREAM_DIR}/system/systemd/bluetooth.service.d/autostream.conf" \
+      "${BLUETOOTH_DROPIN_FILE}"
+  rm -f "${BLUETOOTH_LEGACY_CONF_DIR}/autostream.conf"
+  rmdir "${BLUETOOTH_LEGACY_CONF_DIR}" 2>/dev/null || true
 }
 
 _remove_bluetooth_main_conf() {
-  rm -f "${BLUETOOTH_MAIN_CONF_FILE}"
+  rm -f "${BLUETOOTH_DROPIN_FILE}" "${BLUETOOTH_MAIN_CONF_FILE}" \
+      "${BLUETOOTH_LEGACY_CONF_DIR}/autostream.conf"
+  rmdir "${BLUETOOTH_DROPIN_DIR}" "${BLUETOOTH_LEGACY_CONF_DIR}" 2>/dev/null || true
 }
 
 #############################################
@@ -170,9 +184,10 @@ install_bluetooth_stack() {
 remove_bluetooth_stack() {
   info "=== Bluetooth input: removing subsystem ==="
 
+  # The drop-in goes first so the unit's daemon-reload picks up its removal.
+  _remove_bluetooth_main_conf
   _remove_bluetooth_unit
   _remove_bluetooth_module_config
-  _remove_bluetooth_main_conf
 
   info "Bluetooth input subsystem removed (apt packages retained)"
 }

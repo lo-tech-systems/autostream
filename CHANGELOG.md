@@ -44,6 +44,10 @@ Update every appliance and every dial together, as for 0.8.0.
   open for up to five minutes while it is visible.
 - changed: the built-in radio isn't offered on appliances with a power board;
   use a USB adapter.
+- fixed: autostream now shows itself to other devices as a speaker, so a CD
+  player or other source searching for one finds it. Before, BlueZ never read
+  autostream's settings, and a source that had lost its pairing could not
+  pair again.
 
 ## Version 0.8.0-beta.1 - 2026-11-18
 

@@ -314,6 +314,8 @@ main() {
   remove_path /etc/modules-load.d/autostream-bluetooth.conf
   remove_path /etc/modprobe.d/autostream-bluetooth.conf
   remove_path /etc/bluetooth/main.conf.d/autostream.conf
+  remove_path /etc/bluetooth/autostream.conf
+  remove_path /etc/systemd/system/bluetooth.service.d/autostream.conf
 
   remove_service_account autostream
 
