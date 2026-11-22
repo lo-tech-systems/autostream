@@ -113,9 +113,9 @@ for higher-level orchestration, UI, settings, and playback-backend control.
 
 ## Runtime Model
 
-- Up to two inputs can be configured and monitored at once.
+- Up to three inputs can be configured and monitored at once.
 - Only one input may capture to the FIFO at a time: `set_allow_capture`
-  enabling one input disables the other.
+  enabling one input disables the others.
 - Each input has:
   - its own ALSA capture device
   - silence detection state

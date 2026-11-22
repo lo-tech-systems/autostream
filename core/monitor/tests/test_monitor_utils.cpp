@@ -987,8 +987,14 @@ static void test_rate_keys_and_instances_are_independent()
 
     bool a = LOG_WARN_EVERY(log_key(LogKey::CaptureRingFull, 1), 5.0, "[test] a");
     bool b = LOG_WARN_EVERY(log_key(LogKey::CaptureRingFull, 2), 5.0, "[test] b");
+    bool e = LOG_WARN_EVERY(log_key(LogKey::CaptureRingFull, 3), 5.0, "[test] e");
     bool c = LOG_WARN_EVERY(log_key(LogKey::SrcError, 1), 5.0, "[test] c");
     CHECK(a && b && c, "T4 different instances and keys have their own windows");
+    CHECK(e, "T4 input 3 has a window of its own");
+    CHECK(log_key(LogKey::CaptureRingFull, 3).index != log_key(LogKey::CaptureRingFull, 0).index,
+          "T4 input 3 is its own slot, not the no-instance one");
+    CHECK(log_key(LogKey::SrcError, 4).index == log_key(LogKey::SrcError, 0).index,
+          "T4 instance 4, one past the last input, maps to the no-instance slot");
 
     CHECK(log_key(LogKey::SrcError, 9).index == log_key(LogKey::SrcError, 0).index,
           "T4 an instance past the end maps to the no-instance slot");

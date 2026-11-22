@@ -860,7 +860,7 @@ AudioMonitor::AudioMonitor(const std::string& socket_path, bool test_hooks_enabl
     , _repeat_controller(g_output_format.rate, _mixer)
     , _control_server(*this)
 {
-    // Create the two InputChannel objects.  They are not started here;
+    // Create one InputChannel per input.  They are not started here;
     // that happens only when api_start_input() is called.
     for (int i = 0; i < NUM_INPUTS; ++i)
     {
@@ -1281,16 +1281,18 @@ std::string AudioMonitor::api_get_status()
         // loss recorded at capture (see InputChannel's capture_overruns/
         // capture_ring_drops below).
         OutputMixer::Counters oc = _mixer.counters();
-        oss << ",\"underruns\":{"
-            << "\"live1\":"  << oc.underrun_frames[0] << ","
-            << "\"live2\":"  << oc.underrun_frames[1] << ","
-            << "\"replay\":" << oc.underrun_frames[2] << "}";
+        auto per_source = [&oss](const char* key, const uint64_t* frames)
+        {
+            oss << ",\"" << key << "\":{";
+            for (size_t i = 0; i < OutputMixer::kNumSources; ++i)
+                oss << (i ? "," : "") << "\"" << source_name(static_cast<OutputSource>(i))
+                    << "\":" << frames[i];
+            oss << "}";
+        };
+        per_source("underruns", oc.underrun_frames);
 
         // Frames a producer could not push because its ring was full.
-        oss << ",\"ring_drops\":{"
-            << "\"live1\":"  << oc.dropped_frames[0] << ","
-            << "\"live2\":"  << oc.dropped_frames[1] << ","
-            << "\"replay\":" << oc.dropped_frames[2] << "}";
+        per_source("ring_drops", oc.dropped_frames);
 
         // The output thread's own timing and loss counters; the mean lock
         // wait is over the blocks that had to wait at all.
@@ -1577,14 +1579,23 @@ std::string AudioMonitor::api_list_devices()
     return oss.str();
 }
 
+std::string AudioMonitor::invalid_input_ack(const char* command)
+{
+    static const std::string kError =
+        "input index must be 1 to " + std::to_string(NUM_INPUTS);
+    std::ostringstream oss;
+    oss << "{\"type\":\"ack\",\"command\":\"" << command << "\","
+        << "\"ok\":false,\"error\":\"" << kError << "\"}";
+    return oss.str();
+}
+
 std::string AudioMonitor::api_configure_input(int input_index, const InputConfig& cfg)
 {
     InputChannel* ch = get_input(input_index);
     if (!ch)
     {
         LOG_WARN("[monitor] configure_input rejected for invalid input index %d", input_index);
-        return "{\"type\":\"ack\",\"command\":\"configure_input\","
-               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+        return invalid_input_ack("configure_input");
     }
 
     // Validate all supplied values before touching any channel state.
@@ -1647,8 +1658,7 @@ std::string AudioMonitor::api_start_input(int input_index)
     if (!ch)
     {
         LOG_WARN("[monitor] start_input rejected for invalid input index %d", input_index);
-        return "{\"type\":\"ack\",\"command\":\"start_input\","
-               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+        return invalid_input_ack("start_input");
     }
 
     // Guard against both the normal "already running" case and the
@@ -1697,8 +1707,7 @@ std::string AudioMonitor::api_stop_input(int input_index)
     if (!ch)
     {
         LOG_WARN("[monitor] stop_input rejected for invalid input index %d", input_index);
-        return "{\"type\":\"ack\",\"command\":\"stop_input\","
-               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+        return invalid_input_ack("stop_input");
     }
 
     const bool was_active = stop_input_with_teardown(input_index - 1);
@@ -1719,13 +1728,12 @@ std::string AudioMonitor::api_set_allow_capture(int input_index, bool allow)
     if (!ch)
     {
         LOG_WARN("[monitor] set_allow_capture rejected for invalid input index %d", input_index);
-        return "{\"type\":\"ack\",\"command\":\"set_allow_capture\","
-               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+        return invalid_input_ack("set_allow_capture");
     }
 
     // Only one input's OutputSource may be active on the output mixer at a
     // time (the mixer itself can run a brief two-source crossfade, but only
-    // ever between replay and one live input -- never between the two live
+    // ever between replay and one live input -- never between two live
     // inputs). Enforce mutual exclusion here: enabling capture on one input
     // disables it on all others.
     //
@@ -1813,8 +1821,7 @@ std::string AudioMonitor::api_set_eq(int input_index, const std::vector<EqBand>&
     if (!ch)
     {
         LOG_WARN("[monitor] set_eq rejected for invalid input index %d", input_index);
-        return "{\"type\":\"ack\",\"command\":\"set_eq\","
-               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+        return invalid_input_ack("set_eq");
     }
 
     std::string validation_error = validate_eq_bands(bands);
@@ -1907,8 +1914,7 @@ std::string AudioMonitor::api_set_gain(int input_index, float gain_db)
     if (!ch)
     {
         LOG_WARN("[monitor] set_gain rejected for invalid input index %d", input_index);
-        return "{\"type\":\"ack\",\"command\":\"set_gain\","
-               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+        return invalid_input_ack("set_gain");
     }
 
     std::string validation_error = validate_gain_db(gain_db);
@@ -1971,8 +1977,7 @@ std::string AudioMonitor::api_get_id_snapshot(int input_index, int max_seconds,
     if (!ch)
     {
         LOG_WARN("[monitor] get_id_snapshot rejected for invalid input index %d", input_index);
-        return "{\"type\":\"ack\",\"command\":\"get_id_snapshot\","
-               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+        return invalid_input_ack("get_id_snapshot");
     }
 
     // Clamp max_seconds to a sane range so the caller cannot request an
@@ -2152,8 +2157,7 @@ std::string AudioMonitor::api_debug_fail_input(int input_index)
     if (!ch)
     {
         LOG_WARN("[monitor] debug_fail_input rejected for invalid input index %d", input_index);
-        return "{\"type\":\"ack\",\"command\":\"debug_fail_input\","
-               "\"ok\":false,\"error\":\"input index must be 1 or 2\"}";
+        return invalid_input_ack("debug_fail_input");
     }
 
     ch->debug_inject_capture_failure();

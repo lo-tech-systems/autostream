@@ -3,11 +3,11 @@
 //
 // Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 //
-// One continuous output stream, mixed from up to three sources (two live
+// One continuous output stream, mixed from up to four sources (three live
 // inputs and the recorded replay) and written to the FIFO by a single
 // thread.
 //
-// OutputMixer is the pure core: three per-source rings and a gain-ramp state
+// OutputMixer is the pure core: one ring per source and a gain-ramp state
 // machine, with no thread of its own and no dependency beyond the standard
 // library and the SPSC ring, so it builds and is unit-tested without linking
 // ALSA or libsamplerate.
@@ -51,18 +51,48 @@ inline bool output_gap_is_cold(double last_write_time, double now)
     return last_write_time <= 0.0 || now - last_write_time > kOutputColdStartSeconds;
 }
 
+// One live source per monitor input, in input order, then Replay. Replay is
+// always last so the live sources are exactly [0, kLiveSourceCount).
 enum class OutputSource
 {
     Live1  = 0,
     Live2  = 1,
-    Replay = 2,
-    Count  = 3,
+    Live3  = 2,
+    Replay = 3,
+    Count  = 4,
 };
+
+constexpr size_t kLiveSourceCount = static_cast<size_t>(OutputSource::Replay);
+static_assert(static_cast<size_t>(OutputSource::Replay) + 1 == static_cast<size_t>(OutputSource::Count),
+              "Replay must be the last source so the live sources are the ones before it");
+
+// The live source for a 1-based input index. An index outside the live
+// range maps to Live1, as an unknown input always has.
+inline OutputSource live_source_for_input(int input_index)
+{
+    if (input_index < 1 || static_cast<size_t>(input_index) > kLiveSourceCount)
+        return OutputSource::Live1;
+    return static_cast<OutputSource>(input_index - 1);
+}
+
+// The name a source goes by in log lines and the status JSON.
+inline const char* source_name(OutputSource s)
+{
+    switch (s)
+    {
+    case OutputSource::Live1:  return "live1";
+    case OutputSource::Live2:  return "live2";
+    case OutputSource::Live3:  return "live3";
+    case OutputSource::Replay: return "replay";
+    case OutputSource::Count:  break;
+    }
+    return "unknown";
+}
 
 // =============================================================================
 // OutputMixer
 //
-// Three SPSC rings, one per source, each fed by its own producer thread and
+// One SPSC ring per source, each fed by its own producer thread and
 // drained only by mix_block() on the output thread. Gain state per source is
 // a linear ramp: a current gain, a target, and a per-frame step, advanced
 // only inside mix_block().
@@ -140,9 +170,9 @@ public:
 
     bool any_active() const;
 
-    // 0 or 1 for the lower-numbered active live source (Live1 before
-    // Live2); -1 if neither live source is active. Replay never clocks the
-    // stage.
+    // The index of the lowest-numbered active live source (Live1 before
+    // Live2 before Live3); -1 if no live source is active. Replay never
+    // clocks the stage.
     int live_clock_source() const;
 
     // Frames currently sitting in a source's ring.
@@ -162,16 +192,16 @@ public:
     // returns.
     void mix_block(float* out_interleaved);
 
+    static constexpr size_t kNumSources = static_cast<size_t>(OutputSource::Count);
+
     struct Counters
     {
-        uint64_t underrun_frames[3]{};
-        uint64_t dropped_frames[3]{};
+        uint64_t underrun_frames[kNumSources]{};
+        uint64_t dropped_frames[kNumSources]{};
     };
     Counters counters() const;
 
 private:
-    static constexpr size_t kNumSources = static_cast<size_t>(OutputSource::Count);
-
     struct SourceControl
     {
         bool  active                = false;
@@ -231,18 +261,15 @@ inline OutputMixer::OutputMixer(int rate_hz, size_t block_frames)
     : _rate_hz(rate_hz)
     , _block_frames(block_frames)
     , _ring_capacity_samples(round_up_pow2(static_cast<size_t>(static_cast<double>(rate_hz) * 2.0 * 0.5)))
-    , _rings{ SpscRing<float>(_ring_capacity_samples),
-              SpscRing<float>(_ring_capacity_samples),
-              SpscRing<float>(_ring_capacity_samples) }
 {
-    static_assert(static_cast<size_t>(OutputSource::Count) == 3,
-                  "OutputMixer's ring/scratch initialisers assume exactly three sources");
-
-    // SpscRing's own std::vector<float>(capacity) construction already
-    // zero-fills and therefore touches every page of each ring's backing
-    // store; nothing further is needed here for that.
+    // SpscRing::reset(capacity) zero-fills its backing store and therefore
+    // touches every page of each ring; nothing further is needed here for
+    // that.
     for (size_t i = 0; i < kNumSources; ++i)
+    {
+        _rings[i].reset(_ring_capacity_samples);
         _scratch[i].assign(_block_frames * 2, 0.0f);
+    }
 }
 
 inline size_t OutputMixer::push(OutputSource s, const float* interleaved, size_t frames)
@@ -372,8 +399,9 @@ inline bool OutputMixer::any_active() const
 inline int OutputMixer::live_clock_source() const
 {
     std::lock_guard<std::mutex> lock(_mutex);
-    if (_control[index_of(OutputSource::Live1)].active) return 0;
-    if (_control[index_of(OutputSource::Live2)].active) return 1;
+    for (size_t i = 0; i < kLiveSourceCount; ++i)
+        if (_control[i].active)
+            return static_cast<int>(i);
     return -1;
 }
 
@@ -431,8 +459,8 @@ inline void OutputMixer::mix_block(float* out)
 
     std::fill(out, out + _block_frames * 2, 0.0f);
 
-    bool  now_inactive[kNumSources]  = { false, false, false };
-    bool  now_faded_out[kNumSources] = { false, false, false };
+    bool  now_inactive[kNumSources]  = {};
+    bool  now_faded_out[kNumSources] = {};
     float final_gain[kNumSources];
     float final_step[kNumSources];
     int   final_ramp_remaining[kNumSources];

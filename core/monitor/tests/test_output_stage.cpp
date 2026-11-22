@@ -16,6 +16,7 @@
 #include "autostream_output_stage.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -251,10 +252,59 @@ static void test_live_clock_source_ordering()
     mixer.activate(OutputSource::Live1, 1.0f, 0.0);
     CHECK(mixer.live_clock_source() == 0, "Live1 takes precedence over Live2 when both are active");
 
+    mixer.activate(OutputSource::Live3, 1.0f, 0.0);
+    CHECK(mixer.live_clock_source() == 0, "Live1 takes precedence over Live3 too");
+
     mixer.deactivate(OutputSource::Live1);
+    CHECK(mixer.live_clock_source() == 1, "Live2 takes precedence over Live3");
+
     mixer.deactivate(OutputSource::Live2);
+    CHECK(mixer.live_clock_source() == 2, "Live3 alone clocks the stage as source 2");
+
+    mixer.deactivate(OutputSource::Live3);
     mixer.activate(OutputSource::Replay, 1.0f, 0.0);
     CHECK(mixer.live_clock_source() == -1, "Replay alone never clocks the stage");
+}
+
+// ---------------------------------------------------------------------------
+// (5b) Source naming, the input-to-source map and per-source counters.
+// ---------------------------------------------------------------------------
+
+static void test_sources_names_and_counters()
+{
+    CHECK(kLiveSourceCount == 3, "three live sources, one per input");
+    CHECK(std::strcmp(source_name(OutputSource::Live1), "live1") == 0, "Live1 is named live1");
+    CHECK(std::strcmp(source_name(OutputSource::Live2), "live2") == 0, "Live2 is named live2");
+    CHECK(std::strcmp(source_name(OutputSource::Live3), "live3") == 0, "Live3 is named live3");
+    CHECK(std::strcmp(source_name(OutputSource::Replay), "replay") == 0, "Replay is named replay");
+
+    CHECK(live_source_for_input(1) == OutputSource::Live1, "input 1 feeds Live1");
+    CHECK(live_source_for_input(2) == OutputSource::Live2, "input 2 feeds Live2");
+    CHECK(live_source_for_input(3) == OutputSource::Live3, "input 3 feeds Live3");
+    CHECK(live_source_for_input(0) == OutputSource::Live1, "an unknown input maps to Live1");
+    CHECK(live_source_for_input(4) == OutputSource::Live1, "an input past the last maps to Live1");
+
+    // Live3 has its own ring and counters, distinct from the others.
+    OutputMixer mixer(kRate, kBlockFrames);
+    mixer.activate(OutputSource::Live3, 1.0f, 0.0);
+    std::vector<float> in(kBlockFrames * 2, 0.5f);
+    size_t accepted = mixer.push(OutputSource::Live3, in.data(), kBlockFrames);
+    CHECK(accepted == kBlockFrames, "Live3 accepts a full block once active");
+    CHECK(mixer.available(OutputSource::Live3) == kBlockFrames, "Live3's ring holds the block");
+    CHECK(mixer.available(OutputSource::Live2) == 0, "Live2's ring is untouched");
+
+    std::vector<float> out(kBlockFrames * 2, 0.0f);
+    mixer.mix_block(out.data());
+    CHECK(std::fabs(out[0] - 0.5f) < 1e-6f, "Live3 alone passes through at gain 1");
+
+    // Two blocks of grace after activate(), then a short block counts.
+    mixer.mix_block(out.data());
+    mixer.mix_block(out.data());
+    OutputMixer::Counters c = mixer.counters();
+    CHECK(c.underrun_frames[static_cast<size_t>(OutputSource::Live3)] == kBlockFrames,
+          "an empty Live3 ring after the grace blocks counts a whole block of underrun");
+    CHECK(c.underrun_frames[static_cast<size_t>(OutputSource::Live1)] == 0,
+          "Live1 counts nothing for Live3's underrun");
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +442,7 @@ int main()
 
     test_underrun_padding_and_grace_period();
     test_live_clock_source_ordering();
+    test_sources_names_and_counters();
     test_zero_gain_source_drained_not_summed();
     test_push_beyond_capacity_drops_and_counts();
     test_output_gap_is_cold();

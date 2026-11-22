@@ -862,8 +862,8 @@ bool InputChannel::start(std::string* error_out)
     _session_raw_peak_sample.store(0,     std::memory_order_relaxed);
     _session_effective_peak_linear.store(0.0f, std::memory_order_relaxed);
 
-    // Clear ring buffer.
-    _ring_buf.reset();
+    // Clear the capture ring, allocating it on the first start.
+    _ring_buf.reset(RING_BUF_SAMPLES);
 
     // Allocate and reset the identification snapshot buffer.
     // Done here rather than in the constructor so the ~1 MB allocation only

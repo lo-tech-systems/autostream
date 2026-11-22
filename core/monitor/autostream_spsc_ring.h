@@ -79,6 +79,12 @@ public:
                "SpscRing capacity must be a power of two");
     }
 
+    // An empty ring with no storage: capacity() is 0, so both
+    // write_available() and read_available() are 0 until reset(capacity)
+    // allocates it. For an owner that allocates on first use rather than at
+    // construction.
+    SpscRing() = default;
+
     size_t capacity() const { return _capacity; }
 
     // Producer-side: how many elements can be written right now without
@@ -163,9 +169,27 @@ public:
         _read_pos.store(0, std::memory_order_relaxed);
     }
 
+    // As reset(), and first gives the ring `capacity` zeroed elements if it
+    // does not already have exactly that many (capacity must be a power of
+    // two). Allocates only the first time for a given capacity, so a later
+    // call is as cheap as reset(). Same safety condition as reset(): neither
+    // thread may be running.
+    void reset(size_t capacity)
+    {
+        assert(capacity > 0 && (capacity & (capacity - 1)) == 0 &&
+               "SpscRing capacity must be a power of two");
+        if (_capacity != capacity)
+        {
+            _buf.assign(capacity, T{});
+            _capacity = capacity;
+            _mask     = capacity - 1;
+        }
+        reset();
+    }
+
 private:
-    const size_t          _capacity;
-    const size_t          _mask;
+    size_t                _capacity = 0;
+    size_t                _mask     = 0;
     std::vector<T>         _buf;
     std::atomic<size_t>    _write_pos{0};  // written only by the producer thread
     std::atomic<size_t>    _read_pos{0};   // written only by the consumer thread

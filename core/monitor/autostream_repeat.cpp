@@ -976,14 +976,17 @@ void RepeatController::release_replay_output_locked()
     // set_enabled(false) raced the fade to Discard first). Either way, a
     // live input must not be left silenced once nothing is left to take
     // over from it.
-    for (OutputSource src : { OutputSource::Live1, OutputSource::Live2 })
+    for (size_t i = 0; i < kLiveSourceCount; ++i)
+    {
+        OutputSource src = static_cast<OutputSource>(i);
         if (_mixer.is_muted(src))
             _mixer.set_gain(src, 1.0f, 1.0);
+    }
 }
 
 OutputSource RepeatController::live_source(int input_index)
 {
-    return (input_index == 2) ? OutputSource::Live2 : OutputSource::Live1;
+    return live_source_for_input(input_index);
 }
 
 std::string RepeatController::set_enabled(bool enabled, const std::string& codec_text,

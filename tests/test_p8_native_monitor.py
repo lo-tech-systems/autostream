@@ -649,6 +649,47 @@ class TestRateStatusSourceInspection:
 
 
 # ---------------------------------------------------------------------------
+# Source-inspection: the third live input
+# ---------------------------------------------------------------------------
+
+class TestThirdInputSourceInspection:
+    """Three inputs, each with its own live source, named from one table."""
+
+    @pytest.fixture(scope="class")
+    def sources(self):
+        mon = REPO_ROOT / "core" / "monitor"
+        names = ("autostream_monitor.h", "autostream_monitor.cpp", "autostream_monitor_io.cpp",
+                 "autostream_output_stage.h", "autostream_output_stage.cpp",
+                 "autostream_repeat.cpp", "autostream_monitor_utils.h")
+        return {n: _read_source(mon / n) for n in names}
+
+    def test_three_inputs_and_a_log_slot_each(self, sources):
+        assert "static constexpr int NUM_INPUTS  = 3;" in sources["autostream_monitor.h"]
+        assert "inline constexpr int kLogKeyInstances = 4;" in sources["autostream_monitor_utils.h"]
+
+    def test_no_two_input_assumption_left(self, sources):
+        for name, src in sources.items():
+            assert "must be 1 or 2" not in src, name
+            assert "Live1 : OutputSource::Live2" not in src, name
+            assert "{ OutputSource::Live1, OutputSource::Live2 }" not in src, name
+
+    def test_bad_index_reply_comes_from_one_place(self, sources):
+        src = sources["autostream_monitor.cpp"]
+        assert src.count('"input index must be 1 to "') == 1
+        assert src.count("return invalid_input_ack(") == 8
+
+    def test_status_names_every_source_from_the_table(self, sources):
+        src = sources["autostream_monitor.cpp"]
+        assert 'per_source("underruns", oc.underrun_frames);' in src
+        assert 'per_source("ring_drops", oc.dropped_frames);' in src
+        assert '"live3"' in sources["autostream_output_stage.h"]
+
+    def test_capture_ring_allocated_on_first_start(self, sources):
+        assert "SpscRing<int32_t> _ring_buf;" in sources["autostream_monitor.h"]
+        assert "_ring_buf.reset(RING_BUF_SAMPLES);" in sources["autostream_monitor_io.cpp"]
+
+
+# ---------------------------------------------------------------------------
 # C++ build suite (Linux with g++ only)
 # ---------------------------------------------------------------------------
 

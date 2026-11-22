@@ -562,7 +562,7 @@ enum class LogKey : std::uint8_t
 };
 
 // Instances per key: 0 means "no instance", inputs are numbered from 1.
-inline constexpr int kLogKeyInstances = 3;
+inline constexpr int kLogKeyInstances = 4;
 
 struct LogSlot
 {

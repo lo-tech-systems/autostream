@@ -413,7 +413,7 @@ public:
 
     // Reset state and set the reference rates.  negotiated_rate is what ALSA
     // opened the device at; it is never stepped.  seed_rate is the nominal to
-    // start from, and 0 means "use negotiated_rate".  input_index (1 or 2) is
+    // start from, and 0 means "use negotiated_rate".  input_index (1 to 3) is
     // only used in log lines.  Call this before the capture thread starts,
     // each time capture starts on a device.
     void reset(int negotiated_rate, int output_rate, int seed_rate = 0, int input_index = 0);
@@ -470,7 +470,7 @@ private:
     int    _adjustment_count;   // number of windows completed; used to ramp window duration
 
     int    _negotiated_rate;        // what ALSA negotiated; never stepped
-    int    _input_index;            // 1 or 2, for log lines; 0 in tests
+    int    _input_index;            // 1 to 3, for log lines; 0 in tests
     double _detect_start_time;      // detector window start (monotonic seconds)
     long   _detect_frames;          // frames delivered in the current detector window
     bool   _detect_tainted;         // an ALSA xrun fell inside the current detector window
@@ -3215,7 +3215,7 @@ private:
 class InputChannel
 {
 public:
-    // index:             1 or 2, used only in log messages and to pick this
+    // index:             1 to 3, used only in log messages and to pick this
     //                    input's OutputSource (see output_source())
     // mixer:              the AudioMonitor's shared OutputMixer; deliver_output()
     //                    pushes this input's processed blocks into it, and
@@ -3521,11 +3521,11 @@ private:
     // rather than needing its own activate/deactivate call.
     void sync_output_source();
 
-    // This input's OutputSource: Live1 for index 1, Live2 for any other
-    // index (2 in practice -- see AudioMonitor::NUM_INPUTS).
+    // This input's OutputSource: Live1 for index 1, Live2 for 2, Live3 for
+    // 3 (see AudioMonitor::NUM_INPUTS).
     OutputSource output_source() const
     {
-        return (_index == 1) ? OutputSource::Live1 : OutputSource::Live2;
+        return live_source_for_input(_index);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -3631,9 +3631,12 @@ private:
     // unchanged, so this ring holds 1 MiB instead of 512 KiB). At 48000 Hz
     // stereo, this holds approximately 2.7 seconds of audio. See
     // autostream_spsc_ring.h for the SPSC proof this relies on.
+    //
+    // Empty until the channel's first start(), which allocates it, so an
+    // input that is never started (one that stays disabled) costs no ring.
     static constexpr size_t RING_BUF_SAMPLES = 1u << 18;  // 262144
 
-    SpscRing<int32_t> _ring_buf{RING_BUF_SAMPLES};
+    SpscRing<int32_t> _ring_buf;
 
     // Condition variable used by the process thread to sleep until data is
     // available without busy-waiting.  The capture thread calls notify_one()
@@ -3905,7 +3908,7 @@ private:
 // =============================================================================
 // AudioMonitor
 //
-// The top-level object.  Owns the two InputChannels, the shared FifoWriter,
+// The top-level object.  Owns the InputChannels, the shared FifoWriter,
 // and the ControlServer.  Provides the API methods that ControlServer calls
 // in response to socket commands.
 // =============================================================================
@@ -3979,10 +3982,10 @@ public:
 
     std::string api_set_allow_capture(int input_index, bool allow);
 
-    // Set EQ bands for one input (1 or 2).  Applied to the resampled output.
+    // Set EQ bands for one input (1 to 3).  Applied to the resampled output.
     std::string api_set_eq(int input_index, const std::vector<EqBand>& bands);
 
-    // Set pre-amplifier gain for one input (1 or 2).  gain_db in [-24, +24].
+    // Set pre-amplifier gain for one input (1 to 3).  gain_db in [-24, +24].
     std::string api_set_gain(int input_index, float gain_db);
 
     // Set the output-side parametric EQ applied to the stream after per-input
@@ -4100,7 +4103,12 @@ private:
     static std::string transport_ack_json(const char* command,
                                            const RepeatController::TransportAck& a);
 
-    static constexpr int NUM_INPUTS  = 2;
+    static constexpr int NUM_INPUTS  = 3;
+
+    // The ack every per-input command returns for an index outside
+    // [1, NUM_INPUTS]: {"type":"ack","command":"<command>","ok":false,
+    // "error":"input index must be 1 to <NUM_INPUTS>"}.
+    static std::string invalid_input_ack(const char* command);
     static_assert(kLogKeyInstances > NUM_INPUTS,
                   "the log rate limiter needs an instance slot per 1-based input number");
 
@@ -4154,7 +4162,7 @@ private:
     // reference to it (member init order follows declaration order).
     RepeatController _repeat_controller;
 
-    // _inputs[0] is input 1, _inputs[1] is input 2.
+    // _inputs[i] is input i + 1.
     std::array<std::unique_ptr<InputChannel>, NUM_INPUTS> _inputs;
 
     ControlServer _control_server;

@@ -64,6 +64,33 @@ static void test_fresh_ring_accounting()
 }
 
 // ---------------------------------------------------------------------------
+// An empty ring, allocated on first reset(capacity)
+// ---------------------------------------------------------------------------
+
+static void test_empty_ring_allocated_by_reset()
+{
+    SpscRing<int> ring;
+    CHECK(ring.capacity() == 0, "an empty ring has no capacity");
+    CHECK(ring.write_available() == 0, "an empty ring accepts nothing");
+    CHECK(ring.read_available() == 0, "an empty ring holds nothing");
+
+    ring.reset(16);
+    CHECK(ring.capacity() == 16, "reset(capacity) allocates the ring");
+    CHECK(ring.write_available() == 16, "an allocated ring is empty and writable");
+
+    int in[5] = {1, 2, 3, 4, 5};
+    ring.write(in, 5);
+    ring.reset(16);
+    CHECK(ring.read_available() == 0, "a second reset(capacity) empties the ring");
+    CHECK(ring.write_available() == 16, "a second reset(capacity) keeps the capacity");
+
+    ring.write(in, 5);
+    int out[5] = {};
+    ring.read(out, 5);
+    CHECK(out[0] == 1 && out[4] == 5, "the allocated ring round-trips data");
+}
+
+// ---------------------------------------------------------------------------
 // Fill/drain exactness
 // ---------------------------------------------------------------------------
 
@@ -327,6 +354,7 @@ static void test_pod_struct_payload()
 int main()
 {
     test_fresh_ring_accounting();
+    test_empty_ring_allocated_by_reset();
     test_fill_drain_exactness();
     test_availability_invariant();
     test_wraparound_split();

@@ -151,7 +151,7 @@ Request:
 Request fields:
 
 - `input`
-  - input index, `1` or `2`
+  - input index, `1` to `3`
 - `device`
   - ALSA device name in `hw:*` format
 - `silence_threshold_dbfs`
@@ -221,7 +221,7 @@ Success response:
 
 Typical errors:
 
-- `input index must be 1 or 2`
+- `input index must be 1 to 3`
 - `device is empty`
 - `device must be in ALSA hw:* format (e.g. hw:1,0)`
 - `silence_threshold_dbfs must be in the range [-120.0, 0.0]`
@@ -470,7 +470,7 @@ Success response:
 
 Typical errors:
 
-- `input index must be 1 or 2`
+- `input index must be 1 to 3`
 - `input is already running`
 - `input stopped unexpectedly; call stop_input first`
 - start-up failures from ALSA or libsamplerate setup
@@ -493,7 +493,7 @@ Success response:
 
 Typical errors:
 
-- `input index must be 1 or 2`
+- `input index must be 1 to 3`
 
 ### `set_allow_capture`
 
@@ -520,7 +520,7 @@ Success response:
 
 Typical errors:
 
-- `input index must be 1 or 2`
+- `input index must be 1 to 3`
 
 ### `set_eq`
 
@@ -552,7 +552,7 @@ Success response:
 
 Typical errors:
 
-- `input index must be 1 or 2`
+- `input index must be 1 to 3`
 - `unknown EQ band type`
 - any EQ-band validation error
 
@@ -583,7 +583,7 @@ Success response:
 
 Typical errors:
 
-- `input index must be 1 or 2`
+- `input index must be 1 to 3`
 - `gain_db must be in the range [-24.0, +24.0]`
 
 ### `set_output_eq`
@@ -1014,7 +1014,7 @@ Success response:
 Typical errors:
 
 - `test hooks not enabled` (daemon was not launched with `--test-hooks`)
-- `input index must be 1 or 2`
+- `input index must be 1 to 3`
 
 ### `stop_output_dump`
 
@@ -1151,11 +1151,13 @@ Success response:
   "underruns":{
     "live1":0,
     "live2":0,
+    "live3":0,
     "replay":0
   },
   "ring_drops":{
     "live1":0,
     "live2":0,
+    "live3":0,
     "replay":0
   },
   "output_thread":{
@@ -1320,18 +1322,18 @@ Top-level fields:
 - `underruns`
   - cumulative count, since daemon start, of output frames that had to be
     padded with silence because a mixer source came up short at mix time, one
-    field per source: `live1`, `live2`, `replay`
+    field per source: `live1`, `live2`, `live3`, `replay`
   - a source underruns when its ring is empty when the output stage assembles
     the next block, so the missing frames are filled with silence rather than
     real audio; the value is frame counts, not events
   - use it to tell playback-time starvation (a rising `replay` or `liveN`
     here) apart from audio lost earlier at capture (the per-input
     `capture_overruns`/`capture_ring_drops` below); a clean session leaves all
-    three flat
+    of them flat
 - `ring_drops`
   - cumulative count, since daemon start, of frames a source could not hand
     to the output stage because its ring was full, one field per source:
-    `live1`, `live2`, `replay`; frame counts, not events
+    `live1`, `live2`, `live3`, `replay`; frame counts, not events
 - `output_thread`
   - the output stage's own timing and loss counters, since daemon start
   - `lock_contended`: blocks for which the thread had to wait to take the
@@ -1384,7 +1386,7 @@ Top-level fields:
     chunk was recycled in place, and what is held (and replayed) is the most
     recent audio. The defined keeps-last-N behaviour of a fixed arena, not a
     memory-pressure symptom
-  - `recording.origin_input`: input index (`1` or `2`) that produced the
+  - `recording.origin_input`: input index (`1` to `3`) that produced the
     recording; `0` if none
   - `recording.dropped_frames`: frames dropped by the recorder's encode ring
     since the current/most recent recording began (ring overrun, e.g. under
@@ -1565,6 +1567,6 @@ The client must read exactly `frames * 2` bytes after the newline.
 
 Typical errors:
 
-- `input index must be 1 or 2`
+- `input index must be 1 to 3`
 - `no snapshot data available`
 

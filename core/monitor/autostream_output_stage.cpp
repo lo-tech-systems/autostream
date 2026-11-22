@@ -71,23 +71,42 @@ namespace
         unsigned long long prefill   = d(a.thread.prefill_dropped_bytes, b.thread.prefill_dropped_bytes);
         unsigned long long stalls    = d(a.fifo.stall_events,    b.fifo.stall_events);
 
-        unsigned long long under[3], drops[3];
+        constexpr size_t kSources = OutputMixer::kNumSources;
+        unsigned long long under[kSources], drops[kSources];
         bool lost = no_reader || overflow || error || stranded || stalls;
-        for (int i = 0; i < 3; ++i)
+        for (size_t i = 0; i < kSources; ++i)
         {
             under[i] = d(a.mixer.underrun_frames[i], b.mixer.underrun_frames[i]);
             drops[i] = d(a.mixer.dropped_frames[i],  b.mixer.dropped_frames[i]);
             lost = lost || under[i] || drops[i];
         }
 
-        char line[512];
+        // " live1=N live2=N ... replay=N", one field per source in order.
+        auto per_source = [](char* out, size_t size, const unsigned long long* v)
+        {
+            size_t used = 0;
+            out[0] = '\0';
+            for (size_t i = 0; i < kSources && used < size; ++i)
+            {
+                int n = std::snprintf(out + used, size - used, " %s=%llu",
+                                      source_name(static_cast<OutputSource>(i)), v[i]);
+                if (n < 0)
+                    break;
+                used += static_cast<size_t>(n);
+            }
+        };
+        char under_text[128], drops_text[128];
+        per_source(under_text, sizeof(under_text), under);
+        per_source(drops_text, sizeof(drops_text), drops);
+
+        char line[640];
         std::snprintf(line, sizeof(line),
             "[output] Stream ended after %.1f s: lost bytes no_reader=%llu overflow=%llu error=%llu "
-            "stranded=%llu prefill=%llu; underrun frames live1=%llu live2=%llu replay=%llu; "
-            "ring_drop frames live1=%llu live2=%llu replay=%llu; stalls=%llu end_stall=%.1f s "
+            "stranded=%llu prefill=%llu; underrun frames%s; "
+            "ring_drop frames%s; stalls=%llu end_stall=%.1f s "
             "live_wait_timeouts=%llu lock_waits_over_1ms=%llu",
             sm.seconds, no_reader, overflow, error, stranded, prefill,
-            under[0], under[1], under[2], drops[0], drops[1], drops[2],
+            under_text, drops_text,
             stalls, sm.end_stall,
             d(a.thread.live_wait_timeouts, b.thread.live_wait_timeouts),
             d(a.thread.lock_waits_over_1ms, b.thread.lock_waits_over_1ms));
@@ -259,7 +278,7 @@ void OutputStage::thread_func()
             // resampler sets the pace, so wait for its next block rather
             // than sleeping to a fixed deadline. Poll instead of blocking
             // on the ring directly, since the ring has no wake of its own.
-            OutputSource src = (live_source == 0) ? OutputSource::Live1 : OutputSource::Live2;
+            OutputSource src = static_cast<OutputSource>(live_source);
             auto poll_deadline = std::chrono::steady_clock::now()
                 + std::chrono::duration_cast<std::chrono::steady_clock::duration>(block_period * 2.0);
             bool ready = false;
