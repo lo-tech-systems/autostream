@@ -75,10 +75,10 @@ LOG = logging.getLogger("autostream.outputs")
 READ_TIMEOUT_S = 10.0
 WRITE_TIMEOUT_S = 3.0
 SAFETY_READ_S = 60.0
-# A start the player accepted but never reports on ends after this long, well
-# above owntone-mini's slowest give-up: its three attempts, each with every
-# request after the stream setup running to its 15 s limit
-START_PENDING_S = 150.0
+# A start the player accepted but never reports on ends after this long, above
+# owntone-mini's slowest give-up: three attempts that each end on a 15 s
+# stream-setup timeout, plus a PIN pairing, take about 75 s
+START_PENDING_S = 90.0
 DEBOUNCE_S = 2.0
 DEVICE_VOLUME_MARK_S = 2.0
 ABSENT_KEEP_S = 60.0
