@@ -469,11 +469,15 @@ class TestActivityGateSourceInspection:
         )
         assert '"start_after_ms must be in the range [30, 250]"' in src
 
-    def test_probation_feed_uses_raw_comparison(self, io_src):
+    def test_probation_feed_is_signal_time(self, io_src):
         flat = self._squash(io_src)
         assert ("_repeat_controller.notify_probation_block( _index, "
-                "peak_sample >= silence_threshold_sample, now);") in flat, (
-            "probation feed no longer receives the raw comparison"
+                "signal_time(signal, _capture_rate_hz), now);") in flat, (
+            "probation feed no longer receives the block's signal time"
+        )
+        repeat_src = _read_source(REPO_ROOT / "core" / "monitor" / "autostream_repeat.cpp")
+        assert "_probation_last_block_time" not in repeat_src, (
+            "the probation must not measure blocks by the wall clock"
         )
 
     def test_track_gap_detector_uses_raw_flag(self, io_src):

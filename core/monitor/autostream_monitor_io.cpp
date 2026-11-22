@@ -1404,9 +1404,8 @@ void InputChannel::process_thread_func()
         // true -- false for the whole of an active replay, exactly the state
         // probation needs to keep observing.
         //
-        // The flag fed here MUST be the RAW per-block peak test, exactly as
-        // the recorder's own onset gate receives (see the comment above
-        // submit_float_block()). It must NOT be is_above_threshold from
+        // What is fed here is the block's own signal, counted in the sample
+        // domain by update_metering(). It must NOT be is_above_threshold from
         // update_silence_state(): that flag is debounced over the configured
         // silence window, so a single transient would hold it true for the
         // whole window and the sustain gate would "confirm" on wall-clock
@@ -1415,7 +1414,7 @@ void InputChannel::process_thread_func()
         // cheap no-op (two relaxed atomic loads) unless a probation is
         // actually armed for this input_index.
         _repeat_controller.notify_probation_block(
-            _index, peak_sample >= silence_threshold_sample, now);
+            _index, signal_time(signal, _capture_rate_hz), now);
 
         // ── Feed through SRC → EQ → output mixer when capturing ──────────────
         if (_capturing.load() && _src_state)

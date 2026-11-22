@@ -2667,14 +2667,14 @@ public:
 
     // Feeds RepeatController's interrupt-probation gate, one call per
     // processed audio block, from InputChannel::process_thread_func() --
-    // see that call site's comment for exactly why. above_threshold MUST be
-    // the RAW per-block peak-vs-threshold comparison (the same signal the
-    // recorder's own OnsetGate receives), never the silence-window-debounced
-    // flag: a debounced flag stays true for the whole configured silence
-    // window after a single transient, which would let the sustain gate
-    // confirm on wall-clock time alone. The recorder's own feed cannot be
-    // reused directly because it only flows while recording_wanted() is
-    // true -- never during an active replay. Called
+    // see that call site's comment for exactly why. `signal` is the block's
+    // own signal, counted in the sample domain against the input's
+    // threshold, never the silence-window-debounced flag or wall-clock
+    // time: a debounced flag stays true for the whole configured silence
+    // window after a single transient, and wall-clock time would credit a
+    // block that follows a delivery stall with the stall. The recorder's
+    // own feed cannot be reused directly because it only flows while
+    // recording_wanted() is true -- never during an active replay. Called
     // UNCONDITIONALLY, for every input, every block -- deliberately cheap
     // (two relaxed atomic loads) in the overwhelmingly common case where no
     // probation is armed, via the same fast-mirror discipline as
@@ -2684,7 +2684,7 @@ public:
     // See decide_repeat_transition()'s CaptureStarted (Replaying) cell for
     // where probation gets armed, and ProbationConfirmed/ProbationTimedOut
     // for the two ways it resolves.
-    void notify_probation_block(int input_index, bool above_threshold, double now);
+    void notify_probation_block(int input_index, const SignalTime& signal, double now);
 
     // Called by InputChannel on stop_input() of the current origin input
     // (reload/teardown path): discards the buffer and cancels any
@@ -2988,9 +2988,9 @@ private:
     // declaration comment).
     int           _pending_interrupt_revert_origin = 0;
 
-    // Interrupt-probation gate: accumulates continuous above-threshold time
-    // on the interrupting input while pending_action == InterruptProbation,
-    // fed by notify_probation_block() (called for every input, every block,
+    // Interrupt-probation gate: accumulates an unbroken run of signal on the
+    // interrupting input while pending_action == InterruptProbation, fed by
+    // notify_probation_block() (called for every input, every block,
     // regardless of recording_wanted() -- see that function's declaration
     // comment). kInterruptSustainSeconds is its own constant, deliberately
     // distinct from SustainTracker::kSustainSeconds (the RECORDER's onset-
@@ -2999,16 +2999,14 @@ private:
     // reset() at every arm (CaptureStarted's probation-arm cell) so a stale
     // partial run from a previous, already-resolved probation attempt can
     // never leak into a new one.
-    SustainTracker _interrupt_probation{kInterruptSustainSeconds};
-    // Wall-clock timestamp probation was armed, and of the most recently fed
-    // block while armed -- both 0.0 while no probation is in flight. Two
-    // separate clocks because the sustain accumulator above only advances on
-    // above-threshold blocks (silence resets it to zero), while the TIMEOUT
-    // bound (kPreRollSeconds, autostream_repeat_buffer.h) is measured from
-    // the arm instant regardless of what the audio has been doing since --
-    // "confirm within the window at all", not "sustain the whole window".
+    SignalRunTracker _interrupt_probation{kInterruptSustainSeconds};
+    // Wall-clock timestamp probation was armed -- 0.0 while no probation is
+    // in flight. The run above is measured in the audio itself, while the
+    // TIMEOUT bound (kPreRollSeconds, autostream_repeat_buffer.h) is
+    // measured from the arm instant regardless of what the audio has been
+    // doing since -- "confirm within the window at all", not "sustain the
+    // whole window".
     double        _probation_armed_time      = 0.0;
-    double        _probation_last_block_time = 0.0;
     // Lock-free fast mirrors of "a probation is currently armed, for this
     // input" -- written under _repeat_mutex at the single mutation choke
     // point in handle_event_locked() (alongside _pending_action itself),

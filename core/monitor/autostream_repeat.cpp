@@ -795,15 +795,13 @@ void RepeatController::handle_event_locked(RepeatEvent event, const RepeatEventC
             // Fresh arm: any accumulation left over from a previous,
             // already-resolved probation attempt must not leak into this
             // one -- see _interrupt_probation's declaration comment. The
-            // window itself depends on the input type the coordinator sent
-            // (or, when none was sent, on the silence threshold): a
-            // non-turntable input confirms almost at once
+            // window itself depends on the input type the coordinator sent:
+            // a non-turntable input confirms almost at once
             // (kImmediateInterruptSustainSeconds), a turntable needs the
             // longer kInterruptSustainSeconds window.
             _interrupt_probation.reset(_pending_interrupt_immediate
                 ? kImmediateInterruptSustainSeconds : kInterruptSustainSeconds);
-            _probation_armed_time      = get_monotonic_time();
-            _probation_last_block_time = 0.0;
+            _probation_armed_time = get_monotonic_time();
         }
     }
     if (d.set_pending_restorable)
@@ -1185,7 +1183,7 @@ void RepeatController::notify_capture_started(int input_index, bool immediate_in
     handle_event_locked(RepeatEvent::CaptureStarted, ctx);
 }
 
-void RepeatController::notify_probation_block(int input_index, bool above_threshold, double now)
+void RepeatController::notify_probation_block(int input_index, const SignalTime& signal, double now)
 {
     // This runs on the audio process thread, once per processed block, for
     // EVERY input, unconditionally -- see the declaration comment
@@ -1215,31 +1213,21 @@ void RepeatController::notify_probation_block(int input_index, bool above_thresh
     RepeatEventCtx ctx;
     ctx.input_index = input_index;
 
-    // Wall-clock timeout bound, independent of the sustain accumulator
-    // below (which only advances on above-threshold blocks): armed longer
-    // than kPreRollSeconds without confirming and this probation is done,
-    // regardless of what today's audio has been doing -- see
-    // kInterruptSustainSeconds' declaration comment (autostream_repeat_
-    // buffer.h) for why kPreRollSeconds is the natural bound here.
+    // Wall-clock timeout bound, independent of the run below (which only
+    // grows with signal): armed longer than kPreRollSeconds without
+    // confirming and this probation is done, regardless of what today's
+    // audio has been doing -- see kInterruptSustainSeconds' declaration
+    // comment (autostream_repeat_buffer.h) for why kPreRollSeconds is the
+    // natural bound here.
     if (now - _probation_armed_time >= kPreRollSeconds)
     {
         handle_event_locked(RepeatEvent::ProbationTimedOut, ctx);
         return;
     }
 
-    // Elapsed wall-clock time since the previous block fed to this
-    // probation attempt, clamped so the very first call after arming (where
-    // there is no previous call to measure from) or a scheduling gap (a
-    // delayed audio-thread iteration) cannot inject a spuriously large jump
-    // into the sustain accumulator -- 0.25 s is comfortably larger than any
-    // real block duration this codebase processes, so it only ever clamps
-    // genuine gaps, never a normal block-to-block interval.
-    double block_seconds = (_probation_last_block_time > 0.0)
-        ? std::min(now - _probation_last_block_time, 0.25)
-        : 0.0;
-    _probation_last_block_time = now;
-
-    bool confirmed = _interrupt_probation.on_block(above_threshold, block_seconds);
+    // The run is measured in the audio itself, so a block that follows a
+    // delivery stall or a scheduling gap adds only the signal it carries.
+    bool confirmed = _interrupt_probation.on_block(signal);
     if (confirmed)
         handle_event_locked(RepeatEvent::ProbationConfirmed, ctx);
 }

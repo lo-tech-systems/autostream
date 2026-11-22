@@ -312,6 +312,73 @@ static void test_signal_time_converts_frames()
     CHECK(none.seconds == 0.0 && !none.gap, "no rate, no time");
 }
 
+// ---------------------------------------------------------------------------
+// SignalRunTracker
+// ---------------------------------------------------------------------------
+
+static SignalTime run(double seconds, double trailing, bool gap)
+{
+    SignalTime t;
+    t.seconds          = seconds;
+    t.trailing_seconds = trailing;
+    t.gap              = gap;
+    return t;
+}
+
+static void test_run_adds_signal_without_a_gap()
+{
+    SignalRunTracker t(0.25);
+    CHECK(!t.on_block(run(0.1, 0.1, false)), "0.1 s");
+    CHECK(!t.on_block(run(0.1, 0.1, false)), "0.2 s");
+    CHECK(near(t.run_seconds(), 0.2), "the run adds up");
+}
+
+static void test_a_gap_restarts_from_the_trailing_signal()
+{
+    SignalRunTracker t(0.25);
+    t.on_block(run(0.2, 0.2, false));
+    CHECK(!t.on_block(run(0.03, 0.01, true)), "a gap inside the block");
+    CHECK(near(t.run_seconds(), 0.01), "the run restarts from the signal ending the block");
+}
+
+static void test_confirms_once_at_the_window()
+{
+    SignalRunTracker t(0.25);
+    CHECK(!t.on_block(run(0.24, 0.24, false)), "0.24 s of 0.25 s");
+    CHECK(t.on_block(run(0.01, 0.01, false)), "reaching 0.25 s confirms");
+    CHECK(!t.on_block(run(0.02, 0.02, false)), "and does not confirm again");
+}
+
+static void test_a_block_after_a_stall_adds_only_its_own_signal()
+{
+    SignalRunTracker t(0.25);
+    // The power-down blip arrives after a long stall: 22 ms, then the hold runs out.
+    CHECK(!t.on_block(run(0.022, 0.0, true)), "one blip never confirms");
+    CHECK(near(t.run_seconds(), 0.0), "and leaves no run behind");
+    CHECK(!t.on_block(run(0.022, 0.022, false)), "a blip at the end of a block");
+    CHECK(near(t.run_seconds(), 0.022), "counts only itself");
+}
+
+static void test_reset_switches_the_window_and_clears_the_run()
+{
+    SignalRunTracker t(1.25);
+    t.on_block(run(1.0, 1.0, false));
+    t.reset(0.25);
+    CHECK(near(t.sustain_seconds(), 0.25), "the new window");
+    CHECK(near(t.run_seconds(), 0.0), "an empty run");
+    CHECK(!t.on_block(run(0.24, 0.24, false)), "the old run does not count");
+    CHECK(t.on_block(run(0.01, 0.01, false)), "a fresh 0.25 s confirms");
+}
+
+static void test_a_pop_every_other_block_never_confirms()
+{
+    SignalRunTracker t(0.25);
+    bool confirmed = false;
+    for (int i = 0; i < 100; ++i)
+        confirmed = t.on_block(i % 2 ? run(0.0, 0.0, true) : run(0.022, 0.022, true)) || confirmed;
+    CHECK(!confirmed, "pops broken by quiet blocks never make a run");
+}
+
 int main()
 {
     test_named_turntable_gets_long_window();
@@ -343,6 +410,12 @@ int main()
     test_blocks_full_of_signal_fire_as_before();
     test_mean_power_is_weighted_by_block_time();
     test_signal_time_converts_frames();
+    test_run_adds_signal_without_a_gap();
+    test_a_gap_restarts_from_the_trailing_signal();
+    test_confirms_once_at_the_window();
+    test_a_block_after_a_stall_adds_only_its_own_signal();
+    test_reset_switches_the_window_and_clears_the_run();
+    test_a_pop_every_other_block_never_confirms();
 
     std::fprintf(stdout, "%s — %d/%d tests passed\n",
                  g_failed ? "FAIL" : "PASS",

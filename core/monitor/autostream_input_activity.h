@@ -150,6 +150,43 @@ private:
     ActivityGateReport _report;
 };
 
+// An unbroken run of signal, confirmed once when it reaches its window. Fed
+// once per block with that block's SignalTime. A block with a gap restarts
+// the run from the signal that ends the block, so the run is exactly the
+// signal since the last quiet stretch longer than the hold, whatever the
+// block sizes, and a block that follows a delivery stall adds only the
+// signal it carries.
+class SignalRunTracker
+{
+public:
+    explicit SignalRunTracker(double window_seconds) : _window(window_seconds) {}
+
+    // Clears the run and sets the window it must reach.
+    void reset(double window_seconds)
+    {
+        _window = window_seconds;
+        _run    = 0.0;
+    }
+
+    // Returns true on the block that brings the run to the window.
+    bool on_block(const SignalTime& signal)
+    {
+        const bool was_confirmed = _run >= _window;
+        if (signal.gap)
+            _run = signal.trailing_seconds;
+        else
+            _run += signal.seconds;
+        return !was_confirmed && _run >= _window;
+    }
+
+    double run_seconds() const     { return _run; }
+    double sustain_seconds() const { return _window; }
+
+private:
+    double _window = 0.0;
+    double _run    = 0.0;
+};
+
 // Why an input became active on a block, or why a gate window closed
 // without it, for the debug log. Ungated carries the one block that made
 // an input active while its capture rate was unknown. None on every other

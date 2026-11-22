@@ -254,8 +254,10 @@ recording of the thump) well before real music arrives.
   is bounded by a 5 s wall clock.
   The capture-start edge that arms the probation is the activity gate's own
   firing, so the probation begins after the gate's
-  `start_after_ms` and the two sustain tests do not overlap; the probation itself
-  keeps using the raw per-block flag.
+  `start_after_ms` and the two sustain tests do not overlap. The probation
+  needs an unbroken run of signal, counted in the audio the same way as the
+  activity gate's: a quiet stretch longer than 10 ms breaks the run, and a
+  block that follows a delivery stall adds only the signal it carries.
   If the audio does not sustain within that window, the probation expires
   silently -- replay never stopped, nothing was freed, no status field
   changed -- and the only operator-visible trace is a WARN-level log line.
