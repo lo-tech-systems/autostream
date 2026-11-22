@@ -319,7 +319,7 @@ right of the now-playing, repeat or EQ page). Closing the list, or leaving
 it alone until it times out, takes you back to the page you opened it
 from:
 
-![Outputs list showing two speaker names, one with a volume level shown](images/outputs-list-rich.png)
+![Outputs list: Lounge with a bullet and level 42, Kitchen at 30, Dining Room Paused, Bedroom Muted, and Study off](images/outputs-list-rich.png)
 
 *The outputs list: a level number shows for whichever outputs are switched
 on; nothing shows for ones that are off. A speaker in the appliance's Auto-Start set has
