@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).parent.parent
 for _p in (REPO_ROOT / "platform",):
     _s = str(_p)
@@ -752,3 +754,223 @@ class TestGrantedParamVerification:
         assert not pump.holds_loopback()
         refused = fake.opened[-1]
         assert refused.closed and refused.writes == []
+
+
+# ---------------------------------------------------------------------------
+# Reopen pacing after write failures in quick succession.
+# ---------------------------------------------------------------------------
+
+def _always_fail_writes(pcm):
+    def _raise(data):
+        raise RuntimeError("Broken pipe [hw:CARD=ASBT,DEV=0]")
+    pcm.write = _raise  # type: ignore[method-assign]
+
+
+class TestRecoveryBackoff:
+    def test_first_failure_reopens_at_once_then_failures_back_off(self, monkeypatch):
+        now = {"t": 100.0}
+        monkeypatch.setattr(pump_mod.time, "monotonic", lambda: now["t"])
+        monkeypatch.setattr(pump_mod.time, "sleep", lambda s: None)
+        pump, fake = _make_pump()
+
+        _always_fail_writes(fake.opened[-1])
+        pump._write_playback(b"\x01")
+        reopened = fake.opened[-1]
+        assert reopened is not fake.opened[0] and pump.holds_loopback()
+
+        _always_fail_writes(reopened)
+        now["t"] += 1.5
+        pump._write_playback(b"\x01")
+        assert not pump.holds_loopback()
+        assert pump._recovery_retry_at == now["t"] + pump_mod.RECOVERY_BACKOFF_SECONDS[0]
+        assert pump.playback_locked_out() is False   # a paced reopen is not a lockout
+
+        opened_before = len(fake.opened)
+        pump._write_playback(b"\x01")                # still waiting: nothing opened
+        assert len(fake.opened) == opened_before
+        now["t"] += pump_mod.RECOVERY_BACKOFF_SECONDS[0]
+        pump._write_playback(b"\x01")
+        assert pump.holds_loopback()
+
+    def test_back_off_doubles_up_to_its_cap(self, monkeypatch):
+        now = {"t": 100.0}
+        monkeypatch.setattr(pump_mod.time, "monotonic", lambda: now["t"])
+        monkeypatch.setattr(pump_mod.time, "sleep", lambda s: None)
+        pump, fake = _make_pump()
+        waits = []
+        for _ in range(6):
+            _always_fail_writes(fake.opened[-1])
+            pump._write_playback(b"\x01")
+            if pump._playback_pcm is None:
+                waits.append(pump._recovery_retry_at - now["t"])
+                now["t"] = pump._recovery_retry_at
+                pump._write_playback(b"\x00")     # paced reopen
+            now["t"] += 0.5
+        assert waits == [1.0, 2.0, 4.0, 8.0, 8.0]
+
+    def test_a_clean_run_starts_the_back_off_over(self, monkeypatch):
+        now = {"t": 100.0}
+        monkeypatch.setattr(pump_mod.time, "monotonic", lambda: now["t"])
+        pump, fake = _make_pump()
+        _always_fail_writes(fake.opened[-1])
+        pump._write_playback(b"\x01")
+        now["t"] += pump_mod.RECOVERY_BACKOFF_SECONDS[-1] + 1
+        _always_fail_writes(fake.opened[-1])
+        pump._write_playback(b"\x01")
+        assert pump.holds_loopback()              # reopened at once again
+
+    def test_reopen_noise_is_logged_at_debug(self, caplog):
+        pump, fake = _make_pump()
+        _always_fail_writes(fake.opened[-1])
+        with caplog.at_level("DEBUG", logger="bluetooth_pump"):
+            pump._write_playback(b"\x01")
+        mine = [r for r in caplog.records if r.name == "bluetooth_pump"]
+        assert mine and all(r.levelname == "DEBUG" for r in mine)
+
+
+# ---------------------------------------------------------------------------
+# The audio source machine: Off / Silent / Held / Live.
+# ---------------------------------------------------------------------------
+
+PAIRED = "AA:BB:CC:DD:EE:01"
+OTHER = "AA:BB:CC:DD:EE:02"
+
+
+class _SourcePump:
+    def __init__(self):
+        self.source = None
+        self.rate = None
+        self.sets = []
+
+    def set_active_source(self, device, rate=None):
+        self.sets.append((device, rate))
+        self.source = device
+        if rate:
+            self.rate = rate
+
+    def current_source(self):
+        return self.source
+
+
+def _source(paired=PAIRED):
+    holder = {"mac": paired}
+    machine = pump_mod.AudioSourceMachine(audio_mac=lambda: holder["mac"])
+    pump = _SourcePump()
+    machine.bind(pump)
+    return machine, pump, holder
+
+
+def _dev(mac):
+    return pump_mod.bluealsa_capture_device(mac)
+
+
+def _silent():
+    return _source()
+
+
+def _held():
+    m, p, h = _source()
+    m.handle(pump_mod.EV_TRANSPORT_ACTIVE, OTHER, 44100)
+    return m, p, h
+
+
+def _live():
+    m, p, h = _source()
+    m.handle(pump_mod.EV_TRANSPORT_ACTIVE, PAIRED, 44100)
+    return m, p, h
+
+
+SOURCE_SETUPS = {"silent": _silent, "held": _held, "live": _live}
+
+# (setup, event, mac, next state, expected pump source afterwards)
+SOURCE_ROWS = [
+    ("silent", pump_mod.EV_TRANSPORT_ACTIVE, PAIRED, pump_mod.SOURCE_LIVE, _dev(PAIRED)),
+    ("silent", pump_mod.EV_TRANSPORT_ACTIVE, OTHER, pump_mod.SOURCE_HELD, None),
+    ("held", pump_mod.EV_ADOPT, OTHER, pump_mod.SOURCE_HELD, None),
+    ("held", pump_mod.EV_TRANSPORT_IDLE, OTHER, pump_mod.SOURCE_SILENT, None),
+    ("held", pump_mod.EV_TRANSPORT_REMOVED, OTHER, pump_mod.SOURCE_SILENT, None),
+    ("held", pump_mod.EV_TRANSPORT_ACTIVE, PAIRED, pump_mod.SOURCE_LIVE, _dev(PAIRED)),
+    ("live", pump_mod.EV_TRANSPORT_IDLE, PAIRED, pump_mod.SOURCE_SILENT, None),
+    ("live", pump_mod.EV_TRANSPORT_REMOVED, PAIRED, pump_mod.SOURCE_SILENT, None),
+    ("live", pump_mod.EV_TRANSPORT_ACTIVE, OTHER, pump_mod.SOURCE_LIVE, _dev(PAIRED)),
+    # Its transport is still up until the forgotten device is removed.
+    ("live", pump_mod.EV_FORGET, None, pump_mod.SOURCE_HELD, None),
+    ("live", pump_mod.EV_PUMP_STOP, None, pump_mod.SOURCE_OFF, _dev(PAIRED)),
+    ("silent", pump_mod.EV_PUMP_STOP, None, pump_mod.SOURCE_OFF, None),
+]
+
+
+@pytest.mark.parametrize("setup,event,mac,next_state,source", SOURCE_ROWS,
+                         ids=[f"{r[0]}-{r[1]}-{i}" for i, r in enumerate(SOURCE_ROWS)])
+def test_source_row(setup, event, mac, next_state, source):
+    m, pump, _ = SOURCE_SETUPS[setup]()
+    m.handle(event, mac)
+    assert m.state == next_state
+    assert pump.source == source
+
+
+class TestAudioSourceMachine:
+    def test_off_until_the_pump_is_bound(self):
+        m = pump_mod.AudioSourceMachine(audio_mac=lambda: PAIRED)
+        assert m.state == pump_mod.SOURCE_OFF
+        m.handle(pump_mod.EV_TRANSPORT_ACTIVE, PAIRED, 44100)
+        assert m.state == pump_mod.SOURCE_OFF
+
+    def test_held_zero_fills_while_its_transport_is_active(self):
+        m, pump, _ = _held()
+        assert pump.sets == []
+        assert m.held_mac == OTHER
+
+    def test_adopt_releases_the_hold_at_once_with_the_transport_rate(self):
+        m, pump, holder = _source(paired=None)
+        m.handle(pump_mod.EV_TRANSPORT_ACTIVE, OTHER, 48000)
+        holder["mac"] = OTHER
+        m.handle(pump_mod.EV_ADOPT, OTHER)
+        assert m.state == pump_mod.SOURCE_LIVE
+        assert pump.sets == [(_dev(OTHER), 48000)]
+        assert m.held_mac is None
+
+    def test_adopt_switches_from_the_old_paired_device(self):
+        m, pump, holder = _live()
+        m.handle(pump_mod.EV_TRANSPORT_ACTIVE, OTHER, 48000)
+        holder["mac"] = OTHER
+        m.handle(pump_mod.EV_ADOPT, OTHER)
+        assert pump.source == _dev(OTHER)
+        m.handle(pump_mod.EV_TRANSPORT_REMOVED, PAIRED)
+        assert m.state == pump_mod.SOURCE_LIVE and pump.source == _dev(OTHER)
+
+    def test_re_attach_when_the_pump_lost_its_source(self):
+        m, pump, _ = _live()
+        pump.source = None                      # cleared behind the machine's back
+        m.handle(pump_mod.EV_TRANSPORT_ACTIVE, PAIRED)
+        assert pump.source == _dev(PAIRED)
+        assert len(pump.sets) == 2
+
+    def test_no_re_arm_while_already_feeding_from_the_paired_device(self):
+        m, pump, _ = _live()
+        m.handle(pump_mod.EV_TRANSPORT_ACTIVE, PAIRED)
+        assert len(pump.sets) == 1
+
+    def test_live_falls_back_to_held_when_another_transport_is_still_up(self):
+        m, pump, _ = _live()
+        m.handle(pump_mod.EV_TRANSPORT_ACTIVE, OTHER)
+        m.handle(pump_mod.EV_TRANSPORT_IDLE, PAIRED)
+        assert m.state == pump_mod.SOURCE_HELD and m.held_mac == OTHER
+
+    def test_another_transport_going_idle_leaves_live_alone(self):
+        m, pump, _ = _live()
+        m.handle(pump_mod.EV_TRANSPORT_ACTIVE, OTHER)
+        m.handle(pump_mod.EV_TRANSPORT_IDLE, OTHER)
+        assert m.state == pump_mod.SOURCE_LIVE and pump.source == _dev(PAIRED)
+
+    def test_forget_leaves_the_old_transport_held(self):
+        m, pump, holder = _live()
+        holder["mac"] = None
+        m.handle(pump_mod.EV_FORGET)
+        assert m.state == pump_mod.SOURCE_HELD and pump.source is None
+
+    def test_current_source_reports_what_was_set(self):
+        pump, _ = _make_pump()
+        assert pump.current_source() is None
+        pump.set_active_source(_dev(PAIRED))
+        assert pump.current_source() == _dev(PAIRED)

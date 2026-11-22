@@ -64,14 +64,14 @@ class FakeServer:
 
     def __init__(self, bridge=None) -> None:
         self.bridge = bridge if bridge is not None else FakeBridge()
-        self.scan_start_called = False
-        self.scan_stop_called = False
+        self.window_calls: list = []
         self.forget_called = False
         self.paired_with: str | None = None
-        # Contract: scan_start()/pair() return bool — False means
-        # "busy" (a scan/pairing attempt is already in flight).
-        self.scan_start_result = True
-        self.pair_result = True
+        # Contract: window_start()/window_stop()/pair() return None on
+        # success, else the window machine's reply code.
+        self.window_start_result = None
+        self.window_stop_result = None
+        self.pair_result = None
         self.configure_result = True
         self.configured_with: int | None = None
         self._status = {
@@ -84,29 +84,30 @@ class FakeServer:
             "buffer_ms": 200,
             "adapter_kind": "usb",
             "version": "0.5.2",
+            "window_state": "idle",
+            "held": None,
         }
-        self._scan_results = []
-        self._pair_status = {"state": "idle"}
+        self._poll = {"state": "idle", "remaining_s": None, "devices": [], "adopting": None,
+                      "last_close": None, "last_error": None}
 
     def get_status(self) -> dict:
         return dict(self._status)
 
-    def scan_start(self) -> bool:
-        self.scan_start_called = True
-        return self.scan_start_result
+    def window_start(self):
+        self.window_calls.append("start")
+        return self.window_start_result
 
-    def scan_stop(self) -> None:
-        self.scan_stop_called = True
+    def window_stop(self):
+        self.window_calls.append("stop")
+        return self.window_stop_result
 
-    def get_scan_results(self) -> list:
-        return list(self._scan_results)
+    def window_poll(self) -> dict:
+        self.window_calls.append("poll")
+        return dict(self._poll)
 
-    def pair(self, mac: str) -> bool:
+    def pair(self, mac: str):
         self.paired_with = mac
         return self.pair_result
-
-    def get_pair_status(self) -> dict:
-        return dict(self._pair_status)
 
     def forget(self) -> None:
         self.forget_called = True
@@ -137,7 +138,17 @@ class TestDispatchStatus:
             "adapter_kind": "usb",
             "adapter_blocked": False,
             "version": "0.5.2",
+            "window_state": "idle",
+            "held": None,
         }
+
+    def test_status_window_state_and_held_passthrough(self):
+        srv = FakeServer()
+        srv._status["window_state"] = "open"
+        srv._status["held"] = {"mac": MAC_A}
+        r = dispatch(_req({"cmd": "status"}), srv)
+        assert r["window_state"] == "open"
+        assert r["held"] == {"mac": MAC_A}
 
     def test_status_loopback_held_passthrough(self):
         srv = FakeServer()
@@ -178,7 +189,7 @@ class TestDispatchStatus:
         srv = FakeServer()
         del srv._status["version"]
         r = dispatch(_req({"cmd": "status"}), srv)
-        assert r["version"] == "0.5.3"
+        assert r["version"] == "0.6.0"
 
     def test_status_adapter_blocked_passthrough(self):
         srv = FakeServer()
@@ -212,38 +223,50 @@ class TestDispatchStatus:
         assert r == {"ok": False, "error": "unexpected_field"}
 
 
-class TestDispatchScan:
-    def test_scan_start(self):
+class TestDispatchWindow:
+    def test_window_start(self):
         srv = FakeServer()
-        r = dispatch(_req({"cmd": "scan_start"}), srv)
-        assert r == {"ok": True}
-        assert srv.scan_start_called is True
+        assert dispatch(_req({"cmd": "window_start"}), srv) == {"ok": True}
+        assert srv.window_calls == ["start"]
 
-    def test_scan_stop(self):
+    @pytest.mark.parametrize("reply,error", [
+        ("closing", "window_closing"), ("no_adapter", "no_adapter"),
+    ])
+    def test_window_start_refusals_use_pinned_errors(self, reply, error):
         srv = FakeServer()
-        r = dispatch(_req({"cmd": "scan_stop"}), srv)
-        assert r == {"ok": True}
-        assert srv.scan_stop_called is True
+        srv.window_start_result = reply
+        assert dispatch(_req({"cmd": "window_start"}), srv) == {"ok": False, "error": error}
 
-    def test_scan_results_empty(self):
-        r = dispatch(_req({"cmd": "scan_results"}), FakeServer())
-        assert r == {"ok": True, "devices": []}
-
-    def test_scan_results_with_devices(self):
+    def test_window_stop(self):
         srv = FakeServer()
-        srv._scan_results = [{"mac": MAC_A, "name": "Turntable", "rssi": -50, "paired": False}]
-        r = dispatch(_req({"cmd": "scan_results"}), srv)
-        assert r["ok"] is True
-        assert r["devices"] == srv._scan_results
+        assert dispatch(_req({"cmd": "window_stop"}), srv) == {"ok": True}
+        srv.window_stop_result = "no_window"
+        assert dispatch(_req({"cmd": "window_stop"}), srv) == {"ok": False, "error": "no_window"}
 
-    def test_scan_start_busy_returns_pinned_error(self):
-        """scan_start()'s bool must not be discarded —
-        a busy state machine reports scan_in_progress rather than a false ok."""
+    def test_window_poll_shape(self):
         srv = FakeServer()
-        srv.scan_start_result = False
-        r = dispatch(_req({"cmd": "scan_start"}), srv)
-        assert r == {"ok": False, "error": "scan_in_progress"}
-        assert srv.scan_start_called is True
+        srv._poll.update(state="open", remaining_s=270, adopting=None, devices=[
+            {"mac": MAC_A, "name": "Portable CD", "source": "incoming",
+             "state": "provisional", "passkey": 123456}])
+        r = dispatch(_req({"cmd": "window_poll"}), srv)
+        assert r == {"ok": True, "state": "open", "remaining_s": 270, "devices": srv._poll["devices"],
+                     "adopting": None, "last_close": None, "last_error": None}
+        assert srv.window_calls == ["poll"]
+
+    def test_window_poll_after_close_carries_the_reason(self):
+        srv = FakeServer()
+        srv._poll.update(last_close={"reason": "paired", "error": None})
+        r = dispatch(_req({"cmd": "window_poll"}), srv)
+        assert r["state"] == "idle" and r["last_close"] == {"reason": "paired", "error": None}
+
+    @pytest.mark.parametrize("cmd", ["window_start", "window_stop", "window_poll"])
+    def test_window_commands_take_no_fields(self, cmd):
+        r = dispatch(_req({"cmd": cmd, "extra": 1}), FakeServer())
+        assert r == {"ok": False, "error": "unexpected_field"}
+
+    @pytest.mark.parametrize("gone", ["scan_start", "scan_stop", "scan_results", "pair_status"])
+    def test_the_scan_commands_are_gone(self, gone):
+        assert dispatch(_req({"cmd": gone}), FakeServer()) == {"ok": False, "error": "unknown_cmd"}
 
 
 class TestDispatchPair:
@@ -267,24 +290,17 @@ class TestDispatchPair:
         r = dispatch(_req({"cmd": "pair", "mac": 1234}), FakeServer())
         assert r["error"] == "invalid_mac"
 
-    def test_pair_busy_returns_pinned_error(self):
-        """pair()'s bool must not be discarded — the
-        webui maps this exact string to HTTP 409, so it must not vary."""
+    @pytest.mark.parametrize("reply,error", [
+        ("adopting", "window_adopting"), ("no_window", "no_window"),
+        ("unknown_device", "unknown_device"),
+    ])
+    def test_pair_refusals_use_pinned_errors(self, reply, error):
+        """The webui maps these exact strings to HTTP statuses."""
         srv = FakeServer()
-        srv.pair_result = False
+        srv.pair_result = reply
         r = dispatch(_req({"cmd": "pair", "mac": MAC_A}), srv)
-        assert r == {"ok": False, "error": "pair_in_progress"}
-        assert srv.paired_with == MAC_A  # server.pair() was still called
-
-    def test_pair_status_idle(self):
-        r = dispatch(_req({"cmd": "pair_status"}), FakeServer())
-        assert r == {"ok": True, "state": "idle"}
-
-    def test_pair_status_failed_includes_error(self):
-        srv = FakeServer()
-        srv._pair_status = {"state": "failed", "error": "timeout"}
-        r = dispatch(_req({"cmd": "pair_status"}), srv)
-        assert r == {"ok": True, "state": "failed", "error": "timeout"}
+        assert r == {"ok": False, "error": error}
+        assert srv.paired_with == MAC_A
 
 
 class TestDispatchForget:
@@ -419,11 +435,10 @@ def _make_server(tmpdir: str) -> BluetoothControlServer:
     fake = FakeServer()
     return BluetoothControlServer(
         get_status=fake.get_status,
-        scan_start=fake.scan_start,
-        scan_stop=fake.scan_stop,
-        get_scan_results=fake.get_scan_results,
+        window_start=fake.window_start,
+        window_stop=fake.window_stop,
+        window_poll=fake.window_poll,
         pair=fake.pair,
-        get_pair_status=fake.get_pair_status,
         forget=fake.forget,
         configure=fake.configure,
         bridge=fake.bridge,
@@ -578,7 +593,7 @@ class TestUnixSocketServer:
         try:
             r = _send_recv(srv.socket_path, {"cmd": "pair", "mac": MAC_A})
             assert r == {"ok": True}
-            r2 = _send_recv(srv.socket_path, {"cmd": "pair_status"})
-            assert r2["ok"] is True
+            r2 = _send_recv(srv.socket_path, {"cmd": "window_poll"})
+            assert r2["ok"] is True and r2["state"] == "idle"
         finally:
             srv.stop()

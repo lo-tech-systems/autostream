@@ -75,7 +75,7 @@ DEFAULT_SOCKET_PATH = "/run/autostream-bluetooth/bluetooth.sock"
 # started). Kept in sync with the daemon's own copy
 # (platform/bluetooth_service.py's BLUETOOTH_SERVICE_VERSION) -- both must
 # be bumped together.
-BLUETOOTH_SERVICE_VERSION = "0.5.3"
+BLUETOOTH_SERVICE_VERSION = "0.6.0"
 
 # ALSA loopback card id, fixed at install time via modprobe.d.
 BLUETOOTH_CARD_ID = "ASBT"
@@ -208,6 +208,15 @@ class BluetoothClient:
 
     def scan_results(self) -> Optional[dict]:
         return self._request({"cmd": "scan_results"})
+
+    def window_start(self) -> Optional[dict]:
+        return self._request({"cmd": "window_start"})
+
+    def window_stop(self) -> Optional[dict]:
+        return self._request({"cmd": "window_stop"})
+
+    def window_poll(self) -> Optional[dict]:
+        return self._request({"cmd": "window_poll"})
 
     def pair(self, mac: str) -> Optional[dict]:
         return self._request({"cmd": "pair", "mac": mac})

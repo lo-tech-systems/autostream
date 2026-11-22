@@ -664,3 +664,16 @@ class TestModuleConfigFiles:
         text = _src(BLUEZ_CONF_FILE)
         assert "DiscoverableTimeout = 0" in text
         assert "PairableTimeout = 0" in text
+
+    def test_bluez_main_conf_sets_the_loudspeaker_class_and_repairing(self):
+        text = _src(BLUEZ_CONF_FILE)
+        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
+        assert lines[0] == "[General]"
+        assert "Class = 0x240414" in lines
+        assert "JustWorksRepairing = confirm" in lines
+
+    def test_bluez_main_conf_comments_describe_the_pairing_window(self):
+        text = _src(BLUEZ_CONF_FILE)
+        assert "BLUETOOTH_MODE" not in text
+        assert "scan window" not in text
+        assert "pairing screen is open" in text

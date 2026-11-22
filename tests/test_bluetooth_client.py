@@ -195,6 +195,19 @@ class TestCommandsSucceed:
         assert result == payload
         assert json.loads(srv.received.strip()) == {"cmd": "pair_status"}
 
+    @pytest.mark.parametrize("method,cmd", [
+        ("window_start", "window_start"), ("window_stop", "window_stop"),
+        ("window_poll", "window_poll"),
+    ])
+    def test_window_commands_send_their_cmd(self, tmp_path, method, cmd):
+        payload = {"ok": True, "state": "open"}
+        srv = _server(tmp_path, payload)
+        c = BluetoothClient(srv.socket_path)
+        result = getattr(c, method)()
+        srv.join()
+        assert result == payload
+        assert json.loads(srv.received.strip()) == {"cmd": cmd}
+
     def test_forget_sends_correct_cmd(self, tmp_path):
         srv = _server(tmp_path, {"ok": True})
         c = BluetoothClient(srv.socket_path)
@@ -266,7 +279,7 @@ class TestBluetoothServiceVersionConstant:
         BLUETOOTH_SERVICE_VERSION copy -- this pins the current value so an
         accidental one-sided bump is caught here rather than only surfacing
         as a stale About-page version after the daemon is upgraded."""
-        assert BLUETOOTH_SERVICE_VERSION == "0.5.3"
+        assert BLUETOOTH_SERVICE_VERSION == "0.6.0"
 
     def test_is_a_string(self):
         assert isinstance(BLUETOOTH_SERVICE_VERSION, str)

@@ -20,6 +20,10 @@ against — do not change field names without updating that client. Status
 additionally reports the configured audio buffer (``buffer_ms``) and the
 selected adapter's bus kind (``adapter_kind``); ``configure`` sets a new
 audio buffer, range-validated server-side exactly like ``pair``'s MAC.
+
+Pairing is one window: ``window_start`` opens it, ``window_poll`` is both
+the pairing screen's heartbeat and its list, ``pair`` is the user's tap on
+an entry, and ``window_stop`` closes it.
 """
 from __future__ import annotations
 
@@ -69,13 +73,19 @@ class _ThreadingUnixStreamServer(socketserver.ThreadingMixIn, _UnixStreamServer)
 # cmd -> allowed request keys (including "cmd" itself).
 _ALLOWED_KEYS: dict[str, frozenset] = {
     "status":       frozenset({"cmd"}),
-    "scan_start":   frozenset({"cmd"}),
-    "scan_stop":    frozenset({"cmd"}),
-    "scan_results": frozenset({"cmd"}),
+    "window_start": frozenset({"cmd"}),
+    "window_stop":  frozenset({"cmd"}),
+    "window_poll":  frozenset({"cmd"}),
     "pair":         frozenset({"cmd", "mac"}),
-    "pair_status":  frozenset({"cmd"}),
     "forget":       frozenset({"cmd"}),
     "configure":    frozenset({"cmd", "buffer_ms"}),
+}
+
+# Window machine replies -> the pinned error strings the webui maps to HTTP
+# statuses. Any reply not listed is passed through as it is.
+_WINDOW_ERRORS = {
+    "closing": "window_closing",
+    "adopting": "window_adopting",
 }
 
 # Default surfaced when a server implementation predates buffer_ms (kept in
@@ -86,7 +96,7 @@ _DEFAULT_BUFFER_MS = 200
 # Default surfaced when a server implementation predates the version key
 # (kept in sync with bluetooth_service.BLUETOOTH_SERVICE_VERSION; not
 # imported for the same reason as _DEFAULT_BUFFER_MS above).
-_DEFAULT_VERSION = "0.5.3"
+_DEFAULT_VERSION = "0.6.0"
 
 
 def _ok(**kwargs) -> dict:
@@ -192,34 +202,45 @@ def dispatch(raw: bytes, server: "BluetoothControlServer") -> dict:
         return _err("unexpected_field")
 
     try:
-        if cmd == "status":
-            return _handle_status(server)
-        if cmd == "scan_start":
-            if not _call(server, server.scan_start):
-                return _err("scan_in_progress")
-            return _ok()
-        if cmd == "scan_stop":
-            _call(server, server.scan_stop)
-            return _ok()
-        if cmd == "scan_results":
-            return _ok(devices=_call(server, server.get_scan_results))
-        if cmd == "pair":
-            return _handle_pair(obj, server)
-        if cmd == "pair_status":
-            return _handle_pair_status(server)
-        if cmd == "forget":
-            _call(server, server.forget)
-            return _ok()
-        if cmd == "configure":
-            return _handle_configure(obj, server)
+        return _HANDLERS[cmd](obj, server)
     except Exception:
         logger.exception("bluetooth control: internal error handling cmd %r", cmd)
         return _err("internal_error")
 
-    return _err("unknown_cmd")
+
+def _window_reply(reply: Optional[str]) -> dict:
+    """A window command's reply: None is success, anything else an error."""
+    if reply is None:
+        return _ok()
+    return _err(_WINDOW_ERRORS.get(reply, reply))
 
 
-def _handle_status(server: "BluetoothControlServer") -> dict:
+def _handle_window_start(obj: dict, server: "BluetoothControlServer") -> dict:
+    return _window_reply(_call(server, server.window_start))
+
+
+def _handle_window_stop(obj: dict, server: "BluetoothControlServer") -> dict:
+    return _window_reply(_call(server, server.window_stop))
+
+
+def _handle_window_poll(obj: dict, server: "BluetoothControlServer") -> dict:
+    snap = _call(server, server.window_poll)
+    return _ok(
+        state=str(snap.get("state", "idle")),
+        remaining_s=snap.get("remaining_s"),
+        devices=list(snap.get("devices") or []),
+        adopting=snap.get("adopting"),
+        last_close=snap.get("last_close"),
+        last_error=snap.get("last_error"),
+    )
+
+
+def _handle_forget(obj: dict, server: "BluetoothControlServer") -> dict:
+    _call(server, server.forget)
+    return _ok()
+
+
+def _handle_status(obj: dict, server: "BluetoothControlServer") -> dict:
     st = _call(server, server.get_status)
     reply = _ok(
         adapter_present=bool(st.get("adapter_present", False)),
@@ -234,6 +255,8 @@ def _handle_status(server: "BluetoothControlServer") -> dict:
         adapter_kind=st.get("adapter_kind"),
         adapter_blocked=bool(st.get("adapter_blocked", False)),
         version=str(st.get("version") or _DEFAULT_VERSION),
+        window_state=str(st.get("window_state") or "idle"),
+        held=st.get("held"),
     )
     # Transport-conditional fields: the daemon includes these only while an
     # A2DP transport is active (the negotiated codec name and sample rate),
@@ -249,13 +272,10 @@ def _handle_pair(obj: dict, server: "BluetoothControlServer") -> dict:
     mac = obj.get("mac")
     if not isinstance(mac, str) or not MAC_RE.match(mac):
         return _err("invalid_mac")
-    # server.pair() (BluetoothStateMachine.start_pairing) returns False when
-    # a pairing attempt is already in flight; that must reach the client as
-    # a distinct error rather than a silent success.
-    # This exact string is pinned: the webui maps it to HTTP 409.
-    if not _call(server, server.pair, mac):
-        return _err("pair_in_progress")
-    return _ok()
+    # The tap: the outcome arrives through window_poll. The error strings
+    # are pinned: the webui maps window_adopting and no_window to HTTP 409
+    # and unknown_device to 404.
+    return _window_reply(_call(server, server.pair, mac))
 
 
 def _handle_configure(obj: dict, server: "BluetoothControlServer") -> dict:
@@ -270,12 +290,15 @@ def _handle_configure(obj: dict, server: "BluetoothControlServer") -> dict:
     return _ok()
 
 
-def _handle_pair_status(server: "BluetoothControlServer") -> dict:
-    st = _call(server, server.get_pair_status)
-    resp = _ok(state=st.get("state", "idle"))
-    if st.get("error"):
-        resp["error"] = st["error"]
-    return resp
+_HANDLERS: dict[str, Callable[[dict, "BluetoothControlServer"], dict]] = {
+    "status": _handle_status,
+    "window_start": _handle_window_start,
+    "window_stop": _handle_window_stop,
+    "window_poll": _handle_window_poll,
+    "pair": _handle_pair,
+    "forget": _handle_forget,
+    "configure": _handle_configure,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -292,17 +315,14 @@ class BluetoothControlServer:
     get_status: () -> dict with adapter_present, paired ({mac,name}|None),
         link, streaming, scanning, pump_source_active, buffer_ms,
         adapter_kind ("usb"|"onboard"|"unknown"|None), version (daemon
-        version string).
-    scan_start: () -> bool — False when a pairing attempt is already in
-        flight (reported to the client as {"ok":false,"error":"scan_in_progress"}).
-    scan_stop: () -> None.
-    get_scan_results: () -> list[dict] ({mac, name, rssi, paired}).
-    pair: (mac: str) -> bool — async; True once accepted (caller polls
-        get_pair_status), False when a pairing attempt is already in flight
-        (reported to the client as {"ok":false,"error":"pair_in_progress"} —
-        this exact string is pinned; the webui maps it to HTTP 409).
-    get_pair_status: () -> dict with state (idle|pairing|done|failed) and
-        optional error.
+        version string), window_state, held ({mac}|None).
+    window_start: () -> None on success, else a reply code ("closing" while
+        the last window is still cleaning up, "no_adapter").
+    window_stop: () -> None, or "no_window".
+    window_poll: () -> dict {state, remaining_s, devices, adopting,
+        last_close, last_error}; also records the heartbeat.
+    pair: (mac: str) -> None once the tap's op has started, else
+        "no_window", "unknown_device" or "adopting".
     forget: () -> None.
     configure: (buffer_ms: int) -> bool — True once the new audio buffer
         (milliseconds, 100..500 inclusive) is accepted and persisted, False
@@ -320,11 +340,10 @@ class BluetoothControlServer:
         self,
         *,
         get_status: Callable[[], dict],
-        scan_start: Callable[[], bool],
-        scan_stop: Callable[[], None],
-        get_scan_results: Callable[[], list],
-        pair: Callable[[str], bool],
-        get_pair_status: Callable[[], dict],
+        window_start: Callable[[], Optional[str]],
+        window_stop: Callable[[], Optional[str]],
+        window_poll: Callable[[], dict],
+        pair: Callable[[str], Optional[str]],
         forget: Callable[[], None],
         configure: Callable[[int], bool],
         bridge: "loop_mod.LoopBridge",
@@ -332,11 +351,10 @@ class BluetoothControlServer:
     ) -> None:
         self.bridge = bridge
         self.get_status = get_status
-        self.scan_start = scan_start
-        self.scan_stop = scan_stop
-        self.get_scan_results = get_scan_results
+        self.window_start = window_start
+        self.window_stop = window_stop
+        self.window_poll = window_poll
         self.pair = pair
-        self.get_pair_status = get_pair_status
         self.forget = forget
         self.configure = configure
         self.socket_path = socket_path

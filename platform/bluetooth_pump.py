@@ -38,7 +38,7 @@ import logging
 import math
 import threading
 import time
-from typing import Optional
+from typing import Callable, Optional
 
 import bluetooth_loop as loop_mod
 
@@ -79,6 +79,13 @@ PLAYBACK_RING_HEADROOM_PERIODS = 4
 # the pump responsive to the cable freeing up without busy-spinning.
 PLAYBACK_PIN_RETRY_SECONDS = 2.0
 
+# Pacing of loopback reopens after write failures in quick succession, as
+# happens while nothing reads the loopback yet: the first reopen after a
+# clean run is immediate (a real underrun is a few milliseconds of silence),
+# then each further failure waits the next of these before reopening. A run
+# of writes longer than the last step without a failure starts over.
+RECOVERY_BACKOFF_SECONDS = (1.0, 2.0, 4.0, 8.0)
+
 # ALSA rate negotiation can report a timer-derived neighbour of the real
 # rate (e.g. 47999 for a 48000 cable); treat rates within this distance as
 # equal when verifying granted parameters.
@@ -116,9 +123,9 @@ def bluealsa_capture_device(mac: str) -> str:
 class LoopbackPump:
     """Feeds the loopback playback side for the daemon's lifetime.
 
-    ``set_active_source()`` is called by the bluez layer when a
-    MediaTransport1 object appears/disappears — the pump never polls for
-    transport state. ``alsaaudio_module`` is injectable for tests; production
+    ``set_active_source()`` is called by the ``AudioSourceMachine`` below as
+    transports come and go and devices are adopted — the pump never polls
+    for transport state. ``alsaaudio_module`` is injectable for tests; production
     code imports the real python3-alsaaudio lazily in ``start()``.
     """
 
@@ -158,6 +165,12 @@ class LoopbackPump:
         self._playback_retry_at = 0.0
         self._last_pin_log = 0.0
         self._pin_recovery_log = loop_mod.RecoveryLog("bluetooth loopback playback open")
+        # Write-failure reopen pacing (RECOVERY_BACKOFF_SECONDS): kept apart
+        # from the parameter-mismatch retry so a paced reopen never reads as
+        # a lockout to the coordinator.
+        self._recovery_step = 0
+        self._last_recovery_at: Optional[float] = None
+        self._recovery_retry_at = 0.0
 
     # ---- control surface (called from bluetooth_service on bluez callbacks) ----
 
@@ -209,6 +222,11 @@ class LoopbackPump:
         the pump alone cannot force it."""
         with self._lock:
             return self._playback_pcm is None and self._playback_retry_at > 0
+
+    def current_source(self) -> Optional[str]:
+        """The capture device currently set (thread-safe), or None."""
+        with self._lock:
+            return self._active_capture_device
 
     def has_active_source(self) -> bool:
         """True once a capture device has been *set* (``set_active_source``),
@@ -316,7 +334,7 @@ class LoopbackPump:
             logger.warning(msg, *args)
             self._last_pin_log = now
 
-    def _open_playback(self, alsaaudio):
+    def _open_playback(self, alsaaudio, log_level: int = logging.INFO):
         """Open, verify, and prefill the loopback playback PCM.
 
         Returns the open PCM, or None when the device would not grant the
@@ -375,7 +393,8 @@ class LoopbackPump:
         effective_prefill = prefill_periods
         if negotiated is not None and negotiated < prefill_periods:
             effective_prefill = negotiated
-        logger.info(
+        logger.log(
+            log_level,
             "bluetooth pump: loopback playback opened at %d Hz (buffer_ms=%d -> "
             "prefill=%d periods, requested ring=%d periods%s)",
             self._rate, buffer_ms, effective_prefill, requested_periods,
@@ -395,20 +414,41 @@ class LoopbackPump:
                 break
         return pcm
 
-    def _recover_playback(self) -> None:
+    def _recover_playback(self, error: Exception) -> None:
         """Reopen the playback PCM after an unrecoverable write error
         (typically an EPIPE underrun).  The brief close/reopen stalls the
         loopback capture clock for a few ms — unavoidable, and far better
         than the pump thread dying.  The reopen may itself be refused on a
         parameter mismatch (None), in which case the pump drops into the
         paused/retrying state instead of holding a handle it must not
-        write to."""
+        write to.
+
+        Failures in quick succession are paced by RECOVERY_BACKOFF_SECONDS
+        and logged at debug: with nothing reading the loopback the writes
+        fail every second or two, which is expected rather than news."""
         try:
             if self._playback_pcm is not None:
                 self._playback_pcm.close()
         except Exception:
             pass
-        self._playback_pcm = self._open_playback(self._alsaaudio)
+        now = time.monotonic()
+        if (self._last_recovery_at is None
+                or now - self._last_recovery_at > RECOVERY_BACKOFF_SECONDS[-1]):
+            self._recovery_step = 0
+        self._last_recovery_at = now
+        step = self._recovery_step
+        self._recovery_step += 1
+        if step == 0:
+            logger.debug("bluetooth pump: loopback playback write failed (%s); reopening", error)
+            self._playback_pcm = self._open_playback(self._alsaaudio, logging.DEBUG)
+            return
+        wait = RECOVERY_BACKOFF_SECONDS[min(step, len(RECOVERY_BACKOFF_SECONDS)) - 1]
+        logger.debug(
+            "bluetooth pump: loopback playback write failed (%s); reopening in %.0fs",
+            error, wait,
+        )
+        self._playback_pcm = None
+        self._recovery_retry_at = now + wait
 
     def _write_playback(self, data: bytes) -> None:
         """Write to the loopback, recovering (reopen + prefill) on ALSA
@@ -421,16 +461,21 @@ class LoopbackPump:
         drop sleeps for roughly one period so the surrounding loop keeps
         real-time pace without busy-spinning."""
         if self._playback_pcm is None:
-            if time.monotonic() >= self._playback_retry_at:
-                self._playback_pcm = self._open_playback(self._alsaaudio)
+            if time.monotonic() >= max(self._playback_retry_at, self._recovery_retry_at):
+                if self._recovery_retry_at:
+                    # A paced reopen: the clean run is counted from here.
+                    self._last_recovery_at = time.monotonic()
+                    self._playback_pcm = self._open_playback(self._alsaaudio, logging.DEBUG)
+                else:
+                    self._playback_pcm = self._open_playback(self._alsaaudio)
+                self._recovery_retry_at = 0.0
             if self._playback_pcm is None:
                 time.sleep(self._period_frames / float(self._rate or DEFAULT_RATE))
                 return
         try:
             self._playback_pcm.write(data)
         except Exception as e:
-            self._log_stall("loopback playback write failed (%s); reopening", e)
-            self._recover_playback()
+            self._recover_playback(e)
             if self._playback_pcm is None:
                 return
             try:
@@ -572,3 +617,152 @@ class LoopbackPump:
             return
 
         self._write_playback(data)
+
+
+# ---------------------------------------------------------------------------
+# The audio source machine: which transport, if any, the pump copies from.
+# Driven on the daemon's loop thread from transport signals and adoptions;
+# its only effect is set_active_source() on the pump.
+# ---------------------------------------------------------------------------
+
+SOURCE_OFF = "off"          # no pump (services disabled, or not started yet)
+SOURCE_SILENT = "silent"    # pump running, no transport active: zero-fill
+SOURCE_HELD = "held"        # a transport is active but is not the paired device's
+SOURCE_LIVE = "live"        # the paired device's transport feeds the loopback
+
+EV_PUMP_START = "pump_start"
+EV_PUMP_STOP = "pump_stop"
+EV_TRANSPORT_ACTIVE = "transport_active"
+EV_TRANSPORT_IDLE = "transport_idle"
+EV_TRANSPORT_REMOVED = "transport_removed"
+EV_ADOPT = "adopt"
+EV_FORGET = "forget"
+
+
+class AudioSourceMachine:
+    """Off / Silent / Held / Live over the active transports.
+
+    ``audio_mac()`` answers the paired device and nothing else, so a device
+    that paired in but was not yet tapped is Held: its transport may be up,
+    but the pump keeps zero-filling and the paired device keeps playing.
+    ``pump`` needs ``set_active_source(device, rate=None)`` and
+    ``current_source()``; it is bound when the pump starts.
+    """
+
+    def __init__(self, *, audio_mac: Callable[[], Optional[str]]) -> None:
+        self._audio_mac = audio_mac
+        self._pump = None
+        self.state = SOURCE_OFF
+        self.live_mac: Optional[str] = None
+        # Every transport currently active, by MAC, with its rate.
+        self._active: dict[str, Optional[int]] = {}
+
+    def bind(self, pump) -> None:
+        self._pump = pump
+        self.handle(EV_PUMP_START)
+
+    @property
+    def held_mac(self) -> Optional[str]:
+        if self.state != SOURCE_HELD:
+            return None
+        return next((m for m in self._active if m != self.live_mac), None)
+
+    # ---- the dispatcher ----
+
+    def handle(self, event: str, mac: Optional[str] = None, rate: Optional[int] = None) -> None:
+        mac = mac.upper() if mac else None
+        if mac and event in _TRACK:
+            _TRACK[event](self._active, mac, rate)
+        handler = _SOURCE_TABLE.get((self.state, event)) or _SOURCE_TABLE.get((_ANY_SOURCE, event))
+        if handler is not None:
+            handler(self, mac, rate)
+
+    # ---- handlers ----
+
+    def _start(self, mac, rate) -> None:
+        self.state = SOURCE_SILENT
+
+    def _stop(self, mac, rate) -> None:
+        self.state = SOURCE_OFF
+        self.live_mac = None
+        self._active.clear()
+
+    def _arrive(self, mac, rate) -> None:
+        if mac == self._paired():
+            self._go_live(mac, rate)
+        elif self.state == SOURCE_SILENT:
+            self.state = SOURCE_HELD
+            logger.info("bluetooth pump: holding %s (not the paired device)", mac)
+
+    def _active_while_live(self, mac, rate) -> None:
+        if mac != self._paired():
+            logger.debug("bluetooth pump: %s active while %s is live; ignored", mac, self.live_mac)
+            return
+        device = bluealsa_capture_device(mac)
+        if mac != self.live_mac or self._pump.current_source() != device:
+            # The paired device's transport came back (a pause long enough
+            # for it to go idle, or a second transport object): take it again.
+            logger.info("bluetooth pump: transport active again for %s - re-arming source", mac)
+            self._go_live(mac, rate)
+
+    def _depart(self, mac, rate) -> None:
+        if mac == self.live_mac:
+            logger.info("bluetooth pump: transport inactive for %s - clearing source", mac)
+            self._pump.set_active_source(None)
+            self.live_mac = None
+        self._rest()
+
+    def _adopt(self, mac, rate) -> None:
+        if mac in self._active and mac == self._paired():
+            self._go_live(mac, self._active[mac])
+
+    def _forget(self, mac, rate) -> None:
+        if self.live_mac is not None:
+            self._pump.set_active_source(None)
+            self.live_mac = None
+        self._rest()
+
+    # ---- helpers ----
+
+    def _paired(self) -> Optional[str]:
+        paired = self._audio_mac()
+        return paired.upper() if paired else None
+
+    def _go_live(self, mac: str, rate: Optional[int]) -> None:
+        logger.info("bluetooth pump: transport active (mac=%s, rate=%s) - arming source", mac, rate)
+        self._pump.set_active_source(bluealsa_capture_device(mac), rate=rate)
+        self.live_mac = mac
+        self.state = SOURCE_LIVE
+
+    def _rest(self) -> None:
+        if self.live_mac is not None:
+            self.state = SOURCE_LIVE
+        else:
+            self.state = SOURCE_HELD if self._active else SOURCE_SILENT
+
+
+_ANY_SOURCE = "any"
+
+# Bookkeeping applied before the table, so every handler sees the set of
+# active transports as it is after the event.
+_TRACK = {
+    EV_TRANSPORT_ACTIVE: lambda active, mac, rate: active.__setitem__(mac, rate),
+    EV_TRANSPORT_IDLE: lambda active, mac, rate: active.pop(mac, None),
+    EV_TRANSPORT_REMOVED: lambda active, mac, rate: active.pop(mac, None),
+}
+
+_SOURCE_TABLE: dict = {
+    (SOURCE_OFF, EV_PUMP_START): AudioSourceMachine._start,
+    (SOURCE_SILENT, EV_TRANSPORT_ACTIVE): AudioSourceMachine._arrive,
+    (SOURCE_HELD, EV_TRANSPORT_ACTIVE): AudioSourceMachine._arrive,
+    (SOURCE_HELD, EV_TRANSPORT_IDLE): AudioSourceMachine._depart,
+    (SOURCE_HELD, EV_TRANSPORT_REMOVED): AudioSourceMachine._depart,
+    (SOURCE_HELD, EV_ADOPT): AudioSourceMachine._adopt,
+    (SOURCE_HELD, EV_FORGET): AudioSourceMachine._forget,
+    (SOURCE_LIVE, EV_TRANSPORT_ACTIVE): AudioSourceMachine._active_while_live,
+    (SOURCE_LIVE, EV_TRANSPORT_IDLE): AudioSourceMachine._depart,
+    (SOURCE_LIVE, EV_TRANSPORT_REMOVED): AudioSourceMachine._depart,
+    (SOURCE_LIVE, EV_ADOPT): AudioSourceMachine._adopt,
+    (SOURCE_LIVE, EV_FORGET): AudioSourceMachine._forget,
+    (_ANY_SOURCE, EV_PUMP_STOP): AudioSourceMachine._stop,
+}

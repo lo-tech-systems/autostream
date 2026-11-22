@@ -33,7 +33,7 @@ PROPERTIES_IFACE = "org.freedesktop.DBus.Properties"
 
 # Every D-Bus call is bounded (family convention, cf. wifi_nm.NMClient).
 DEFAULT_CALL_TIMEOUT = 10.0      # adapter/property/discovery calls
-DEFAULT_PAIR_TIMEOUT = 30.0      # Device1.Pair() — matches the pairing-window timeout
+DEFAULT_PAIR_TIMEOUT = 30.0      # Device1.Pair() — the cap on a tapped device's pairing
 DEFAULT_CONNECT_TIMEOUT = 15.0   # Device1.Connect() / Disconnect()
 
 MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$")
@@ -47,6 +47,16 @@ def is_valid_mac(mac: str) -> bool:
 def mac_to_object_suffix(mac: str) -> str:
     """AA:BB:CC:DD:EE:FF -> dev_AA_BB_CC_DD_EE_FF (BlueZ's device object naming)."""
     return "dev_" + mac.upper().replace(":", "_")
+
+
+def _mac_in_path(path: str) -> Optional[str]:
+    """The device MAC named anywhere in a BlueZ object path: the device
+    itself (.../dev_AA_..._FF) or an object under it, such as a media
+    transport (.../dev_AA_..._FF/sep1/fd0). None when there is none."""
+    for part in (path or "").split("/"):
+        if part.startswith("dev_"):
+            return _mac_from_path(part)
+    return None
 
 
 def _mac_from_path(path: str) -> Optional[str]:
@@ -180,6 +190,24 @@ def transport_codec_and_rate(props: dict) -> dict:
     if sample_rate is None:
         sample_rate = transport_sample_rate(props)
     return {"codec": codec_name, "sample_rate": sample_rate}
+
+
+# MediaTransport1.State -> what it means for the audio source. "pending" is
+# a stream starting that BlueALSA is about to acquire.
+TRANSPORT_ACTIVE = "active"
+TRANSPORT_IDLE = "idle"
+TRANSPORT_REMOVED = "removed"
+_TRANSPORT_STATES = {"active": TRANSPORT_ACTIVE, "pending": TRANSPORT_ACTIVE, "idle": TRANSPORT_IDLE}
+
+# Adapter1 properties the daemon writes, with the D-Bus type each needs.
+_ADAPTER_PROPERTY_TYPES = {
+    "Alias": "string",
+    "Discoverable": "bool",
+    "Pairable": "bool",
+    "Connectable": "bool",
+    "DiscoverableTimeout": "uint32",
+    "PairableTimeout": "uint32",
+}
 
 
 def parse_device_props(path: str, props: dict) -> dict:
@@ -319,7 +347,9 @@ class BluezClient:
 
         self._on_device_found: Optional[Callable[[dict], None]] = None
         self._on_props_changed: Optional[Callable[[str, dict], None]] = None
-        self._on_transport_changed: Optional[Callable[[bool, Optional[int], Optional[str]], None]] = None
+        self._on_transport: Optional[Callable[..., None]] = None
+        self._on_device_removed: Optional[Callable[[str], None]] = None
+        self._on_adapter_lost: Optional[Callable[[], None]] = None
 
     # ---- setup ----
 
@@ -373,20 +403,20 @@ class BluezClient:
             ADAPTER_IFACE, "Powered", True, timeout=self._call_timeout
         )
 
-    def set_pairable(self, pairable: bool) -> None:
-        """Set Pairable on/off. PairableTimeout is left at 0 (no BlueZ-side
-        timeout) — the pairing window is timed by the service's own state
-        machine, which calls this to close the window too."""
-        props = self._props_iface(self._adapter_path)
-        props.Set(ADAPTER_IFACE, "PairableTimeout", self._dbus.UInt32(0),
-                   timeout=self._call_timeout)
-        props.Set(ADAPTER_IFACE, "Pairable", bool(pairable), timeout=self._call_timeout)
-
-    def ensure_not_discoverable(self) -> None:
-        """We are never discoverable — the sink is found by us discovering
-        the turntable, not the other way around."""
+    def set_adapter_property(self, name: str, value) -> None:
+        """Write one Adapter1 property, boxed as the type BlueZ expects.
+        Which properties are written, and when, is
+        ``bluetooth_adapter_mode``'s business; this only carries the write."""
+        if self._adapter_path is None:
+            raise BluezUnavailable("No BlueZ adapter attached")
+        boxers = {
+            "string": self._dbus.String,
+            "bool": self._dbus.Boolean,
+            "uint32": self._dbus.UInt32,
+        }
+        boxed = boxers[_ADAPTER_PROPERTY_TYPES[name]](value)
         self._props_iface(self._adapter_path).Set(
-            ADAPTER_IFACE, "Discoverable", False, timeout=self._call_timeout
+            ADAPTER_IFACE, name, boxed, timeout=self._call_timeout
         )
 
     def _adapter_iface(self):
@@ -541,6 +571,23 @@ class BluezClient:
             timeout=timeout,
         )
 
+    def device_alias_async(
+        self,
+        mac: str,
+        on_result: Callable[[str], None],
+        on_error: Callable[[Exception], None],
+        timeout: float = DEFAULT_CALL_TIMEOUT,
+    ) -> None:
+        """Async Device1.Alias getter (the device's own name, or its address
+        when it has none), for a device that paired in before its name was
+        known."""
+        self._props_iface(self._device_path(mac)).Get(
+            DEVICE_IFACE, "Alias",
+            reply_handler=lambda value: on_result(str(value)),
+            error_handler=on_error,
+            timeout=timeout,
+        )
+
     def remove_device(self, mac: str) -> None:
         """Idempotent: a device that is already absent is the goal state."""
         try:
@@ -566,6 +613,16 @@ class BluezClient:
         each RemoveDevice call is independently bounded, and a per-device
         failure is logged and skipped rather than aborting the purge.
         """
+        return self._remove_devices(keep_macs, bonded=False)
+
+    def remove_bonded_devices(self, keep_macs) -> int:
+        """Remove every bonded (Paired) Device1 except those in
+        *keep_macs*. Returns the count removed. Run at attach so a bond
+        left by a pairing window the daemon did not live to close (a
+        device nobody tapped) never outlives it."""
+        return self._remove_devices(keep_macs, bonded=True)
+
+    def _remove_devices(self, keep_macs, *, bonded: bool) -> int:
         keep = {str(m).upper() for m in (keep_macs or ())}
         objects = self._object_manager().GetManagedObjects(
             dbus_interface=OBJECT_MANAGER_IFACE, timeout=self._call_timeout
@@ -578,13 +635,13 @@ class BluezClient:
             mac = str(props.get("Address") or _mac_from_path(str(path)) or "").upper()
             if mac and mac in keep:
                 continue
-            if bool(props.get("Paired", False)):
+            if bool(props.get("Paired", False)) != bonded:
                 continue
             try:
                 self._adapter_iface().RemoveDevice(str(path), timeout=self._call_timeout)
                 removed += 1
             except self._dbus.exceptions.DBusException as e:
-                logger.debug("remove_cached_devices: failed to remove %s: %s", path, e)
+                logger.debug("remove devices: failed to remove %s: %s", path, e)
         return removed
 
     def set_trusted(self, mac: str, trusted: bool = True) -> None:
@@ -619,16 +676,14 @@ class BluezClient:
         object that are already there — BlueZ only signals on *change* — so
         without this the service would be stuck reporting "disconnected"
         and zero-filling forever after a restart. Returns
-        ``{"devices": {MAC: connected_bool}, "transport_active": bool,
-        "transport_rate": Optional[int], "transport_codec": Optional[str]}``.
+        ``{"devices": {MAC: connected_bool}, "transports": [{"path", "mac",
+        "rate", "codec"}]}``.
         """
         objects = self._object_manager().GetManagedObjects(
             dbus_interface=OBJECT_MANAGER_IFACE, timeout=self._call_timeout
         )
         devices: dict = {}
-        transport_active = False
-        transport_rate = None
-        transport_codec = None
+        transports: list = []
         for path, ifaces in objects.items():
             if DEVICE_IFACE in ifaces:
                 props = _plain(ifaces[DEVICE_IFACE])
@@ -636,41 +691,49 @@ class BluezClient:
                 if mac:
                     devices[str(mac).upper()] = bool(props.get("Connected", False))
             if MEDIA_TRANSPORT_IFACE in ifaces:
-                transport_active = True
-                info = transport_codec_and_rate(_plain(ifaces[MEDIA_TRANSPORT_IFACE]))
-                transport_rate = info["sample_rate"]
-                transport_codec = info["codec"]
-        return {
-            "devices": devices,
-            "transport_active": transport_active,
-            "transport_rate": transport_rate,
-            "transport_codec": transport_codec,
-        }
+                transports.append(self._transport_entry(str(path), _plain(ifaces[MEDIA_TRANSPORT_IFACE])))
+        return {"devices": devices, "transports": transports}
+
+    @staticmethod
+    def _transport_entry(path: str, props: dict) -> dict:
+        info = transport_codec_and_rate(props)
+        mac = _mac_in_path(str(props.get("Device") or "")) or _mac_in_path(path)
+        return {"path": path, "mac": mac, "rate": info["sample_rate"], "codec": info["codec"]}
 
     # ---- signals ----
 
     def subscribe(
         self,
+        *,
         on_device_found: Callable[[dict], None],
         on_props_changed: Callable[[str, dict], None],
-        on_transport_changed: Callable[[bool, Optional[int], Optional[str]], None],
+        on_transport: Callable[..., None],
+        on_device_removed: Callable[[str], None],
+        on_adapter_lost: Callable[[], None],
     ) -> None:
         """Register InterfacesAdded/InterfacesRemoved/PropertiesChanged
-        handlers feeding the state machine.
+        handlers feeding the state machine. Call once: the receivers live on
+        the shared system bus connection and survive an adapter re-attach.
 
         ``on_device_found(device_dict)`` fires for newly discovered Device1
-        objects (scan results, already filtered to audio-capable devices);
-        ``on_props_changed(mac, changed_props)`` fires for Device1 property
-        changes (link state); ``on_transport_changed(active, rate, codec)``
-        fires when a MediaTransport1 object appears/disappears (A2DP stream
-        start/stop) — driving the pump, never polled. ``rate``/``codec`` are
-        the transport's negotiated sample rate/codec name when determinable
-        (see ``transport_codec_and_rate()``), else ``None`` on both appear
-        and disappear.
+        objects (already filtered to audio-capable devices);
+        ``on_props_changed(mac, changed_props)`` for Device1 property
+        changes (link state, a bond completing, a name learnt);
+        ``on_transport(path, mac, state, rate, codec)`` whenever a
+        MediaTransport1 object appears (``state`` "active", as a new stream
+        has always been treated), changes State ("active" or "idle"), or
+        disappears ("removed") -- driving the pump, never polled. ``rate``/
+        ``codec`` are the negotiated values when known (see
+        ``transport_codec_and_rate()``), else ``None``.
+        ``on_device_removed(mac)`` fires when BlueZ drops a Device1 object,
+        and ``on_adapter_lost()`` when the attached adapter disappears (a
+        dongle pulled), after which ``adapter_present`` is False.
         """
         self._on_device_found = on_device_found
         self._on_props_changed = on_props_changed
-        self._on_transport_changed = on_transport_changed
+        self._on_transport = on_transport
+        self._on_device_removed = on_device_removed
+        self._on_adapter_lost = on_adapter_lost
 
         self._bus.add_signal_receiver(
             self._handle_interfaces_added,
@@ -696,16 +759,29 @@ class BluezClient:
             device = parse_device_props(path, props)
             if device["audio_capable"]:
                 self._on_device_found(device)
-        if MEDIA_TRANSPORT_IFACE in interfaces and self._on_transport_changed:
-            info = transport_codec_and_rate(_plain(interfaces[MEDIA_TRANSPORT_IFACE]))
-            self._on_transport_changed(True, info["sample_rate"], info["codec"])
+        if MEDIA_TRANSPORT_IFACE in interfaces and self._on_transport:
+            entry = self._transport_entry(path, _plain(interfaces[MEDIA_TRANSPORT_IFACE]))
+            self._on_transport(path, entry["mac"], TRANSPORT_ACTIVE, entry["rate"], entry["codec"])
 
     def _handle_interfaces_removed(self, path, interfaces) -> None:
-        if MEDIA_TRANSPORT_IFACE in interfaces and self._on_transport_changed:
-            self._on_transport_changed(False, None, None)
+        path = str(path)
+        if MEDIA_TRANSPORT_IFACE in interfaces and self._on_transport:
+            self._on_transport(path, _mac_in_path(path), TRANSPORT_REMOVED, None, None)
+        if DEVICE_IFACE in interfaces and self._on_device_removed:
+            mac = _mac_from_path(path)
+            if mac:
+                self._on_device_removed(mac)
+        if ADAPTER_IFACE in interfaces and path == self._adapter_path:
+            logger.warning("BlueZ adapter %s removed", path)
+            self._adapter_path = None
+            if self._on_adapter_lost:
+                self._on_adapter_lost()
 
     def _handle_props_changed(self, interface, changed, invalidated, path=None) -> None:
-        if interface != DEVICE_IFACE or not self._on_props_changed:
-            return
-        mac = _mac_from_path(str(path)) or ""
-        self._on_props_changed(mac, _plain(changed))
+        path = str(path)
+        if interface == DEVICE_IFACE and self._on_props_changed:
+            self._on_props_changed(_mac_from_path(path) or "", _plain(changed))
+        elif interface == MEDIA_TRANSPORT_IFACE and self._on_transport and "State" in changed:
+            state = _TRANSPORT_STATES.get(str(changed["State"]))
+            if state is not None:
+                self._on_transport(path, _mac_in_path(path), state, None, None)
