@@ -35,6 +35,11 @@ Update every appliance and every dial together, as for 0.8.0.
   Input 3 with its settings, playing hours and service counters; the input it
   left is switched off and freed. Both cards say so until either is changed.
 - new: the Service page tracks Input 3 too, for a Bluetooth record player.
+- fixed: a source that sits at a constant offset when it isn't playing, such
+  as a CD player with Bluetooth while paused, never counted as silent, so its
+  input kept playing until the source was switched off and track changes
+  were missed. Silence and track-gap detection, and the level the input card
+  shows, now ignore a constant offset. The audio itself is unchanged.
 
 ### Bluetooth pairing
 

@@ -786,6 +786,20 @@ class TestCppInputActivity:
 
 @linux_only
 @gpp_available
+class TestCppDcBlocker:
+    """Compile and run test_dc_blocker.cpp (header-only, no extra libs)."""
+
+    def test_compile_and_run(self):
+        ok, output = _compile_and_run(
+            src_files=["core/monitor/tests/test_dc_blocker.cpp"],
+            extra_flags=[],
+            binary_name="test_dc_blocker",
+        )
+        assert ok, f"test_dc_blocker failed:\n{output}"
+
+
+@linux_only
+@gpp_available
 class TestCppControlProtocol:
     """Compile and run test_control_protocol.cpp (no ALSA/libsamplerate needed)."""
 

@@ -37,6 +37,7 @@
 #include "autostream_monitor_utils.h"
 #include "autostream_track_gap_detector.h"
 #include "autostream_input_activity.h"
+#include "autostream_dc_blocker.h"
 #include "autostream_repeat_buffer.h"
 #include "autostream_id_tap.h"
 #include "autostream_spsc_ring.h"
@@ -3307,7 +3308,7 @@ public:
     // is in the float domain (linear amplitude, 0.0..1.0 -- see
     // _silence_threshold_sample / compute_peak_sample()'s comments), but
     // ReplayEngine's own TrackGapDetector (autostream_repeat.cpp,
-    // replay_peak_sample()) stays entirely in the legacy int16-scale
+    // ReplayEngine::process_slice()) stays entirely in the legacy int16-scale
     // (0..32768) domain by design: replay stays int16 internally. This
     // accessor is the single seam between the two
     // domains -- it converts the internal linear threshold back to the
@@ -3449,10 +3450,11 @@ private:
     bool drain_capture_ring(int& frames_in);
 
     // Peak-level metering for the block just read by drain_capture_ring():
-    // compute_peak_sample(), _current_peak_sample, the _poll_peak_sample CAS
-    // loop, and _session_raw_peak_sample. Returns the raw peak sample as a
-    // linear amplitude in [0.0, 1.0] -- see compute_peak_sample()'s comment
-    // (the float domain).
+    // the raw peak (compute_peak_sample(), into _session_raw_peak_sample)
+    // and the detection peak (_detect_peak, the same block with any DC
+    // offset removed, into _current_peak_sample and the _poll_peak_sample
+    // CAS loop). Returns the detection peak as a linear amplitude in
+    // [0.0, 1.0] -- see compute_peak_sample()'s comment (the float domain).
     float update_metering(int frames_in);
 
     // Silence/activity state machine: updates _last_above_threshold_time and
@@ -3740,6 +3742,9 @@ private:
     std::atomic<float> _current_peak_sample{0.0f};        // current-block raw peak, linear (0..1)
     mutable std::atomic<float> _poll_peak_sample{0.0f};    // max raw peak since last get_status() call, linear (0..1); mutable so exchange(0) is callable from const get_status()
     std::atomic<float> _session_raw_peak_sample{0.0f};     // session max raw peak, linear (0..1)
+    // The level detection uses: the block peak with any DC offset removed.
+    // Process thread only; reset in start() for the negotiated rate.
+    DcBlockedPeak      _detect_peak;
     std::atomic<float> _session_effective_peak_linear{0.0f}; // session max effective peak (linear, >=0)
 
     // ── Stereo VU history (100 ms bins, post-output-processing tap) ───────────

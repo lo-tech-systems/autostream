@@ -858,6 +858,9 @@ bool InputChannel::start(std::string* error_out)
     _current_eq_bands.reset();
 
     // Reset session peak accumulators so the new session starts from scratch.
+    // The detection filter is process-thread state, written here before the
+    // thread is spawned (as the VU fields below are).
+    _detect_peak.reset(_capture_rate_hz);
     _poll_peak_sample.store(0,            std::memory_order_relaxed);
     _session_raw_peak_sample.store(0,     std::memory_order_relaxed);
     _session_effective_peak_linear.store(0.0f, std::memory_order_relaxed);
@@ -1508,18 +1511,22 @@ bool InputChannel::drain_capture_ring(int& frames_in)
 // ── InputChannel::update_metering ─────────────────────────────────────────────
 //
 // Peak-level metering for the block drain_capture_ring() just read into
-// _pcm_in: compute_peak_sample(), _current_peak_sample, the
-// _poll_peak_sample CAS loop, and _session_raw_peak_sample. Returns the raw
-// peak sample so callers (silence state, track-gap detection, the recorder
-// tap's above-threshold flag) can use the same value computed exactly once
-// per iteration, as today.
+// _pcm_in. Two peaks: the raw one, for _session_raw_peak_sample (headroom),
+// and the detection one, with any DC offset removed (see
+// autostream_dc_blocker.h), for _current_peak_sample, the _poll_peak_sample
+// CAS loop and the return value. Callers (silence state, track-gap
+// detection, the recorder tap's above-threshold flag) use the returned
+// value, computed exactly once per iteration, and the level the Setup page
+// shows is the one they compare with the threshold.
 //
 float InputChannel::update_metering(int frames_in)
 {
-    // ── Compute peak sample level ─────────────────────────────────────────
-    // Linear amplitude in [0.0, 1.0]; see compute_peak_sample()'s
+    // ── Compute peak sample levels ────────────────────────────────────────
+    // Linear amplitudes in [0.0, 1.0]; see compute_peak_sample()'s
     // comment. Still no log10 here -- that stays deferred to get_status().
-    float peak_sample = compute_peak_sample(_pcm_in.data(), frames_in, /*channels=*/2);
+    float raw_peak    = compute_peak_sample(_pcm_in.data(), frames_in, /*channels=*/2);
+    float peak_sample = _detect_peak.block_peak(_pcm_in.data(), frames_in, /*channels=*/2,
+                                                2147483648.0);  // 2^31, full int32 scale
     _current_peak_sample.store(peak_sample, std::memory_order_relaxed);
 
     // Accumulate poll-window peak — reset by get_status() via exchange(0).
@@ -1537,8 +1544,8 @@ float InputChannel::update_metering(int frames_in)
     // Accumulate session raw peak (plain float compare — no log10).
     {
         float prev = _session_raw_peak_sample.load(std::memory_order_relaxed);
-        if (peak_sample > prev)
-            _session_raw_peak_sample.store(peak_sample, std::memory_order_relaxed);
+        if (raw_peak > prev)
+            _session_raw_peak_sample.store(raw_peak, std::memory_order_relaxed);
     }
 
     return peak_sample;

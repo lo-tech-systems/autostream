@@ -428,7 +428,7 @@ private:
 
 // ReplayEngine stays s16 internally right up to process_slice()'s DSP
 // chain: the decoder output, the replay-side ID tap, and
-// replay_peak_sample() all operate in the int16 domain, matching the
+// the track-gap level all operate in the int16 domain, matching the
 // recording's own on-disk format. process_slice() converts to float only at
 // the DSP stage (src_short_to_float_array()) and pushes float frames to the
 // output mixer; the wire's own int16/int32 width is chosen once, downstream,
@@ -2670,27 +2670,6 @@ void ReplayEngine::thread_func()
     }
 }
 
-namespace
-{
-
-// Peak absolute s16 sample across an interleaved stereo block -- mirrors
-// InputChannel::compute_peak_sample()'s integer-only discipline, used by
-// ReplayEngine to feed its own TrackGapDetector from decoded blocks.
-int replay_peak_sample(const int16_t* samples, size_t n_samples)
-{
-    int peak = 0;
-    for (size_t i = 0; i < n_samples; ++i)
-    {
-        int v = samples[i];
-        int abs_v = (v < 0) ? -v : v;
-        if (abs_v > peak)
-            peak = abs_v;
-    }
-    return peak;
-}
-
-}   // namespace
-
 // =============================================================================
 // ReplayEngine::ReplaySessionCtx
 //
@@ -2708,6 +2687,7 @@ struct ReplayEngine::ReplaySessionCtx
     std::optional<RepeatBuffer::Reader>  reader;    // no default ctor; emplaced by init_session()
     std::optional<IdTapResampler>        id_tap;    // no default ctor; emplaced by init_session()
     TrackGapDetector                     gap_detector;
+    DcBlockedPeak                        gap_peak;  // the level gap_detector is fed, DC removed
 
     // ── Replay-owned DSP chain state -- see init_session()'s comment for
     // the loop-seam reset rule ──────────────────────────────────────────────
@@ -2742,6 +2722,7 @@ bool ReplayEngine::init_session(ReplaySessionCtx& ctx, CodecChoice codec, int ra
     }
 
     ctx.reader.emplace(buffer);
+    ctx.gap_peak.reset(rate_hz);
 
     // Fresh session: a fade request from a PRIOR replay session must not
     // leak into this one (request_fade_out() only ever fires while a
@@ -2820,6 +2801,7 @@ ReplayEngine::decode_next_slice(ReplaySessionCtx& ctx, CodecChoice codec)
         // recording into its own beginning.
         ctx.replay_filters.clear();
         ctx.replay_eq_bands_cache.reset();
+        ctx.gap_peak.reprime();
 
         // The decoder's buffered bitstream state must not carry across the
         // seam either: the recording's final bytes may end mid-frame, and a
@@ -2922,6 +2904,7 @@ bool ReplayEngine::seek_session(ReplaySessionCtx& ctx, CodecChoice codec,
     // state must not carry across a discontinuous jump.
     ctx.replay_filters.clear();
     ctx.replay_eq_bands_cache.reset();
+    ctx.gap_peak.reprime();
     if (ctx.decoder && !ctx.decoder->reset())
     {
         LOG_WARN("[repeat] ReplayEngine: decoder reset failed at seek; aborting replay");
@@ -2951,8 +2934,11 @@ bool ReplayEngine::process_slice(ReplaySessionCtx& ctx, const int16_t* slice, si
     // applied at the very end, after quantisation, so this tap sees the
     // untouched decoded sample regardless of fade state, matching live
     // behaviour where the ID tap is likewise upstream of gain.
-    int peak = replay_peak_sample(slice, slice_samples);
-    bool raw_above = (peak >= silence_threshold);
+    // DC removed as on the live path (autostream_dc_blocker.h), in the
+    // int16 scale silence_threshold is held in.
+    float level = ctx.gap_peak.block_peak(slice, static_cast<int>(slice_frames), /*channels=*/2,
+                                          32768.0);
+    bool raw_above = (level * 32768.0f >= static_cast<float>(silence_threshold));
     if (ctx.gap_detector.update(/*capturing=*/true, raw_above,
                                  get_monotonic_time(), track_gap_seconds))
     {
