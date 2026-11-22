@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import math
 
 from PIL import Image, ImageDraw, ImageEnhance, ImageFilter, ImageFont
 
@@ -154,6 +155,23 @@ def _draw_plus_glyph(draw: ImageDraw.ImageDraw, rect: tuple[int, int, int, int],
     draw.line([(cx, cy - r), (cx, cy + r)], fill=color, width=stroke)
 
 
+def _draw_speaker_body(draw: ImageDraw.ImageDraw, left, cy, r, color=GLYPH_RGB):
+    """The speaker itself: a small rectangle (the driver) and the cone
+    widening from it to the full height 2*r. *left* is the driver's left
+    edge and *cy* the vertical centre. Returns the cone's right edge. The
+    volume readout's icon and the mute cell's glyph both draw it, so the two
+    always match."""
+    body_w = max(2, r // 2)
+    half_h = max(1, r // 2)
+    draw.rectangle([left, cy - half_h, left + body_w, cy + half_h], fill=color)
+    tip = left + body_w + r // 2
+    draw.polygon(
+        [(left + body_w, cy - half_h), (tip, cy - r), (tip, cy + r), (left + body_w, cy + half_h)],
+        fill=color,
+    )
+    return tip
+
+
 def _draw_speaker_glyph(
     draw: ImageDraw.ImageDraw, box: tuple[int, int, int, int], muted: bool | None, color=GLYPH_RGB,
 ) -> None:
@@ -175,23 +193,9 @@ def _draw_speaker_glyph(
     r = max(2, min(x1 - x0, y1 - y0) // 2 - 1)
     stroke = max(1, r // 4)
 
-    # Speaker body: a small rectangle (the driver) plus a triangle (the
-    # cone), both left-of-center so the wave/slash has room to the right.
-    body_w = max(2, r // 2)
-    body_h = max(2, r)
+    # The body sits left of centre so the wave/slash has room to the right.
     body_left = cx - r
-    rect_box = [body_left, cy - body_h // 2, body_left + body_w, cy + body_h // 2]
-    draw.rectangle(rect_box, fill=color)
-    cone_tip_x = body_left + body_w + r // 2
-    draw.polygon(
-        [
-            (body_left + body_w, cy - body_h // 2),
-            (body_left + body_w, cy + body_h // 2),
-            (cone_tip_x, cy - r),
-            (cone_tip_x, cy + r),
-        ],
-        fill=color,
-    )
+    cone_tip_x = _draw_speaker_body(draw, body_left, cy, r, color)
 
     if muted:
         # Centred over the speaker body, not the glyph box: the body sits
@@ -632,19 +636,57 @@ def _draw_cross_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:
 _MUTE_GLYPH_BOX_FRACTION = 0.56
 
 
+# The mute glyph's slash, in units of the speaker's half-height r. It runs at
+# 45 degrees through a point _MUTE_SLASH_OFFSET up and right of the speaker's
+# centre, so it clips the driver's top corner: the speaker below it (driver
+# and lower cone) stays a solid shape rather than a sliver along the cone's
+# own 45-degree edge. From that point it reaches _MUTE_SLASH_TOP_LEFT up-left
+# (to the top of the cone, above the driver) and further down-right. A gap
+# is cut out of the speaker along both edges of the slash, _MUTE_GAP_BELOW
+# strokes wide under it and _MUTE_GAP_ABOVE over it, so the line reads
+# clearly where it crosses the speaker.
+_MUTE_SLASH_OFFSET = 0.125
+_MUTE_SLASH_TOP_LEFT = 0.75
+_MUTE_SLASH_BOTTOM_RIGHT = 1.0
+_MUTE_GAP_BELOW = 0.5
+_MUTE_GAP_ABOVE = 0.5
+# The slash's width, in units of r: a little lighter than the speaker
+# readout's own strokes (r / 4), so with its gaps it does not crowd the
+# speaker.
+_MUTE_STROKE = 0.2
+
+
 def _draw_mute_glyph(draw: ImageDraw.ImageDraw, w: int, h: int, color=GLYPH_RGB) -> None:
-    """The main screen's own footer mute glyph: the crossed speaker, drawn
-    via the same painter the header readout uses (_draw_speaker_glyph),
-    always in its muted variant — this cell IS the mute control, so there
-    is no unmuted state for it to distinguish. Rendered into a (w, h)
-    canvas — see _draw_glyph. Integer box arithmetic throughout: Pillow's
-    stroke widths must be ints, and _draw_speaker_glyph derives its own
-    stroke width from this box's size."""
+    """The main screen's own footer mute glyph: the speaker the volume
+    readout shows (_draw_speaker_body) crossed by a slash, always — this
+    cell IS the mute control, so there is no unmuted state for it to
+    distinguish. Speaker and slash together are centred in the canvas.
+    Rendered into a transparent (w, h) canvas — see _draw_glyph — which is
+    what lets the gap round the slash be cut out of the speaker. Integer
+    widths throughout: Pillow's stroke widths must be ints."""
     side = round(min(w, h) * _MUTE_GLYPH_BOX_FRACTION)
-    cx, cy = w // 2, h // 2
-    half = side // 2
-    box = (cx - half, cy - half, cx - half + side, cy - half + side)
-    _draw_speaker_glyph(draw, box, muted=True, color=color)
+    r = max(2, side // 2 - 1)
+    stroke = max(1, round(r * _MUTE_STROKE))
+    a, b, o = _MUTE_SLASH_TOP_LEFT * r, _MUTE_SLASH_BOTTOM_RIGHT * r, _MUTE_SLASH_OFFSET * r
+    # Laid out with the speaker's left edge and centre line at 0, then the
+    # whole of speaker and slash centred in the canvas: the speaker spans
+    # x 0..r, y -r..r, and the slash runs through (r/2 + o, -o).
+    px, py = r / 2 + o, -o
+    xs = (0, r, px - a, px + b)
+    ys = (-r, r, py - a, py + b)
+    left = round(w / 2 - (min(xs) + max(xs)) / 2)
+    cy = round(h / 2 - (min(ys) + max(ys)) / 2)
+    _draw_speaker_body(draw, left, cy, r, color)
+    start = (left + px - a, cy + py - a)
+    end = (left + px + b, cy + py + b)
+    # The gap: a band from _MUTE_GAP_ABOVE strokes over the slash to
+    # _MUTE_GAP_BELOW strokes under it, cleared to transparent, then the
+    # slash drawn down its middle. Below is down-left, at right angles to it.
+    band = stroke * (1 + _MUTE_GAP_ABOVE + _MUTE_GAP_BELOW)
+    shift = stroke * (_MUTE_GAP_BELOW - _MUTE_GAP_ABOVE) / 2 / math.sqrt(2)
+    draw.line([(start[0] - shift, start[1] + shift), (end[0] - shift, end[1] + shift)],
+              fill=(0, 0, 0, 0), width=round(band))
+    draw.line([start, end], fill=color, width=stroke)
 
 
 def _draw_pause_glyph(draw: ImageDraw.ImageDraw, w: int, h: int) -> None:

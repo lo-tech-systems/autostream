@@ -542,49 +542,41 @@ class TestGlyphMuteTile:
         # Monochrome: every opaque pixel is the plain glyph colour, no shading.
         assert all(px[:3] == (255, 255, 255) for px in opaque)
 
-    def test_tile_has_a_diagonal_slash_and_a_speaker_body(self):
-        """The mute glyph is the muted speaker: a body (opaque pixels in the
-        left half) plus a diagonal slash — distinct from the unmuted
-        variant's sound-wave arcs, which never form a straight diagonal like
-        this. The slash is centred on the speaker body, not on the glyph's
-        own box, so it runs shifted left of the box's own diagonal — see
-        _draw_speaker_glyph's muted branch."""
-        w = h = 40
-        tile = _glyph_tile(GLYPH_MUTE, (), w, h, 4)
-        pixels = tile.load()
-        left_half_opaque = any(pixels[x, 20][3] > 0 for x in range(4, 16))
-        assert left_half_opaque
-
-        # The same box/body arithmetic _draw_mute_glyph/_draw_speaker_glyph
-        # use, so this scans along the actual (shifted) slash the glyph
-        # draws rather than a guessed position.
-        side = round(min(w, h) * 0.56)
-        cx, cy = w // 2, h // 2
-        half = side // 2
-        x0, y0, x1, y1 = cx - half, cy - half, cx - half + side, cy - half + side
-        cxg, cyg = (x0 + x1) // 2, (y0 + y1) // 2
-        r = max(2, min(x1 - x0, y1 - y0) // 2 - 1)
-        body_w = max(2, r // 2)
-        body_left = cxg - r
-        cone_tip_x = body_left + body_w + r // 2
-        body_cx = (body_left + cone_tip_x) // 2
-
-        # The slash runs opaque along its own (shifted) diagonal, corner to
-        # corner of a box centred on body_cx rather than cxg.
-        on_diagonal_opaque = all(
-            pixels[body_cx - r + i, cyg - r + i][3] > 200 for i in range(2 * r + 1)
+    def test_tile_is_a_centred_speaker_crossed_by_a_slash_with_a_gap_under_it(self):
+        """The mute glyph is the volume readout's speaker crossed by a
+        diagonal slash, the two together centred in the tile, with a clear
+        gap cut out of the speaker along the slash's lower edge so the line
+        reads where it crosses. Checked on the painter's own supersampled
+        canvas, where the geometry is exact."""
+        from PIL import ImageDraw
+        from dial_display_draw import (
+            _MUTE_GAP_BELOW as _MUTE_GAP, _MUTE_GLYPH_BOX_FRACTION, _MUTE_STROKE, _draw_mute_glyph,
         )
-        assert on_diagonal_opaque
 
-        # Its own midpoint sits on the body's centre column, not the box's.
-        assert pixels[body_cx, cyg][3] > 200
+        w = h = 160
+        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        _draw_mute_glyph(ImageDraw.Draw(img), w, h)
+        x0, y0, x1, y1 = img.getchannel("A").getbbox()
+        # Speaker and slash together centred, to within the stroke's rounding
+        assert abs((x0 + x1) / 2 - w / 2) <= 3 and abs((y0 + y1) / 2 - h / 2) <= 3
 
-        # Nothing opaque to the right of the body's own centre plus its
-        # radius (a couple of pixels' margin for anti-aliasing at the tip) —
-        # the shift moves the whole slash left, it never reaches back out to
-        # the old box-centred position.
-        for x in range(body_cx + r + 2, w):
-            assert all(pixels[x, y][3] < 50 for y in range(h)), f"unexpected opacity at column {x}"
+        # Across the speaker's middle row: the speaker below the slash, the
+        # gap, then the slash (with the cone above it joined on). A 45-degree
+        # gap of _MUTE_GAP strokes is about 1.4 times as wide along a row.
+        stroke = round((round(min(w, h) * _MUTE_GLYPH_BOX_FRACTION) // 2 - 1) * _MUTE_STROKE)
+        px = img.load()
+        row = h // 2
+        runs, start = [], None
+        for x in range(w + 1):
+            on = x < w and px[x, row][3] > 128
+            if on and start is None:
+                start = x
+            elif not on and start is not None:
+                runs.append((start, x))
+                start = None
+        assert len(runs) >= 2, f"speaker and slash apart across the middle row: {runs}"
+        gap = runs[1][0] - runs[0][1]
+        assert gap >= _MUTE_GAP * stroke, f"gap of {gap} px under a {stroke} px slash"
 
 
 class TestFitValueLines:

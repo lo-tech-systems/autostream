@@ -112,6 +112,10 @@ Update every appliance and every dial together, as for 0.8.0.
   grey. When every playing speaker is paused it shows a red pause sign
   instead, and a tap starts them all again. Either way the controls stay on
   screen until the state ends; tapping the artwork still hides them.
+- changed: the small-screen dial's mute icon is centred in its button, with a
+  lighter slash that has a clear gap either side where it crosses the
+  speaker. The speaker in it and in the volume readout is drawn with a proper
+  cone; before, the cone was pinched in the middle.
 - changed: a speaker left on Automatic plays AirPlay 2 whenever it offers it,
   and AirPlay 1 only when it has no AirPlay 2. Before, a speaker with no
   buffered AirPlay 2 played AirPlay 1. A speaker that plays better on AirPlay
