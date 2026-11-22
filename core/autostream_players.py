@@ -282,6 +282,8 @@ class OutputInfo:
     # The player keeps the speaker silent on autostream's word; volume_percent
     # is then the level it returns to
     muted: bool = False
+    # Speakers of the row's group not playing while another one is
+    members_missing: int = 0
 
     def extra_dict(self) -> dict[str, Any]:
         """Return extra metadata as a plain dict when needed."""

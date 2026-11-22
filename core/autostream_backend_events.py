@@ -78,6 +78,7 @@ class DeviceEvent:
     muted: Optional[bool] = None
     volume: Optional[int] = None
     pin_pending: Optional[bool] = None
+    members_missing: Optional[int] = None
 
 
 class EventSink(Protocol):
@@ -163,6 +164,7 @@ def parse_event(msg: Mapping, received: float) -> Optional[DeviceEvent]:
     )
     if kind == "output_state":
         volume = _int(msg.get("volume"))
+        missing = _int(msg.get("members_missing"))
         return DeviceEvent(
             verb="", value=None, **common,
             state=state,
@@ -174,6 +176,7 @@ def parse_event(msg: Mapping, received: float) -> Optional[DeviceEvent]:
             muted=_flag(msg.get("muted")),
             volume=None if volume is None else max(0, min(100, volume)),
             pin_pending=_flag(msg.get("pin_pending")),
+            members_missing=None if missing is None else max(0, missing),
         )
     return DeviceEvent(
         verb=verb,

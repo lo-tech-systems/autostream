@@ -1283,6 +1283,14 @@ class TestMiniSessionAndHomepodsFields:
         assert out.session_state == ""
         assert out.session_failure == "none"
         assert out.has_homepods is None
+        assert out.members_missing == 0
+
+    def test_members_missing_is_read_as_a_count(self):
+        mini = _mini()
+        assert mini._normalize_output_info({**_ROW_PLAIN, "members_missing": 1}).members_missing == 1
+        assert mini._normalize_output_info({**_ROW_PLAIN, "members_missing": -2}).members_missing == 0
+        assert mini._normalize_output_info({**_ROW_PLAIN, "members_missing": True}).members_missing == 0
+        assert mini._normalize_output_info({**_ROW_PLAIN, "members_missing": "1"}).members_missing == 0
 
     def test_unknown_session_states_read_as_neutral(self):
         out = _mini()._normalize_output_info({

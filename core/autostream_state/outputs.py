@@ -2447,7 +2447,8 @@ class OutputAuthority:
         fields = dict(session_state=ev.state, session_failure=session_failure_for(ev.state, ev.reason))
         for name, value in (("selected", ev.selected), ("session_held", ev.held),
                             ("session_holdable", ev.holdable), ("muted", ev.muted),
-                            ("volume_percent", ev.volume), ("pin_pending", ev.pin_pending)):
+                            ("volume_percent", ev.volume), ("pin_pending", ev.pin_pending),
+                            ("members_missing", ev.members_missing)):
             if value is not None:
                 fields[name] = value
         return dataclasses.replace(row, **fields)

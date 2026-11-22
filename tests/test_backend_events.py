@@ -682,6 +682,12 @@ class TestParseEvent:
         failed = be.parse_event(self.state_msg(state="failed", reason="unreachable", selected=False), 3.0)
         assert (failed.state, failed.reason, failed.selected) == ("failed", "unreachable", False)
 
+    def test_members_missing_is_a_count_or_none(self):
+        assert be.parse_event(self.state_msg(members_missing=1), 1.0).members_missing == 1
+        assert be.parse_event(self.state_msg(members_missing=-1), 1.0).members_missing == 0
+        assert be.parse_event(self.state_msg(members_missing=True), 1.0).members_missing is None
+        assert be.parse_event(self.state_msg(), 1.0).members_missing is None
+
     def test_output_state_without_a_state_is_dropped(self):
         assert be.parse_event(self.state_msg(state=None), 1.0) is None
         assert be.parse_event(self.state_msg(state=""), 1.0) is None
@@ -693,7 +699,7 @@ class TestParseEvent:
     def test_absent_flags_read_none(self):
         msg = {"type": "event", "kind": "output_state", "speaker": {"id": "5"}, "state": "connecting"}
         ev = be.parse_event(msg, 1.0)
-        assert (ev.selected, ev.held, ev.holdable, ev.muted, ev.volume, ev.pin_pending) == (None,) * 6
+        assert (ev.selected, ev.held, ev.holdable, ev.muted, ev.volume, ev.pin_pending, ev.members_missing) == (None,) * 7
         assert (ev.reason, ev.member_state, ev.seq) == ("", "", 0)
         ev = be.parse_event(self.state_msg(selected="yes", held=1, muted=0), 1.0)
         assert (ev.selected, ev.held, ev.muted) == (None, None, None)

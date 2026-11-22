@@ -478,6 +478,9 @@ class OwnToneMiniBackend(OwnToneHttpBackendBase):
 
         if isinstance(output.get("has_homepods"), bool):
             fields["has_homepods"] = output["has_homepods"]
+        missing = output.get("members_missing")
+        if isinstance(missing, int) and not isinstance(missing, bool):
+            fields["members_missing"] = max(0, missing)
         return fields
 
     def list_outputs(self) -> ListOutputsResult:
