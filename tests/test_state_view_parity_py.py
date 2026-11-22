@@ -32,7 +32,7 @@ def _speaker_rows(case):
         pytest.skip("includeOffline is not a dial option")
     rows = pv.speaker_rows(case["parts"])
     return [{
-        "id": r.id, "name": r.name, "on": r.on, "volume": r.volume, "chip": r.chip, "paused": r.paused,
+        "id": r.id, "name": r.name, "on": r.on, "volume": r.volume, "chip": r.chip, "paused": r.paused, "muted": r.muted,
         "autoStart": r.auto_start, "inUseBy": r.in_use_by, "inUseId": r.in_use_id,
         "connecting": r.connecting, "stopping": r.stopping, "offline": r.offline, "disabled": r.disabled,
         "pinPending": r.pin_pending, "pinClaim": r.pin_claim,

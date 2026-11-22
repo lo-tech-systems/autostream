@@ -126,6 +126,7 @@ then they are in name order.
 - Speakers in the appliance's Auto-Start set carry an Auto-Start label, as on the appliance's
   Home page.
 - A speaker the appliance is still starting shows (Connecting) after its name, and an Auto-Start speaker that is off the network shows (offline).
+- A speaker's state reads **On** or **Off**, **Paused** for one paused on the speaker itself, or **Muted** for one that is on but muted.
 - Speakers have their own on/off switch and volume slider.
 - The Auto-Start pin is a square button at the right of the SPEAKERS heading, the same size and shape as the dial's bell. It sets the speakers that are on as the ones that start with each session, as the pin does on the appliance's Home page (see [Playback setup](../SETUP-PLAYBACK.md#auto-start-speakers)).
 - Switching on a speaker that needs pairing (a new Apple TV, for example)

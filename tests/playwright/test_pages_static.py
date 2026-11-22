@@ -766,8 +766,8 @@ CEILINGS = {
     "shared/state_stream.js": 166,
     "shared/state_view.js": 250,
     # The reasons a start fails, and the wrong-PIN, PIN-claim and busy-speaker
-    # wording
-    "shared/texts.js": 65,
+    # wording, and the speaker chips
+    "shared/texts.js": 70,
     "shared/pending.js": 35,
     "page/home/home_main.js": 54,
     "page/home/home_intents.js": 30,

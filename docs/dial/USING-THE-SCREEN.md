@@ -307,7 +307,8 @@ a bullet after its name.*
 
 A speaker that was paused on the speaker itself (an Apple TV remote's Pause,
 for example) shows **Paused** in place of its level. Tap it to start it again,
-as its own Play would; the list stays open.
+as its own Play would; the list stays open. A speaker that is on but muted
+shows **Muted** in place of its level.
 
 Tap any other row to open that output's own detail page:
 

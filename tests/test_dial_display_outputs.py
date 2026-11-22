@@ -641,6 +641,12 @@ class TestOutputsPaintBuilders:
             OutputRow(id="1", name="Study TV", selected=False, volume=20, paused=True),
         )[2] == ""
 
+    def test_list_row_of_a_muted_speaker_says_muted(self):
+        assert dds.output_list_row(
+            OutputRow(id="1", name="Kitchen", selected=True, volume=30, muted=True),
+        ) == ("Kitchen", False, dds.MUTED_TEXT, "")
+        assert dds.MUTED_TEXT == "Muted"
+
     def test_list_row_of_a_speaker_still_ending_its_session_says_stopping(self):
         assert dds.output_list_row(
             OutputRow(id="1", name="Den", selected=False, volume=20, stopping=True),

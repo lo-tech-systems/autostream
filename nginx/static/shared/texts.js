@@ -46,6 +46,7 @@ export const CHIP = {
   on: 'On',
   off: 'Off',
   paused: 'Paused',
+  muted: 'Muted',
   inUse: (by) => 'In Use by ' + (by || 'another appliance'),
   autoStart: 'Auto-Start',
   connecting: ' (Connecting)',

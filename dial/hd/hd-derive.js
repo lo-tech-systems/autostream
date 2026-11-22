@@ -46,12 +46,13 @@ function deriveSpeakers(dial, p, usable) {
         // Switched off while the speaker still ends its session: the connecting tone
         const stopping = row.stopping && !on;
         const paused = row.paused && on;
-        const tone = inUse ? "in-use" : paused ? "paused" : connecting || stopping ? "connecting"
+        const muted = row.muted && on;
+        const tone = inUse ? "in-use" : paused ? "paused" : muted ? "muted" : connecting || stopping ? "connecting"
             : row.offline ? "offline" : on ? "on" : "off";
         return {
             id: row.id, on: on, inUse: inUse, autoStart: row.autoStart, pill: AUTO_START_PILL,
             name: row.name + (connecting ? CHIP.connecting : stopping ? CHIP.stopping : row.offline ? CHIP.offline : ""),
-            chip: { text: inUse ? CHIP.inUse(row.inUseBy) : paused ? CHIP.paused : on ? CHIP.on : CHIP.off, tone: tone },
+            chip: { text: inUse ? CHIP.inUse(row.inUseBy) : paused ? CHIP.paused : muted ? CHIP.muted : on ? CHIP.on : CHIP.off, tone: tone },
             level: held("out:" + row.id + ":volume", row.volume),
             enabled: usable && !row.disabled && !elsewhere
         };

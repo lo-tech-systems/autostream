@@ -84,13 +84,16 @@ export function speakerRows(p, opts = {}) {
     const by = u.in_use_by || '';
     // A speaker that paused itself is on, held until its own Play
     const paused = !by && on && !!u.held;
+    // Muted on its own: a paused speaker shows Paused, as its Play unmutes it too
+    const muted = !by && on && !paused && !!u.muted;
     rows.push({
       id: u.id,
       name: u.name,
       on,
       volume: Math.max(0, Math.min(100, Math.round(u.volume) || 0)),
-      chip: by ? 'in-use' : paused ? 'paused' : on ? 'on' : 'off',
+      chip: by ? 'in-use' : paused ? 'paused' : muted ? 'muted' : on ? 'on' : 'off',
       paused,
+      muted,
       autoStart: !!u.auto_start,
       inUseBy: by,
       inUseId: by ? u.in_use_id || '' : '',

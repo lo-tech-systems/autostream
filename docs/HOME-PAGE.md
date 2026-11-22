@@ -62,7 +62,8 @@ showing:
   only while it is on or in the Auto-Start set.
 - A state chip reading **On** or **Off**, or **Paused** for a speaker that was paused on the
   speaker itself (see [Personalisation](SETUP-PERSONALISATION.md)). Pressing Play on that
-  speaker starts it again, as does switching it off and on here.
+  speaker starts it again, as does switching it off and on here. A speaker that is on but
+  muted reads **Muted**.
 - An on/off toggle.
 - When the output is on, a **Volume:** slider (0-100%) underneath.
 

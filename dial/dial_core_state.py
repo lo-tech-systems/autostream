@@ -141,6 +141,7 @@ class OutputRow:
     needs_auth_key: bool = False     # a speaker that has never been paired (its first PIN is still to be entered)
     paused: bool = False             # on, and held because it paused itself
     stopping: bool = False           # off, and the speaker is still ending its session
+    muted: bool = False              # on and muted, and not paused
 
 
 # ---- appliance snapshot types --------------------------------------------

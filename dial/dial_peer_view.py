@@ -125,7 +125,7 @@ class SpeakerRow:
     name: str
     on: bool
     volume: int
-    chip: str                 # "in-use" | "paused" | "on" | "off"
+    chip: str                 # "in-use" | "paused" | "muted" | "on" | "off"
     auto_start: bool
     in_use_by: str
     in_use_id: str
@@ -137,6 +137,7 @@ class SpeakerRow:
     needs_auth_key: bool = False
     paused: bool = False      # on, and held because it paused itself
     stopping: bool = False    # switched off here, and the speaker is still ending its session
+    muted: bool = False       # on and muted, and not paused (a paused one shows paused)
 
 
 def speaker_rows(parts) -> list[SpeakerRow]:
@@ -160,10 +161,11 @@ def speaker_rows(parts) -> list[SpeakerRow]:
         level = _whole(u.get("volume")) or 0
         connecting = not by and bool(u.get("connecting"))
         paused = not by and on and bool(u.get("held"))
+        muted = not by and on and not paused and bool(u.get("muted"))
         stopping = not by and bool(u.get("stopping"))
         rows.append(SpeakerRow(
             id=u["id"], name=u["name"], on=on, volume=clamp_percent(level),
-            chip="in-use" if by else "paused" if paused else "on" if on else "off",
+            chip="in-use" if by else "paused" if paused else "muted" if muted else "on" if on else "off",
             auto_start=auto_start, in_use_by=by,
             in_use_id=(u.get("in_use_id") or "") if by else "",
             connecting=connecting,
@@ -177,6 +179,7 @@ def speaker_rows(parts) -> list[SpeakerRow]:
             needs_auth_key=reported.get("needs_auth_key") is True,
             paused=paused,
             stopping=stopping,
+            muted=muted,
         ))
     rows.sort(key=lambda r: (not r.auto_start, r.name.lower()))
     return rows
@@ -193,7 +196,7 @@ def outputs_state(appliance_id: str, parts, *, fetched_at: float = 0.0) -> Outpu
             id=r.id, name=r.name, selected=r.on, volume=r.volume,
             remote_in_use=bool(r.in_use_by), remote_owner=r.in_use_by or None,
             is_default=r.auto_start, needs_auth_key=r.needs_auth_key, paused=r.paused,
-            stopping=r.stopping and not r.on,
+            stopping=r.stopping and not r.on, muted=r.muted,
         )
         for r in speaker_rows(parts)
     )
