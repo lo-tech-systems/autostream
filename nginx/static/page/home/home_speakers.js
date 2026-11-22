@@ -92,8 +92,10 @@ async function pinFlow(id, name, volume, first = '') {
 function noteLateWrongPin(view) {
   const f = (view.parts.outputs || {}).start_failure;
   if (!f || f.reason !== 'pin_invalid' || seen.first || (seen.boot === view.boot && f.seq <= seen.seq)) return;
-  // A dialog still open for it hears the verdict in its own reply
-  if (!busy.has(f.unit_id)) wrongPin.add(f.unit_id);
+  // A dialog still open for it hears the verdict in its own reply. Once the
+  // dialog has closed, a verdict that beats the reply to its PIN is kept: a
+  // pending reply leaves it for the next dialog, a refusal clears it.
+  if (!(busy.has(f.unit_id) && shown('pinModal'))) wrongPin.add(f.unit_id);
 }
 
 // A speaker asking for a PIN that nobody else is entering gets the dialog. A

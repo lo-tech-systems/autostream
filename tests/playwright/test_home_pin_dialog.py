@@ -140,6 +140,25 @@ class TestHomePinDialog:
         expect(page.locator("#pinModalNote")).to_have_text(
             "That PIN was not accepted. A new PIN is showing on the TV.")
 
+    def test_a_wrong_pin_verdict_that_beats_the_pending_reply_still_reopens_with_the_new_pin_line(
+        self, page: "Page", home_url: str
+    ):
+        _open(page, home_url, [_NEEDS_PIN, {"ok": True, "result": {"ok": True, "id": "tv", "pending": True}}])
+        _toggle_on(page)
+        _type_pin(page, "1111")
+        stub.REPLY_DELAY_S[0] = 1.0
+        try:
+            page.locator("#pinModalOk").click()
+            wait_for(page, lambda: len(intents()) == 2, "the PIN request")
+            failure = {"seq": 1, "unit_id": "tv", "name": "Speaker A", "reason": "pin_invalid",
+                       "requester": "webui", "at": page.evaluate("Date.now()") / 1000}
+            stub.push({"outputs": outputs(speaker(pin_pending=True), start_failure=failure)})
+            expect(page.locator("#pinModal")).to_have_class(_OPEN)
+            expect(page.locator("#pinModalNote")).to_have_text(
+                "That PIN was not accepted. A new PIN is showing on the TV.")
+        finally:
+            stub.REPLY_DELAY_S[0] = 0.0
+
     def test_a_rate_limited_reply_shows_the_wait_and_counts_down(self, page: "Page", home_url: str):
         page.clock.install()
         _open(page, home_url, [_NEEDS_PIN, _limited(3), {}])
