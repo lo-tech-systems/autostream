@@ -940,10 +940,15 @@ class BluetoothService:
         self._bluez = bluez
         self._ops.set_bluez(bluez)
 
+        # Only the scanned device being paired is accepted: no window yet
+        # welcomes devices that pair in by themselves.
         policy = agent_mod.PairingPolicy(
-            pairing_window_open=self.state_machine.pairing_window_open,
-            pairing_target_mac=self.state_machine.pairing_target_mac,
-            trusted_mac=self.state_machine.trusted_mac,
+            window_open=lambda: False,
+            adopting=lambda: (self.state_machine.pairing_target_mac()
+                              if self.state_machine.pairing_window_open() else None),
+            paired_mac=self.state_machine.trusted_mac,
+            provisional_macs=frozenset,
+            mark_provisional=lambda mac, passkey: None,
         )
         agent_class = agent_mod.build_agent_class(dbus)
         self._agent = agent_class(dbus.SystemBus(), agent_mod.AGENT_PATH, policy)

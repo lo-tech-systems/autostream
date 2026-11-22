@@ -3,15 +3,23 @@
 
 Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 
-The BlueZ org.bluez.Agent1 pairing agent for the autostream_bluetooth daemon,
-capability NoInputNoOutput (Just-Works — BT turntables have no display/keypad).
+The BlueZ org.bluez.Agent1 pairing agent for the autostream_bluetooth daemon.
 
-The accept/reject decision (``should_accept`` / ``PairingPolicy``) is the
-security-relevant logic here and is kept pure and independent of dbus so
-that it is directly unit-testable. The dbus
-service object itself (``build_agent_class``) is constructed lazily via a
-factory function, since ``dbus.service.Object`` can only be subclassed once
-python3-dbus is known to be importable.
+The agent registers as ``DisplayYesNo``. With ``NoInputNoOutput`` bluetoothd
+accepts an incoming Just Works pairing by itself without asking the agent,
+so nothing could hold such a device back; as DisplayYesNo the agent is
+consulted for every pairing. A phone pairs by numeric comparison against it:
+the code is accepted at once and shown in the pairing list, and the user's
+tap on the entry is the consent.
+
+The accept/refuse decision (``PairingPolicy``) is the security-relevant
+logic here and is kept pure and independent of dbus so that it is directly
+unit-testable: two predicates over injected getters, one table naming which
+predicate and side effect each agent method gets, and one injected side
+effect, ``mark_provisional(mac, passkey)``. The dbus service object itself
+(``build_agent_class``) is constructed lazily via a factory function, since
+``dbus.service.Object`` can only be subclassed once python3-dbus is known to
+be importable.
 """
 from __future__ import annotations
 
@@ -24,89 +32,137 @@ logger = logging.getLogger(__name__)
 
 AGENT_PATH = "/lo_tech/autostream/bluetooth/agent"
 AGENT_INTERFACE = "org.bluez.Agent1"
-AGENT_CAPABILITY = "NoInputNoOutput"
+AGENT_CAPABILITY = "DisplayYesNo"
 
 REJECT_ERROR = "org.bluez.Error.Rejected"
 
-# The three request kinds the policy decides on.
-KIND_CONFIRM = "confirm"                # RequestConfirmation
-KIND_AUTHORIZE = "authorize"            # RequestAuthorization
+# The request kinds the policy decides on, one per agent method that asks.
+KIND_AUTHORIZE = "authorize"                  # RequestAuthorization
+KIND_CONFIRM = "confirm"                      # RequestConfirmation
 KIND_AUTHORIZE_SERVICE = "authorize_service"  # AuthorizeService
+KIND_PIN_CODE = "pin_code"                    # RequestPinCode
+KIND_PASSKEY = "passkey"                      # RequestPasskey
+KIND_DISPLAY_PASSKEY = "display_passkey"      # DisplayPasskey
+KIND_DISPLAY_PIN_CODE = "display_pin_code"    # DisplayPinCode
 
 
-def should_accept(
-    request_kind: str,
-    *,
-    pairing_window_open: bool,
-    pairing_target_mac: Optional[str],
-    device_mac: str,
-    trusted_mac: Optional[str],
-) -> bool:
-    """Pure accept/reject decision for one agent callback.
+def _uuid16(short: str) -> str:
+    return f"0000{short}-0000-1000-8000-00805f9b34fb"
 
-    RequestConfirmation/RequestAuthorization: accept only when a pairing
-    window is open AND the requesting MAC is the in-flight pairing target.
 
-    AuthorizeService: accept when the MAC is the in-flight pairing target
-    (during the pairing window) OR is the already-trusted paired device
-    (routine service authorisation on reconnect). Everything else is
-    rejected — including every request when nothing is paired/pairing.
-    """
-    device_mac = (device_mac or "").upper()
-    target = pairing_target_mac.upper() if pairing_target_mac else None
-    trusted = trusted_mac.upper() if trusted_mac else None
+# Services a source may ask for on an audio link: A2DP, Audio Source and
+# Sink, the AVRCP family, and AVDTP. Nothing else has a server on this box.
+AUDIO_UUIDS = frozenset(_uuid16(u) for u in (
+    "110d", "110a", "110b", "110c", "110e", "110f", "0019",
+))
 
-    is_pairing_target = bool(pairing_window_open) and target is not None and device_mac == target
-
-    if request_kind in (KIND_CONFIRM, KIND_AUTHORIZE):
-        return is_pairing_target
-    if request_kind == KIND_AUTHORIZE_SERVICE:
-        return is_pairing_target or (trusted is not None and device_mac == trusted)
-    return False
+# Hands-free and headset services: refused, named in the log so a phone that
+# asks for them is easy to recognise.
+_VOICE_UUIDS = frozenset(_uuid16(u) for u in ("111e", "1108", "111f"))
 
 
 class PairingPolicy:
-    """Pure decision core for the pairing agent, closing over the live
-    pairing-window/target/trusted state via injected callables so this class
-    carries no D-Bus dependency and can be unit-tested directly.
+    """Pure decision core for the pairing agent.
+
+    Getters: ``window_open()`` (new pairings welcome), ``adopting()`` (the
+    device a tap is pairing, or None), ``paired_mac()`` (the recorded paired
+    device), ``provisional_macs()`` (bonded devices awaiting a tap). Side
+    effect: ``mark_provisional(mac, passkey)``, called for an accepted
+    pairing from any device that is neither the tapped one nor the paired
+    one, once per accepted request.
     """
 
     def __init__(
         self,
         *,
-        pairing_window_open: Callable[[], bool],
-        pairing_target_mac: Callable[[], Optional[str]],
-        trusted_mac: Callable[[], Optional[str]],
+        window_open: Callable[[], bool],
+        adopting: Callable[[], Optional[str]],
+        paired_mac: Callable[[], Optional[str]],
+        provisional_macs: Callable[[], frozenset],
+        mark_provisional: Callable[[str, Optional[int]], None],
     ) -> None:
-        self._pairing_window_open = pairing_window_open
-        self._pairing_target_mac = pairing_target_mac
-        self._trusted_mac = trusted_mac
+        self._window_open = window_open
+        self._adopting = adopting
+        self._paired_mac = paired_mac
+        self._provisional_macs = provisional_macs
+        self._mark_provisional = mark_provisional
 
-    def decide(self, request_kind: str, device_mac: str) -> bool:
-        decision = should_accept(
-            request_kind,
-            pairing_window_open=self._pairing_window_open(),
-            pairing_target_mac=self._pairing_target_mac(),
-            device_mac=device_mac,
-            trusted_mac=self._trusted_mac(),
-        )
+    # ---- predicates ----
+
+    def _pairing_allowed(self, mac: str, uuid: Optional[str]) -> bool:
+        # The tapped device may complete its own pairing while the window is
+        # busy with it; anything else only while the window is open.
+        return bool(self._window_open()) or (mac != "" and mac == _upper(self._adopting()))
+
+    def _service_allowed(self, mac: str, uuid: Optional[str]) -> bool:
+        known = {_upper(self._paired_mac()), _upper(self._adopting())}
+        known |= {_upper(m) for m in self._provisional_macs()}
+        return (uuid or "").lower() in AUDIO_UUIDS and mac in known - {None}
+
+    def _never(self, mac: str, uuid: Optional[str]) -> bool:
+        return False
+
+    # ---- side effects ----
+
+    def _mark(self, mac: str, passkey: Optional[int]) -> None:
+        if mac not in (_upper(self._adopting()), _upper(self._paired_mac())):
+            self._mark_provisional(mac, passkey)
+
+    # ---- the decision ----
+
+    def decide(
+        self, request_kind: str, device_mac: str, *,
+        passkey: Optional[int] = None, uuid: Optional[str] = None,
+    ) -> bool:
+        mac = _upper(device_mac) or ""
+        predicate, side_effect = _RULES.get(request_kind, _REFUSE)
+        decision = predicate(self, mac, uuid)
+        if decision and side_effect is not None:
+            side_effect(self, mac, passkey)
+        detail = ""
+        if uuid:
+            detail = " (hands-free/headset)" if uuid.lower() in _VOICE_UUIDS else f" ({uuid})"
         logger.info(
-            "Bluetooth agent %s for %s: %s",
-            request_kind, device_mac, "accepted" if decision else "rejected",
+            "Bluetooth agent %s for %s%s: %s",
+            request_kind, mac, detail, "accepted" if decision else "rejected",
         )
         return decision
+
+
+# Agent method kind -> (predicate, side effect on accept). PIN kinds are
+# never appropriate: an audio source pairs by Just Works or numeric
+# comparison, and a peer asking to display a passkey is a keyboard.
+_REFUSE = (PairingPolicy._never, None)
+_RULES = {
+    KIND_AUTHORIZE: (PairingPolicy._pairing_allowed, PairingPolicy._mark),
+    KIND_CONFIRM: (PairingPolicy._pairing_allowed, PairingPolicy._mark),
+    KIND_AUTHORIZE_SERVICE: (PairingPolicy._service_allowed, None),
+    KIND_PIN_CODE: _REFUSE,
+    KIND_PASSKEY: _REFUSE,
+    KIND_DISPLAY_PASSKEY: _REFUSE,
+    KIND_DISPLAY_PIN_CODE: _REFUSE,
+}
+
+
+def _upper(mac: Optional[str]) -> Optional[str]:
+    return mac.upper() if mac else None
 
 
 def build_agent_class(dbus):
     """Return the org.bluez.Agent1 dbus.service.Object subclass.
 
-    Constructed lazily — called only once dbus is known importable (from
-    bluetooth_service.py at daemon startup) — so this module stays importable
+    Constructed lazily -- called only once dbus is known importable (from
+    bluetooth_service.py at daemon startup) -- so this module stays importable
     without python3-dbus present. Every method delegates the decision to a
     ``PairingPolicy`` instance and raises ``org.bluez.Error.Rejected`` on a
-    reject, matching ``should_accept``'s policy exactly.
+    refusal.
     """
     import dbus.service
+
+    def _decide(policy: PairingPolicy, kind: str, device, **extra) -> None:
+        mac = _mac_from_path(str(device)) or ""
+        if not policy.decide(kind, mac, **extra):
+            raise dbus.exceptions.DBusException(REJECT_ERROR, "not authorised")
 
     class Agent(dbus.service.Object):
         def __init__(self, bus, path: str, policy: PairingPolicy) -> None:
@@ -119,49 +175,37 @@ def build_agent_class(dbus):
 
         @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="s")
         def RequestPinCode(self, device) -> str:
-            # NoInputNoOutput: PIN entry is never appropriate; always reject.
-            raise dbus.exceptions.DBusException(
-                REJECT_ERROR, "PIN entry not supported (NoInputNoOutput)"
-            )
+            _decide(self._policy, KIND_PIN_CODE, device)
+            return ""
 
         @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
         def DisplayPinCode(self, device, pincode) -> None:
-            raise dbus.exceptions.DBusException(
-                REJECT_ERROR, "no display available (NoInputNoOutput)"
-            )
+            _decide(self._policy, KIND_DISPLAY_PIN_CODE, device)
 
         @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="u")
         def RequestPasskey(self, device):
-            raise dbus.exceptions.DBusException(
-                REJECT_ERROR, "passkey entry not supported (NoInputNoOutput)"
-            )
+            _decide(self._policy, KIND_PASSKEY, device)
+            return dbus.UInt32(0)
 
         @dbus.service.method(AGENT_INTERFACE, in_signature="ouq", out_signature="")
         def DisplayPasskey(self, device, passkey, entered) -> None:
-            raise dbus.exceptions.DBusException(
-                REJECT_ERROR, "no display available (NoInputNoOutput)"
-            )
+            _decide(self._policy, KIND_DISPLAY_PASSKEY, device)
 
         @dbus.service.method(AGENT_INTERFACE, in_signature="ou", out_signature="")
         def RequestConfirmation(self, device, passkey) -> None:
-            mac = _mac_from_path(str(device)) or ""
-            if not self._policy.decide(KIND_CONFIRM, mac):
-                raise dbus.exceptions.DBusException(REJECT_ERROR, "not authorised")
+            _decide(self._policy, KIND_CONFIRM, device, passkey=int(passkey))
 
         @dbus.service.method(AGENT_INTERFACE, in_signature="o", out_signature="")
         def RequestAuthorization(self, device) -> None:
-            mac = _mac_from_path(str(device)) or ""
-            if not self._policy.decide(KIND_AUTHORIZE, mac):
-                raise dbus.exceptions.DBusException(REJECT_ERROR, "not authorised")
+            _decide(self._policy, KIND_AUTHORIZE, device)
 
         @dbus.service.method(AGENT_INTERFACE, in_signature="os", out_signature="")
         def AuthorizeService(self, device, uuid) -> None:
-            mac = _mac_from_path(str(device)) or ""
-            if not self._policy.decide(KIND_AUTHORIZE_SERVICE, mac):
-                raise dbus.exceptions.DBusException(REJECT_ERROR, "not authorised")
+            _decide(self._policy, KIND_AUTHORIZE_SERVICE, device, uuid=str(uuid))
 
         @dbus.service.method(AGENT_INTERFACE, in_signature="", out_signature="")
         def Cancel(self) -> None:
+            # A provisional entry stays listed: the bond may still complete.
             logger.info("Bluetooth pairing agent: request cancelled by peer")
 
     return Agent
