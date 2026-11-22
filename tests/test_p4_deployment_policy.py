@@ -1061,15 +1061,20 @@ class TestNginxSyntax:
         ]
         # Wrap the snippets in a minimal nginx.conf so nginx -t can parse
         # them; they all hold http-context directives (map{} or server{}).
-        # The pid file and the logs go to the scratch directory, which an
-        # unprivileged run can write, instead of the system defaults.
+        # The pid file, the logs and the temporary directories go to the
+        # scratch directory, which an unprivileged run can write, instead of
+        # the system defaults (nginx -t creates the temporary directories).
+        here = tmp_path.as_posix()
         wrapper = tmp_path / "nginx.conf"
         wrapper.write_text(
-            f'pid "{tmp_path.as_posix()}/nginx.pid";\n'
-            f'error_log "{tmp_path.as_posix()}/error.log";\n'
+            f'pid "{here}/nginx.pid";\n'
+            f'error_log "{here}/error.log";\n'
             'events {}\n'
             'http {\n'
-            f'    access_log "{tmp_path.as_posix()}/access.log";\n'
+            f'    access_log "{here}/access.log";\n'
+            + "".join(f'    {d} "{here}/{d}_tmp";\n' for d in (
+                "client_body_temp_path", "proxy_temp_path", "fastcgi_temp_path",
+                "uwsgi_temp_path", "scgi_temp_path"))
             + "".join(f'    include "{p.as_posix()}";\n' for p in includes)
             + '}\n',
             encoding="utf-8",

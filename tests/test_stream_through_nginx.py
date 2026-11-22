@@ -135,7 +135,7 @@ def test_an_event_reaches_the_client_through_nginx_as_it_is_written(server, fron
         t0 = time.monotonic()
         assert wait_for(lambda: (c.pull(0.05), len(c.events()) == 2)[1], 3.0)
         assert time.monotonic() - t0 < 1.0
-        assert c.events()[-1]["parts"] == ["session"]
+        assert list(c.events()[-1]["data"]) == ["session"]
     finally:
         c.close()
 
@@ -149,7 +149,7 @@ def test_a_quiet_stream_outlives_the_general_read_timeout(server, front, monkeyp
         c.pull(25.0)
         publish("outputs")
         assert wait_for(lambda: (c.pull(0.05), len(c.events()) == 2)[1], 3.0)
-        assert c.events()[-1]["parts"] == ["outputs"]
+        assert list(c.events()[-1]["data"]) == ["outputs"]
     finally:
         c.close()
 

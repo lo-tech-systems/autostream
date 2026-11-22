@@ -5,14 +5,16 @@
 #
 # pillow is required by tests/test_dial_display*.py. On the appliance itself
 # Pillow is provided by the apt package python3-pil, so it is intentionally
-# not listed in dial/requirements.txt.
+# not listed in dial/requirements.txt. It is pinned to that package's version
+# (Debian 13): text widths differ between Pillow releases, and the layout tests
+# must measure what a dial draws.
 pytest
 flask
 requests
 pytest-timeout
 # Spreads the suite over the runner's CPUs (pytest -n auto).
 pytest-xdist
-pillow
+pillow==11.1.0
 # pyflakes gates the dial modules in tests/test_dial_lint.py.
 pyflakes
 # numpy is required on the dial itself: the display modules import it, the

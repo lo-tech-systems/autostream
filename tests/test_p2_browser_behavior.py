@@ -141,12 +141,20 @@ class TestStaticFiles:
     def test_every_script_is_syntactically_valid(self):
         files = _static_files(".js")
         assert files, "no scripts under nginx/static"
-        for path in files:
-            r = subprocess.run(["node", "--check", str(path)],
-                               capture_output=True, text=True, timeout=10)
-            assert r.returncode == 0, (
-                f"JavaScript syntax error in {path.relative_to(REPO_ROOT)}:\n{r.stderr.strip()}"
-            )
+        # A module is checked as one, under a .mjs name: Node before 20.19
+        # does not recognise an import or export statement in a .js file.
+        module_re = re.compile(r"^\s*(import|export)\b", re.MULTILINE)
+        with tempfile.TemporaryDirectory() as tmp:
+            for path in files:
+                target = path
+                if module_re.search(path.read_text(encoding="utf-8")):
+                    target = Path(tmp) / (path.stem + ".mjs")
+                    target.write_bytes(path.read_bytes())
+                r = subprocess.run(["node", "--check", str(target)],
+                                   capture_output=True, text=True, timeout=10)
+                assert r.returncode == 0, (
+                    f"JavaScript syntax error in {path.relative_to(REPO_ROOT)}:\n{r.stderr.strip()}"
+                )
 
     def test_scripts_and_page_styles_are_ascii(self):
         # Served without a charset, so they must not rely on one. The shared
