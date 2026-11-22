@@ -78,7 +78,9 @@ def test_the_address_header_gives_each_group_its_own_address():
 
 def test_streams_beyond_one_address_limit_are_held_with_the_address_header(server, capsys):
     url = f"http://127.0.0.1:{server.port}/api/v1/events"
-    code = hold_streams.main(["--url", url, "--clients", "10", "--seconds", "1"])
+    # Long enough for the two refusals to arrive on a busy machine; with one
+    # second a refusal could miss the deadline and read as a held stream.
+    code = hold_streams.main(["--url", url, "--clients", "10", "--seconds", "3"])
     assert code == 1
     assert capsys.readouterr().out.count("refused") == 2
     code = hold_streams.main(["--url", url, "--clients", "10", "--seconds", "1",

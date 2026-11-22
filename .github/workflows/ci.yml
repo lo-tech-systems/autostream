@@ -25,6 +25,13 @@ jobs:
         with:
           python-version: "3.13"
 
+      # The dial draws its text in DejaVu Sans, which its installer provides;
+      # without it Pillow falls back to a bitmap font and the layout tests fail.
+      - name: Install fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y fonts-dejavu-core
+
       - name: Install Python dependencies
         run: pip install -r tests/requirements-ci.txt
 
@@ -63,7 +70,8 @@ jobs:
             build-essential \
             systemd \
             libsamplerate0-dev \
-            libasound2-dev
+            libasound2-dev \
+            fonts-dejavu-core
 
       - name: Install Python dependencies
         run: pip install -r tests/requirements-ci.txt
@@ -102,7 +110,8 @@ jobs:
             build-essential \
             systemd \
             libsamplerate0-dev \
-            libasound2-dev
+            libasound2-dev \
+            fonts-dejavu-core
 
       - name: Install Python dependencies
         run: pip install -r tests/requirements-ci.txt
