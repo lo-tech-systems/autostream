@@ -198,8 +198,8 @@ USB and Bluetooth turntables usually include the pre-amp already, so they need n
 
 Each input has an **Input type** and a **Sensitivity** setting under [Setup: Inputs](SETUP-INPUTS.md#input-type). The **Level** readout on the input's card shows what autostream is hearing and adds "(above threshold)" when it is loud enough to count.
 
-* **Playback doesn't start.** Open the input's card, start the source and watch Level. If it reads "no level", autostream has no level to show for that input (check the Input device and that the source is on). If the level stays below the slider's value, move **Sensitivity** to the left. A very quiet passage after a long silence may not restart playback on a Turntable or Line input until it gets a little louder; moving the slider left fixes this.
-* **A click, pop or knocked cable starts playback.** On a Turntable or Line input a short noise should not start playback, because some sound above the level is needed first: 60 milliseconds unless you have changed **Start after**. If noise still starts it, raise [Start after](SETUP-INPUTS.md#start-after) a step or two, or move **Sensitivity** to the right. A CD input starts on the first sound, so if clicks start playback on an input set to CD, choose Line instead. Start after's section explains how to see in the log what each start was.
+* **Playback doesn't start.** Open the input's card, start the source and watch Level. If it reads "no level", autostream has no level to show for that input (check the Input device and that the source is on). If the level stays below the slider's value, move **Sensitivity** to the left. A very quiet passage after a long silence may not restart playback until it gets a little louder; moving the slider left fixes this.
+* **A click, pop or knocked cable starts playback.** A short noise should not start playback, because some sound above the level is needed first: 60 milliseconds unless you have changed **Start after**. If noise still starts it, raise [Start after](SETUP-INPUTS.md#start-after) a step or two, or move **Sensitivity** to the right. Start after's section explains how to see in the log what each start was.
 
 ---
 

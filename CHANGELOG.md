@@ -40,6 +40,20 @@ Update every appliance and every dial together, as for 0.8.0.
   input kept playing until the source was switched off and track changes
   were missed. Silence and track-gap detection, and the level the input card
   shows, now ignore a constant offset. The audio itself is unchanged.
+- changed: a CD input now waits for Start after like the others, and its card
+  shows the setting. A CD player that clicks as it switches itself off no
+  longer starts a session, which could replace the music held for replay
+  with an empty recording. An existing CD input starts at 60 ms.
+- changed: Start after counts the sound itself, not the pieces of audio it
+  arrives in. A click counts for its own length plus about 10 ms however the
+  audio is split, so a Bluetooth source's larger pieces no longer let a
+  click through. Steady music still starts after the set time; a start can be
+  noticed up to about 21 ms later on a wired input, or about 46 ms on
+  Bluetooth.
+- fixed: a live input interrupting a replay needs a quarter of a second of
+  unbroken sound (1.25 seconds for a turntable), now measured in the audio
+  itself. A burst of Bluetooth audio after a short drop-out could count the
+  drop-out as sound and stop the replay.
 
 ### Bluetooth pairing
 
@@ -57,6 +71,9 @@ Update every appliance and every dial together, as for 0.8.0.
   to reach it every 30 seconds, and on an appliance whose Bluetooth and Wi-Fi
   share a radio each try stopped the music for up to five seconds. autostream
   no longer calls the device; it connects to autostream when switched on.
+- fixed: after a Bluetooth device dropped its connection, BlueZ itself tried
+  to reach it seven times over about three minutes, stalling the music and
+  the web pages on a shared radio. It no longer does.
 
 ## Version 0.8.0-beta.1 - 2026-11-18
 

@@ -40,11 +40,11 @@ The type also decides a few things you can see:
 * When autostream has no track title for what is playing, receivers and dials show the type name (**Turntable**, **CD** or **Line**) as the title. A Bluetooth source shows the type you chose, not "Bluetooth".
 * While a track is untitled, the round dial (on its larger layouts) and the HD dial show the input's name where they used to show "Playing".
 * The [Home page](HOME-PAGE.md) shows the matching icon and label, with a separate CD icon for a CD input.
-* A CD input starts a session on the very first sound. Turntable and Line inputs need a short amount of sound above the sensitivity level, within one second, before a session starts (60 milliseconds unless you change [Start after](#start-after)), so a single click, pop or knock on a cable does not start playback. The sound doesn't have to be continuous. Once an input is playing, any sound above the level keeps it going.
+* Every input needs a short amount of sound above the sensitivity level, within one second, before a session starts (60 milliseconds unless you change [Start after](#start-after)), so a single click, pop or knock on a cable does not start playback. That includes a CD player that clicks as it switches itself off. The sound doesn't have to be continuous. Once an input is playing, any sound above the level keeps it going.
 
 For a Bluetooth source on Input 3, choose the input type yourself. autostream doesn't detect it for a Bluetooth-paired device.
 
-If you updated from an earlier release, an input that was set as a turntable shows as Turntable and every other input shows as Line. Nothing else changes until you change the type yourself. A CD player on an existing input is therefore treated as Line, with the click protection on, until you set it to CD.
+If you updated from an earlier release, an input that was set as a turntable shows as Turntable and every other input shows as Line. Nothing else changes until you change the type yourself.
 
 Changing the type takes effect straight away and never interrupts playback. If autostream cannot reach its audio service at that moment, the page shows **Saved (could not apply live)** and the change takes effect once the audio service reconnects.
 
@@ -58,19 +58,17 @@ Below the slider, the **Level** readout shows the input's current peak level in 
 
 Under the Level readout and [Start after](#start-after), a **Sample rate** line shows the rate the input is running at, for example **Sample rate: 48 kHz**, and it updates as you watch. It reads **checking** for a moment while autostream works the rate out, and **not running** when the input is not running. If autostream has moved to a different rate than the one the device was opened at, it adds that in brackets, for example **Sample rate: 44.1 kHz (device opened at 48 kHz)**. While Dynamic Rate Matching is off and the source is sending a different rate, it reads, for example, **Sample rate: 48 kHz (source is sending 44.1 kHz)**.
 
-If a very quiet passage after a long silence doesn't restart playback on a Turntable or Line input, it may need to get a little louder first. Move the Sensitivity slider to the left.
+If a very quiet passage after a long silence doesn't restart playback, it may need to get a little louder first. Move the Sensitivity slider to the left.
 
 The **Silence detection** timeout itself (how long the input has to stay quiet before autostream stops the stream) is a shared setting across all inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
 
 ### Start after
 
-**Start after** sets how much sound above the Sensitivity level a Turntable or Line input needs, within one second, before playback starts. It sits under the Level readout, with the time in the middle, **-100** and **-10** on the left, **+10** and **+100** on the right, and **Reset** beside its label. It runs from 30 to 250 milliseconds and starts at 60. Reset puts it back to 60.
+**Start after** sets how much sound above the Sensitivity level an input needs, within one second, before playback starts. It sits under the Level readout, with the time in the middle, **-100** and **-10** on the left, **+10** and **+100** on the right, and **Reset** beside its label. It runs from 30 to 250 milliseconds and starts at 60. Reset puts it back to 60.
 
-A longer time ignores more clicks, pops and knocks, for example a spike from mains interference that keeps starting your speakers. A shorter time cuts less from the start of a record. The sound doesn't have to be continuous, so a quiet opening whose peaks come and go still starts. autostream measures sound in steps of about 21 milliseconds, so the time it actually waits is rounded up to the next step.
+A longer time ignores more clicks, pops and knocks, for example a spike from mains interference that keeps starting your speakers. A shorter time cuts less from the start of a record. The sound doesn't have to be continuous, so a quiet opening whose peaks come and go still starts. autostream counts the sound itself, not the time around it: a click counts for its own length plus about 10 milliseconds, and the brief dips of a low note count as sound. It notices the start at the end of the current piece of audio it is working on, which can add up to about 21 milliseconds, or about 46 milliseconds for a Bluetooth source.
 
 A step that would go past either end stops at the end, so **+100** at 200 gives 250. A button is greyed out only when the time is already at that end. Each input has its own value.
-
-It isn't shown for a CD input, which starts on its very first sound.
 
 Changing it takes effect straight away and never interrupts playback. If autostream cannot reach its audio service at that moment, the page shows **Saved (could not apply live)** and the change takes effect once the audio service reconnects.
 
