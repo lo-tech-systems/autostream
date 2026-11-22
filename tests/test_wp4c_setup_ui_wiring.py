@@ -335,19 +335,19 @@ class TestSetupPageHtmlControls:
             _SetupRenderer().render(tmp_path, audio1={"start_after_ms": 200}), 1)
         assert not any(disabled(mid, s) for s in (-100, -10, 10, 100))
 
-    def test_start_after_hidden_for_a_cd_input(self, tmp_path):
+    def test_start_after_shown_for_every_type(self, tmp_path):
         html = _SetupRenderer().render(tmp_path, audio1={"input_type": "cd"})
-        wrap = html.split('id="audio1_start_after_wrap"', 1)[1].split(">", 1)[0]
-        assert "hidden" in wrap
-        other = html.split('id="audio2_start_after_wrap"', 1)[1].split(">", 1)[0]
-        assert "hidden" not in other
+        for n in (1, 2):
+            wrap = html.split(f'id="audio{n}_start_after_wrap"', 1)[1].split(">", 1)[0]
+            assert "hidden" not in wrap
+            assert f'id="audio{n}_start_after_stepper"' in html
 
-    def test_start_after_js_saves_and_follows_the_type(self, html):
+    def test_start_after_js_saves_and_stays_shown(self, html):
         assert (
             "settingsSaveFieldDebounced('audio' + inputIndex + '.start_after_ms', ms, 300)"
             in html
         )
-        assert "startAfter.hidden = (type === 'cd')" in html
+        assert "'_start_after_wrap'" not in html, "nothing hides the stepper on a type change"
 
     def test_start_after_js_limits_match_the_config(self, html):
         from autostream_config import (

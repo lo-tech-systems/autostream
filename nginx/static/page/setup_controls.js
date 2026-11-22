@@ -364,9 +364,6 @@
             _showSilenceThreshold(inputIndex, preset);
           }
           if (sel) sel.dataset.currentType = type;
-          // A CD input starts on its first sound, so it has no Start after.
-          const startAfter = document.getElementById('audio' + inputIndex + '_start_after_wrap');
-          if (startAfter) startAfter.hidden = (type === 'cd');
           if (liveEnabled) settingsSaveField('audio' + inputIndex + '.input_type', type);
           refreshInputCardSubs();
         }

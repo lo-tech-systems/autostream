@@ -147,10 +147,10 @@ def _audio_controls_card_html(
     return settings_card_html(inner_html)
 
 
-def _start_after_html(input_index: int, prefix: str, input_type: str, start_after_ms: int) -> str:
-    """The input card's Start after stepper. Hidden for a CD input, which
-    starts on its first sound. A step stops at the range's end, so a button
-    is disabled only when the value is already there."""
+def _start_after_html(input_index: int, prefix: str, start_after_ms: int) -> str:
+    """The input card's Start after stepper, shown for every input type. A
+    step stops at the range's end, so a button is disabled only when the
+    value is already there."""
     v = normalize_start_after_ms(start_after_ms)
     buttons = {}
     for step, label, aria in (
@@ -165,9 +165,8 @@ def _start_after_html(input_index: int, prefix: str, input_type: str, start_afte
             f'<button type="button" class="pill-btn" data-step="{step}" aria-label="{aria}"'
             f' onclick="startAfterStep({input_index}, {step})"{disabled}>{label}</button>'
         )
-    hidden = " hidden" if input_type == "cd" else ""
     return f"""
-            <div id="{prefix}_start_after_wrap"{hidden}>
+            <div id="{prefix}_start_after_wrap">
               <div class="slider-header">
                 <span>Start after:</span>
                 <button type="button" class="pill-btn small" onclick="startAfterReset({input_index})">Reset</button>
@@ -330,7 +329,7 @@ def _setup_input_card_html(ctx: context.SetupCtx, index: int) -> str:
     )
     presets_json = json.dumps(INPUT_TYPE_SILENCE_THRESHOLD_DBFS)
     start_after_html = _start_after_html(
-        index, prefix, input_type,
+        index, prefix,
         getattr(parsed_input, "start_after_ms", START_AFTER_MS_DEFAULT),
     )
 
