@@ -17,7 +17,7 @@ This is the documentation for autostream and the autostream dial accessory. Pick
 
 ## Setup
 
-- [Setup: Inputs](SETUP-INPUTS.md) - configure Input 1, Input 2, and the Bluetooth source, including pairing a Bluetooth turntable.
+- [Setup: Inputs](SETUP-INPUTS.md) - configure Input 1, Input 2 and Input 3 (Bluetooth), including pairing a Bluetooth turntable.
 - [Setup: Playback Defaults](SETUP-PLAYBACK.md) - set the default speaker and volume.
 - [Owntone Setup](SETUP-OWNTONE.md) - AirPlay settings that don't fit on the main Setup page: buffered audio, per-speaker modes, and output offsets.
 - [Setup: Track Identification](SETUP-TRACK-ID.md) - turn on track identification so autostream shows a real title, artist, and artwork.

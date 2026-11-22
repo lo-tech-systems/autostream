@@ -6,7 +6,7 @@ bottom navigation on any autostream page.
 
 The page is always available, but its items only do anything for inputs set
 to **Turntable** in [Setup](SETUP-INPUTS.md). For an input set to CD or Line (or
-a disabled Input 2), every card reads "Not a turntable" / "Disabled" and opens
+a disabled Input 2 or Input 3), every card reads "Not a turntable" / "Disabled" and opens
 to a message telling you to set that input to Turntable in Setup first.
 
 ## Layout
@@ -15,6 +15,8 @@ The page is a two-pane list/detail view, one row per input:
 
 - Input 1 Stylus Tracking, Input 1 Belt Tracking, Input 1 Bearing Oil Tracking
 - Input 2 Stylus Tracking, Input 2 Belt Tracking, Input 2 Bearing Oil Tracking (if Input 2 is enabled)
+- Input 3 Stylus Tracking, Input 3 Belt Tracking, Input 3 Bearing Oil Tracking (on an
+  appliance with Bluetooth, if Input 3 is enabled), for a Bluetooth record player
 
 Tapping a row opens its detail panel; **Back** returns to the list.
 

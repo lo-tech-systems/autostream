@@ -1,5 +1,40 @@
 # Changelog
 
+## Version 0.8.1 (not yet released)
+
+Update every appliance and every dial together, as for 0.8.0.
+
+### Highlights
+
+- Bluetooth is its own input, Input 3, so Input 1 and Input 2 are both free
+  for wired devices.
+- Pairing works from either side on one screen: autostream searches and can be
+  found at the same time, and nothing pairs until you tap it.
+
+### Inputs
+
+- new: Input 3 (Bluetooth), shown on appliances with Bluetooth built in. Its
+  Enable switch turns Bluetooth on and off; while it is off Bluetooth isn't
+  running and nothing is captured. It has the adapter, onboard radio, paired
+  device, Forget, pairing and audio buffer controls, and the same input type,
+  sensitivity, Start after, Dynamic Rate Matching, gain and equaliser as a
+  wired input. The separate Bluetooth card goes.
+- changed: Inputs 1 and 2 no longer offer Bluetooth as a device, and pairing
+  no longer assigns an input.
+- update: an appliance with Bluetooth on Input 1 or Input 2 has it moved to
+  Input 3 with its settings, playing hours and service counters; the input it
+  left is switched off and freed. Both cards say so until either is changed.
+- new: the Service page tracks Input 3 too, for a Bluetooth record player.
+
+### Bluetooth pairing
+
+- new: one pairing screen lists devices autostream finds and devices that try
+  to connect, with a phone's code beside it; a tap selects and a button pairs,
+  and anything not chosen is removed when the screen closes. The screen stays
+  open for up to five minutes while it is visible.
+- changed: the built-in radio isn't offered on appliances with a power board;
+  use a USB adapter.
+
 ## Version 0.8.0-beta.1 - 2026-11-18
 
 Update every appliance and every dial to 0.8 together: a 0.7 dial or appliance

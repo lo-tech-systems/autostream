@@ -78,14 +78,15 @@ On the second setup page:
 
 Input 1 is optional. If you have no input connected yet, tap **Skip - configure
 later** to finish setup without one. You can set Input 1 up from the Setup page at
-any time, or pair a Bluetooth source (see [Setup - Inputs](SETUP-INPUTS.md)).
+any time, or pair a Bluetooth source on Input 3 (see [Setup - Inputs](SETUP-INPUTS.md)).
 
 While no input is enabled, the Home screen shows a **No input** card ("Set up an input in
 the web UI") above the speaker list. It links to Setup and disappears as soon as you enable
 an input.
 
-**Input 2** is not part of first-time setup. If you have a second input, enable it
-from the **Setup page** once setup is complete.
+**Input 2** and **Input 3** (Bluetooth) are not part of first-time setup. If you
+have a second wired input or a Bluetooth source, enable it from the **Setup page**
+once setup is complete.
 
 Your **Auto-Start speaker** was chosen on Setup Page 1. If no speaker is selected when a new session starts, autostream automatically switches on the Auto-Start speakers, each at its saved volume. It does not override a speaker you already have selected. You can later change the set from the Home page; see [Auto-Start Speakers](SETUP-PLAYBACK.md#auto-start-speakers).
 

@@ -29,7 +29,7 @@ appliance can't answer, the affected fields read "Unavailable" instead.
 - **autostream Build** - the installed release tag (e.g. `0.8.0`).
 - **Device** - the Raspberry Pi model detected at startup.
 - **OS Build** - the operating system version.
-- **Total Playback Time** - cumulative playback hours across both inputs,
+- **Total Playback Time** - cumulative playback hours across all inputs,
   to one decimal place. This includes time spent replaying the in-memory
   recording during output failover (repeat playback), not just live audio.
 

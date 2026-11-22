@@ -1,20 +1,20 @@
 # Setup: Inputs
 
-autostream has two inputs (**Input 1** and **Input 2**). Each input is either a wired device or the **Bluetooth** source, which takes the place of a wired device on one of the two. Both inputs, and the Bluetooth card, are configured from the autostream **Setup page**, each as its own card that expands into a detail panel when tapped.
+autostream has up to three inputs. **Input 1** and **Input 2** are wired: each takes a USB sound card or phono-preamp box plugged into the Pi. **Input 3** is **Bluetooth**: it receives a source with its own Bluetooth transmitter, such as a turntable, and leaves both wired inputs free. Each input is configured from the autostream **Setup page**, as its own card that expands into a detail panel when tapped.
 
-This page covers the Input 1 / Input 2 cards and the Bluetooth card, including pairing a Bluetooth turntable.
+This page covers the three input cards, including pairing a Bluetooth turntable on Input 3.
 
 ---
 
 ## Input 1 and Input 2
 
-Open the Setup page and tap **Input 1** or **Input 2**. The panel is titled **Setup Input 1** (or **Setup Input 2**).
+Open the Setup page and tap **Input 1** or **Input 2**. The panel is titled **Setup Input 1** (or **Setup Input 2**). Most of what follows applies to Input 3 too; the parts that are different for Bluetooth are in [Input 3 (Bluetooth)](#input-3-bluetooth).
 
 ### Enable
 
 A toggle labelled **Enable** turns the input on or off. The rest of the card (device selection, Input type, Sensitivity, Start after, Gain, Equaliser) is hidden until Enable is switched on.
 
-Input 2 starts disabled. When either input is off, its collapsed row on the Setup page shows **Not configured** (Input 1) or **Disabled** (Input 2) instead of the usual device summary.
+Input 2 and Input 3 start disabled. When an input is off, its collapsed row on the Setup page shows **Not configured** (Input 1) or **Disabled** (Input 2 and Input 3) instead of the usual device summary.
 
 ### Input device
 
@@ -25,7 +25,7 @@ A few behaviours worth knowing:
 * Until you choose a device, the dropdown shows a placeholder (**- select input device -**) rather than silently defaulting to the first device in the list.
 * The same physical device can't be assigned to both inputs at once: whatever is already selected on the other input is left out of this dropdown.
 * If a previously saved device is no longer detected (unplugged, or the Pi rebooted without it), it still shows in the list, marked **(not currently detected)**, so the setting isn't silently lost.
-* Choosing **Bluetooth** from this list opens the Bluetooth pairing window if nothing is paired yet. See [Bluetooth](#bluetooth) below.
+* Bluetooth isn't in this list. It has its own input, Input 3, with no device to choose.
 
 ### Input type
 
@@ -42,7 +42,7 @@ The type also decides a few things you can see:
 * The [Home page](HOME-PAGE.md) shows the matching icon and label, with a separate CD icon for a CD input.
 * A CD input starts a session on the very first sound. Turntable and Line inputs need a short amount of sound above the sensitivity level, within one second, before a session starts (60 milliseconds unless you change [Start after](#start-after)), so a single click, pop or knock on a cable does not start playback. The sound doesn't have to be continuous. Once an input is playing, any sound above the level keeps it going.
 
-If a Bluetooth source lands on this input (see below), choose the input type yourself. autostream doesn't detect it for a Bluetooth-paired device.
+For a Bluetooth source on Input 3, choose the input type yourself. autostream doesn't detect it for a Bluetooth-paired device.
 
 If you updated from an earlier release, an input that was set as a turntable shows as Turntable and every other input shows as Line. Nothing else changes until you change the type yourself. A CD player on an existing input is therefore treated as Line, with the click protection on, until you set it to CD.
 
@@ -60,7 +60,7 @@ Under the Level readout and [Start after](#start-after), a **Sample rate** line 
 
 If a very quiet passage after a long silence doesn't restart playback on a Turntable or Line input, it may need to get a little louder first. Move the Sensitivity slider to the left.
 
-The **Silence detection** timeout itself (how long the input has to stay quiet before autostream stops the stream) is a shared setting across both inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
+The **Silence detection** timeout itself (how long the input has to stay quiet before autostream stops the stream) is a shared setting across all inputs, covered in [SETUP-PLAYBACK.md](SETUP-PLAYBACK.md).
 
 ### Start after
 
@@ -109,15 +109,17 @@ When an input is enabled, its Setup page row shows a short summary such as:
 
 > USB Audio CODEC · CD · 0 dB
 
-For a Bluetooth-assigned input, the device name and input type are replaced by the Bluetooth connection state, for example:
+For Input 3, the device name is replaced by the Bluetooth device's name, or **Not Connected** while nothing is connected, for example:
 
-> Bluetooth · My Turntable · 0 dB
+> My Turntable · Turntable · 0 dB
 
 ---
 
-## Bluetooth
+## Input 3 (Bluetooth)
 
-Some turntables (and other sources) have a built-in Bluetooth transmitter. If yours does, autostream can receive audio from it directly, no USB adapter needed. Bluetooth audio is handled exactly like a wired input once assigned: drop the needle, the stream starts; stop the record, it stops.
+Some turntables (and other sources) have a built-in Bluetooth transmitter. If yours does, autostream can receive audio from it directly on Input 3, no USB adapter needed, and both wired inputs stay free for other sources. Bluetooth audio is handled exactly like a wired input: drop the needle, the stream starts; stop the record, it stops.
+
+Open the Setup page and tap **Input 3 (Bluetooth)**. The panel is titled **Setup Input 3**. Input 3 is on every appliance with Bluetooth built in; a developer or partial install without it has no Input 3 card.
 
 ### What this is, and isn't
 
@@ -129,17 +131,18 @@ Audio quality may be better using a dedicated USB input, since Bluetooth compres
 
 Bluetooth input is built into every autostream appliance. There's nothing to install and nothing to reboot for, just to switch on.
 
-1. Open the Setup page and tap the **Bluetooth** card.
-2. If it isn't already on, you'll see: *"Connect a Bluetooth device (such as a turntable with Bluetooth output) as an audio input."*
-3. Tap **Enable Bluetooth Services**.
+1. Open the Setup page and tap **Input 3 (Bluetooth)**.
+2. Turn on **Enable**. The card says what it is for: *"Connect a Bluetooth device (such as a turntable with Bluetooth output) as an audio input."*
 
-The card then shows **Bluetooth services: Enabled**, an **Adapter** row, and the pairing controls described below.
+The switch is the whole of Bluetooth: turning it on starts Bluetooth on the appliance and starts Input 3, and the page reloads once that's done. The card then shows an **Adapter** row, the pairing controls described below, and the same **Input type**, **Sensitivity**, **Start after**, **Dynamic Rate Matching**, **Gain** and **Equaliser** settings as a wired input. If Bluetooth can't be started, the switch goes back to off.
+
+While Input 3 is off, Bluetooth isn't running at all and nothing is listening for it.
 
 ### Adapters: plug in a dongle
 
 A **USB Bluetooth adapter is strongly recommended**. Plug one in and the Adapter row picks it up automatically, no setup or reboot needed.
 
-Every Pi model this feature runs on also has a **built-in Bluetooth radio**, but it's switched off by default (it shares an antenna with Wi-Fi, and running both at once can make either less reliable). To use the built-in radio instead of a dongle, turn on **Use onboard bluetooth device** on the Bluetooth card. This edits the boot configuration and **restarts the appliance** to take effect.
+Every Pi model this feature runs on also has a **built-in Bluetooth radio**, but it's switched off by default (it shares an antenna with Wi-Fi, and running both at once can make either less reliable). To use the built-in radio instead of a dongle, turn on **Use onboard bluetooth device** on the Input 3 card. This edits the boot configuration and **restarts the appliance** to take effect.
 
 If both a USB adapter and the onboard radio are available at the same time, autostream always uses the USB adapter.
 
@@ -149,12 +152,7 @@ On a Pi Zero 2 W without a power board the built-in radio works, but Wi-Fi and B
 
 ### Pairing a turntable or other source
 
-Pairing can be started two ways:
-
-1. From the Bluetooth card: tap **Pair a device…**.
-2. From an input: choose **Bluetooth** from the **Input device** dropdown on Input 1 or Input 2.
-
-Either way, the **Pair a device** screen opens: *"Put your device in pairing mode. It will appear below when autostream finds it or when it tries to connect."*
+On the Input 3 card, tap **Pair a device…**. The **Pair a device** screen opens: *"Put your device in pairing mode. It will appear below when autostream finds it or when it tries to connect."*
 
 Bluetooth sources pair in one of two ways, and this one screen handles both. Some wait to be found, so autostream searches for them. Others, often the simplest players with no pairing menu at all, go looking for a speaker themselves and try to connect to it. While the screen is open autostream does both at once: it searches, and it lets itself be found under the appliance's name.
 
@@ -166,31 +164,32 @@ Nothing is paired until you tap it. A device that tries to connect is held in th
 
 The screen only accepts devices while it's open and visible, and for at most five minutes. If you switch to another tab, lock your phone or close the screen, pairing stops by itself shortly afterwards. Some players fail their first attempt and try again a minute or two later, so leave the screen open while you wait.
 
-### Which input your turntable lands on
+### Input type and the other settings
 
-Once pairing succeeds, autostream assigns the Bluetooth source to an input for you. It never switches off or takes over an input you're already using with a wired device:
-
-* If **Input 1 is disabled**, it is assigned to Input 1, and Input 1 is enabled.
-* If **Input 1 already has a device set** and **Input 2 is free** (disabled, or has no device set), it is assigned to Input 2, and Input 2 is enabled.
-* If **either input is already on Bluetooth**, nothing changes, it's already wired up.
-* Otherwise (both inputs are occupied by wired devices), nothing is changed automatically, and the result message tells you: *"Bluetooth paired, assign the Bluetooth input on the Setup page."* Pick which input to hand over to Bluetooth and change its **Input device** yourself.
-
-The result panel names whichever input was used, and the Setup page's input controls update immediately, no reload needed.
-
-If your Bluetooth source is a record player, set the **Input type** to Turntable on whichever input it landed on. A tape deck or cassette player uses **Line**. autostream doesn't set this for you.
+A paired device plays on Input 3; pairing doesn't change any other input. If your Bluetooth source is a record player, set Input 3's **Input type** to Turntable, which also turns on [service tracking](SERVICE.md) for it. A CD player uses **CD**, and a tape deck or cassette player uses **Line**. autostream doesn't set this for you. Sensitivity, Start after, Dynamic Rate Matching, Gain and Equaliser work exactly as they do on Input 1 and Input 2.
 
 Only one Bluetooth device can be paired at a time. Pairing a different one later forgets the previous device and replaces it.
 
+### After the update: Bluetooth moved to Input 3
+
+Before this release, Bluetooth borrowed Input 1 or Input 2. If yours did, the update moves it to Input 3 for you and frees the input it was on:
+
+* Input 3 is enabled if Bluetooth was on, and keeps everything that input had for the Bluetooth source: its input type, sensitivity, Start after, Dynamic Rate Matching, gain, equaliser, and its playing hours and service counters.
+* The input it was on is switched off, with no device chosen and its settings back to their defaults, ready for a wired device.
+* Your paired device stays paired, so it plays on Input 3 as it did before.
+
+Both cards say so (*"Bluetooth was moved here from Input 2 by the update."* on Input 3, and *"Bluetooth was moved to Input 3 by the update."* on the input it left) until you next change either of them.
+
 ### Bluetooth Audio Buffer
 
-The Bluetooth card includes a **Bluetooth Audio Buffer** slider, adjustable from 100 ms to 500 ms (default 200 ms):
+The Input 3 card includes a **Bluetooth Audio Buffer** slider, below Gain and Equaliser, adjustable from 100 ms to 500 ms (default 200 ms):
 
 * Larger values ride out wireless glitches more smoothly, at the cost of a slightly longer delay before you hear the needle drop.
 * Smaller values reduce that delay, but are more likely to stumble if the wireless connection briefly hiccups.
 
 The default works well for most setups. Only change it if you're hearing dropouts (try larger) or the start-up delay bothers you (try smaller).
 
-While a device is connected, the Bluetooth card also shows the negotiated audio format next to the device name, for example:
+While a device is connected, the Input 3 card also shows the negotiated audio format next to the device name, for example:
 
 > My Turntable · Connected - SBC 44.1 kHz
 
@@ -204,9 +203,9 @@ Once paired, there's nothing else to do:
 
 ### Turning it off
 
-The Bluetooth card's **Disable** button (next to **Bluetooth services: Enabled**) turns the feature off. If Bluetooth audio is playing, it stops immediately. Your paired device isn't forgotten, re-enabling later picks up where you left off without pairing again.
+Turn off **Enable** on the Input 3 card, and confirm. Bluetooth stops on the appliance, and if Bluetooth audio is playing, it stops immediately. Your paired device isn't forgotten, re-enabling later picks up where you left off without pairing again.
 
-To remove the paired device itself (rather than just switching Bluetooth off), tap **Forget** on the Bluetooth card.
+To remove the paired device itself (rather than just switching Bluetooth off), tap **Forget** on the Input 3 card.
 
 ### Troubleshooting
 
@@ -226,7 +225,7 @@ The screen has to stay open and visible for pairing to continue. Switching tabs,
 It may still remember an old pairing that autostream no longer has. Open the pairing screen and let the device pair again from its side.
 
 **Device doesn't reconnect after being paired before.**
-Power-cycle it. Check the Bluetooth card's paired-device row to see whether autostream currently sees it as connected. If it still won't reconnect, try **Forget** and pair again.
+Power-cycle it. Check the paired-device row on the Input 3 card to see whether autostream currently sees it as connected. If it still won't reconnect, try **Forget** and pair again.
 
 **Audio is choppy or cuts out.**
 Usually distance or interference: move the source and the Pi closer together, and keep other Wi-Fi/Bluetooth-heavy devices out of the space between them. If you're using the Pi's built-in radio rather than a USB adapter, the shared Wi-Fi/Bluetooth antenna can cause exactly this; switching to a USB adapter usually resolves it. On an appliance with a power board the built-in radio isn't offered at all, for the same reason. A larger **Bluetooth Audio Buffer** can also help ride out brief glitches.
