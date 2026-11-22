@@ -285,15 +285,19 @@ def _device_options_html(cur: str, taken: set, monitor_devices) -> str:
     return opts
 
 
-def _enable_toggle_html(index: int, enabled: bool, bluetooth: bool) -> str:
+def _enable_toggle_html(index: int, enabled: bool, bluetooth: bool, memory_note: str = "") -> str:
     """The Enable switch. Input 3's is the Bluetooth services switch, which
-    reloads the page once the services have changed."""
+    reloads the page once the services have changed; while it is off, a
+    512 MB board's memory note sits under it."""
     onchange = "btServicesToggle(this)" if bluetooth else f"onInputEnableToggle({index}, this.checked)"
     help_html = (
         '<p class="helptext" style="text-align:left;margin:0 0 0.5rem;">Connect a Bluetooth device '
         "(such as a turntable with Bluetooth output) as an audio input.</p>"
         if bluetooth else ""
     )
+    if bluetooth and memory_note and not enabled:
+        help_html += (f'<p class="helptext" id="btMemoryNote" style="text-align:left;margin:0 0 0.5rem;">'
+                      f"{html.escape(memory_note)}</p>")
     return f"""
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
             <label class="output-toggle" style="margin:0;">
@@ -350,7 +354,7 @@ def _setup_input_card_html(ctx: context.SetupCtx, index: int) -> str:
 
     inner_html = f"""
           {_moved_note_html(index, ctx.parsed.bluetooth_moved_from)}
-          {_enable_toggle_html(index, enabled, bluetooth)}
+          {_enable_toggle_html(index, enabled, bluetooth, ctx.bt_memory_note)}
           <div id="{prefix}_settings" style="display:{'block' if enabled else 'none'};">
             {device_html}
             <label>Input type: <select name="{prefix}_input_type" id="{prefix}_input_type" data-current-type="{input_type}" data-presets='{presets_json}' onchange="onInputTypeChange({index}, this.value)">{type_options}</select></label>

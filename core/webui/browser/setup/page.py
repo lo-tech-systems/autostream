@@ -330,6 +330,21 @@ def send_setup_page(
     _bt_pairing_modal_div = ""
     if bt_enabled:
         _bt_pairing_modal_div = """\
+<div id="btServicesModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="btServicesModalTitle">
+  <div class="panel modal-panel">
+    <div class="hdr modal-hdr" id="btServicesModalTitle">Bluetooth</div>
+    <div class="bd modal-bd">
+      <p id="btServicesModalMsg"></p>
+      <p id="btServicesModalNote" class="helptext" style="display:none;text-align:left;"></p>
+      <p id="btServicesModalError" style="display:none;color:var(--color-status-danger);font-weight:600;"></p>
+    </div>
+    <div class="ft modal-ft" id="btServicesModalFt">
+      <button type="button" class="btn modal-btn modal-btn-secondary" id="btServicesCancel">Cancel</button>
+      <button type="button" class="btn modal-btn modal-btn-primary" id="btServicesOk">Enable</button>
+    </div>
+  </div>
+</div>
+""" + """\
 <div id="btPairingModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="btPairingModalTitle">
   <div class="panel modal-panel">
     <div class="hdr modal-hdr" id="btPairingModalTitle">Pair a device</div>
@@ -390,6 +405,7 @@ def send_setup_page(
         "bt_link_state": str((bt_status or {}).get("link") or "disconnected"),
         "bt_services_enabled": bool(bt_services_on),
         "bt_onboard_enabled": bool(bt_onboard_on),
+        "bt_memory_note": ctx.bt_memory_note,
         "bt_status": bt_status if isinstance(bt_status, dict) else None,
         "bt_ui_text": cards_bluetooth._bluetooth_input_fragment_text(bt_status),
         "sd_health": sd_health,

@@ -56,6 +56,7 @@ class SetupCtx:
     bt_onboard_refused: Optional[str]
     bt_buffer_ms: int
     bt_paired_row_text: str
+    bt_memory_note: str
     sd_health: dict
     current_hostname: str
     factory_reset: dict
@@ -108,6 +109,7 @@ def _setup_build_ctx(handler, state: WebUIState, auth) -> SetupCtx:
         bt_onboard_refused=_bt_state["bt_onboard_refused"],
         bt_buffer_ms=_bt_state["bt_buffer_ms"],
         bt_paired_row_text=_bt_state["bt_paired_row_text"],
+        bt_memory_note=_bt_state["bt_memory_note"],
         sd_health=sd_health,
         current_hostname=current_hostname,
         factory_reset=factory_reset,

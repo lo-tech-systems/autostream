@@ -30,21 +30,69 @@ var pageData = (function () {
           refreshExclusivityOptions();
         }
 
-        // Input 3's Enable switch is the Bluetooth services switch. The
-        // switch stays disabled (busy) while the services change, then the
-        // page reloads; if they cannot be changed it goes back.
-        function btServicesToggle(el) {
-          var enable = !!el.checked;
-          if (!enable && !window.confirm('Disable Bluetooth? Any active Bluetooth stream will stop immediately.')) {
-            el.checked = true;
-            return;
+        // Input 3's Enable switch is the Bluetooth services switch. A tap
+        // leaves the switch where it was and opens the services modal, which
+        // goes confirm -> busy -> (page reload | error). Starting the
+        // services takes many seconds, so the busy view stays up, without
+        // buttons, until they have changed.
+        var _btServicesText = {
+          enable: {
+            title: 'Enable Bluetooth',
+            confirm: 'Start the Bluetooth services so a Bluetooth device can play through Input 3?',
+            ok: 'Enable',
+            busy: 'Starting the Bluetooth services. This can take up to 30 seconds\u2026',
+            failed: 'The Bluetooth services could not be started.'
+          },
+          disable: {
+            title: 'Disable Bluetooth',
+            confirm: 'Stop the Bluetooth services? Any Bluetooth stream stops immediately.',
+            ok: 'Disable',
+            busy: 'Stopping the Bluetooth services\u2026',
+            failed: 'The Bluetooth services could not be stopped.'
           }
-          el.disabled = true;
-          settingsTransact('/api/bluetooth/services', {action: enable ? 'enable' : 'disable'}, {
+        };
+        var _btServicesAction = 'enable';
+
+        function _btServicesView(view, error) {
+          var text = _btServicesText[_btServicesAction];
+          var byId = function(id) { return document.getElementById(id); };
+          byId('btServicesModalTitle').textContent = text.title;
+          byId('btServicesModalMsg').textContent = view === 'busy' ? text.busy : text.confirm;
+          var note = pageData.bt_memory_note || '';
+          var noteEl = byId('btServicesModalNote');
+          noteEl.textContent = note;
+          noteEl.style.display = (view === 'confirm' && _btServicesAction === 'enable' && note) ? '' : 'none';
+          var errEl = byId('btServicesModalError');
+          errEl.textContent = error || '';
+          errEl.style.display = view === 'error' ? '' : 'none';
+          byId('btServicesModalFt').style.display = view === 'busy' ? 'none' : '';
+          byId('btServicesOk').style.display = view === 'confirm' ? '' : 'none';
+          byId('btServicesOk').textContent = text.ok;
+          byId('btServicesCancel').textContent = view === 'error' ? 'Close' : 'Cancel';
+          byId('btServicesModal').classList.toggle('show', view !== 'closed');
+        }
+
+        function btServicesToggle(el) {
+          _btServicesAction = el.checked ? 'enable' : 'disable';
+          el.checked = !el.checked;
+          _btServicesView('confirm');
+        }
+
+        function _btServicesRun() {
+          var text = _btServicesText[_btServicesAction];
+          _btServicesView('busy');
+          settingsTransact('/api/bluetooth/services', {action: _btServicesAction}, {
             onSuccess: function() { window.location.reload(); },
-            onError: function() { el.checked = !enable; el.disabled = false; }
+            onError: function(d) { _btServicesView('error', (d && d.message) || text.failed); }
           });
         }
+
+        document.addEventListener('DOMContentLoaded', function() {
+          var ok = document.getElementById('btServicesOk');
+          var cancel = document.getElementById('btServicesCancel');
+          if (ok) ok.addEventListener('click', _btServicesRun);
+          if (cancel) cancel.addEventListener('click', function() { _btServicesView('closed'); });
+        });
 
         function btOnboardToggleChanged(checked) {
           if (!window.confirm('Changing this restarts the appliance. Continue?')) {

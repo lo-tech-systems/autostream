@@ -19,6 +19,12 @@ Update every appliance and every dial together, as for 0.8.0.
   device, Forget, pairing and audio buffer controls, and the same input type,
   sensitivity, Start after, Dynamic Rate Matching, gain and equaliser as a
   wired input. The separate Bluetooth card goes.
+- new: turning Bluetooth on or off asks first, then shows a message until the
+  services have started or stopped, which can take up to 30 seconds. On a
+  board with 512 MB of memory the card and the question say Bluetooth uses
+  about 40 MB.
+- fixed: turning Bluetooth on could time out in the browser on a slower board
+  and leave the switch showing off, though Bluetooth had started.
 - changed: Inputs 1 and 2 no longer offer Bluetooth as a device, and pairing
   no longer assigns an input.
 - update: an appliance with Bluetooth on Input 1 or Input 2 has it moved to

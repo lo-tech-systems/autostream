@@ -670,3 +670,24 @@ class TestStateStreamLocation:
     def test_the_general_location_keeps_its_short_read_timeout(self):
         block = _location_block(_conf_main(), "location / {")
         assert re.search(r"^\s*proxy_read_timeout\s+15s;", block, re.MULTILINE)
+
+
+class TestBluetoothServicesLocation:
+    """The Bluetooth services switch outlasts the general 15 s read timeout:
+    its admin call may take up to 30 s, so its location waits longer."""
+
+    def _block(self):
+        conf = _conf_main()
+        assert len(re.findall(r"location\s*=\s*/api/bluetooth/services\s*\{", conf)) == 1
+        return _location_block(conf, "location = /api/bluetooth/services")
+
+    def test_the_read_timeout_is_above_the_admin_call_timeout(self):
+        match = re.search(r"^\s*proxy_read_timeout\s+(\d+)s;", self._block(), re.MULTILINE)
+        assert match and int(match.group(1)) > 30
+
+    def test_it_uses_the_same_backend_and_updating_redirect(self):
+        block = self._block()
+        assert "proxy_pass $html_backend$uri$is_args$args;" in block
+        assert "return 302 /offline/updating;" in block
+        assert "proxy_set_header Host $http_host;" in block
+        assert "error_page" not in block

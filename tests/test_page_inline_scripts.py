@@ -100,7 +100,7 @@ ISLAND_KEYS = {
     "auth": set(),
     "setup": {
         "app_version", "icons", "bt_paired", "bt_link_state", "bt_services_enabled",
-        "bt_onboard_enabled", "bt_status", "bt_ui_text", "sd_health", "missing_rate_texts",
+        "bt_onboard_enabled", "bt_memory_note", "bt_status", "bt_ui_text", "sd_health", "missing_rate_texts",
         "input_indices", "bluetooth_input_index", "legacy_input_fields", "input_disabled_text",
     },
 }

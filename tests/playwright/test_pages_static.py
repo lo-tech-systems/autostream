@@ -615,6 +615,58 @@ class TestSetup:
         finally:
             server.shutdown()
 
+    def test_the_input3_switch_asks_then_reports_through_the_services_modal(self, page: "Page"):
+        posts = []
+
+        def _services(route):
+            posts.append(json.loads(route.request.post_data or "{}"))
+            route.fulfill(json={"ok": False, "message": "Could not stop the Bluetooth services."})
+
+        server, base = _serve_setup(bt_enabled=True)
+        try:
+            errors = _watch_errors(page)
+            page.route("**/api/bluetooth/services", _services)
+            page.goto(f"{base}/")
+            page.wait_for_load_state("networkidle")
+            _open_setup_panel(page, "input3")
+            switch = page.locator('input[name="audio3_enabled"]')
+            knob = page.locator('label.output-toggle:has(input[name="audio3_enabled"]) .switch')
+            before = switch.is_checked()
+            modal = page.locator("#btServicesModal")
+
+            # Cancel: nothing is sent and the switch has not moved.
+            knob.click()
+            expect(modal).to_have_class(_SHOWN)
+            assert switch.is_checked() == before
+            page.click("#btServicesCancel")
+            expect(modal).not_to_have_class(_SHOWN)
+            assert posts == []
+
+            # Confirm: the request goes, its failure is shown, Close dismisses.
+            knob.click()
+            expect(page.locator("#btServicesOk")).to_be_visible()
+            page.click("#btServicesOk")
+            expect(page.locator("#btServicesModalError")).to_have_text(
+                "Could not stop the Bluetooth services.")
+            expect(page.locator("#btServicesOk")).to_be_hidden()
+            expect(page.locator("#btServicesCancel")).to_have_text("Close")
+            page.click("#btServicesCancel")
+            expect(modal).not_to_have_class(_SHOWN)
+            assert posts == [{"action": "disable" if before else "enable"}]
+            assert switch.is_checked() == before
+
+            # Enabling on a 512 MB board shows the memory note; the busy view has no buttons.
+            page.evaluate("pageData.bt_memory_note = 'Uses memory.'; btServicesToggle({checked: true})")
+            expect(page.locator("#btServicesModalNote")).to_have_text("Uses memory.")
+            expect(page.locator("#btServicesOk")).to_have_text("Enable")
+            page.evaluate("_btServicesView('busy')")
+            expect(page.locator("#btServicesModalFt")).to_be_hidden()
+            expect(page.locator("#btServicesModalNote")).to_be_hidden()
+            expect(page.locator("#btServicesModalMsg")).to_contain_text("up to 30 seconds")
+            assert errors == []
+        finally:
+            server.shutdown()
+
     def test_bluetooth_absent_leaves_the_pairing_script_out_and_nothing_throws(self, page: "Page"):
         assert "setup_bt_pairing.js" not in _page_stub.render("setup").decode()
         server, base = _serve_setup()

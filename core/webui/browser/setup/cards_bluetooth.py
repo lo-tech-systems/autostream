@@ -13,7 +13,7 @@ import html
 from typing import Optional
 
 from autostream_config import BLUETOOTH_INPUT_INDEX
-from autostream_sysutils import SDCARD_HEALTH_METHODS
+from autostream_sysutils import SDCARD_HEALTH_METHODS, get_effective_memory_info
 from webui.common import settings_card_html
 from webui.session_state import WebUIState
 from webui.browser.setup import context
@@ -38,6 +38,13 @@ from webui.browser.setup import context
 BLUETOOTH_BUFFER_MS_DEFAULT = 200
 BLUETOOTH_BUFFER_MS_MIN = 100
 BLUETOOTH_BUFFER_MS_MAX = 500
+
+# Resident memory of bluetoothd, bluealsa and the autostream_bluetooth daemon
+# together, measured on a running appliance.
+BLUETOOTH_MEMORY_MIB = 40
+# A 512 MB board reports about 460 MiB of total memory; anything under this
+# gets the memory note.
+BLUETOOTH_LOW_MEMORY_TOTAL_MIB = 600
 
 
 def _bluetooth_installed() -> bool:
@@ -128,6 +135,16 @@ def _bluetooth_onboard_refused() -> Optional[str]:
         return None
 
 
+def _bluetooth_memory_note() -> str:
+    """The note shown before Bluetooth is enabled on a board with 512 MB of
+    memory, or "" on a larger board or when the size cannot be read."""
+    info = get_effective_memory_info()
+    if info is None or info[1] >= BLUETOOTH_LOW_MEMORY_TOTAL_MIB:
+        return ""
+    return (f"Bluetooth uses about {BLUETOOTH_MEMORY_MIB} MB of memory. This board has 512 MB, "
+            "so that leaves less for autostream's other features.")
+
+
 def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
     """Shared Bluetooth state used by the input cards and the Bluetooth JS
     blocks. Returns a dict rather than a dataclass to
@@ -147,7 +164,9 @@ def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
     except Exception:
         bt_buffer_ms = BLUETOOTH_BUFFER_MS_DEFAULT
     bt_paired_row_text = _bluetooth_paired_row_text(bt_status)
+    bt_memory_note = _bluetooth_memory_note() if bt_enabled else ""
     return {
+        "bt_memory_note": bt_memory_note,
         "bt_enabled": bt_enabled,
         "bt_status": bt_status,
         "bt_paired": bt_paired,

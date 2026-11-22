@@ -133,8 +133,11 @@ Bluetooth input is built into every autostream appliance. There's nothing to ins
 
 1. Open the Setup page and tap **Input 3 (Bluetooth)**.
 2. Turn on **Enable**. The card says what it is for: *"Connect a Bluetooth device (such as a turntable with Bluetooth output) as an audio input."*
+3. autostream asks you to confirm. Tap **Enable**.
 
-The switch is the whole of Bluetooth: turning it on starts Bluetooth on the appliance and starts Input 3, and the page reloads once that's done. The card then shows an **Adapter** row, the pairing controls described below, and the same **Input type**, **Sensitivity**, **Start after**, **Dynamic Rate Matching**, **Gain** and **Equaliser** settings as a wired input. If Bluetooth can't be started, the switch goes back to off.
+The switch is the whole of Bluetooth: turning it on starts Bluetooth on the appliance and starts Input 3. A message stays up while Bluetooth starts, which can take up to 30 seconds, and the page reloads once that's done. The card then shows an **Adapter** row, the pairing controls described below, and the same **Input type**, **Sensitivity**, **Start after**, **Dynamic Rate Matching**, **Gain** and **Equaliser** settings as a wired input. If Bluetooth can't be started, the message says so and the switch stays off.
+
+Bluetooth uses about 40 MB of memory while it is on. On a board with 512 MB of memory, such as a Pi Zero 2 W, the card and the confirmation both say so, as that leaves less room for autostream's other features. Turning Bluetooth off asks first too, as any Bluetooth stream stops straight away.
 
 While Input 3 is off, Bluetooth isn't running at all and nothing is listening for it.
 

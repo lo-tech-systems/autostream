@@ -92,6 +92,7 @@ class _SetupRenderer:
         bt_services_on: bool = False,
         bt_onboard_on: bool = False,
         bt_onboard_refused: str | None = None,
+        bt_memory_note: str = "",
         bt_status: dict | None = None,
         monitor_devices: list | None = None,
         audio1_capture_device: str = "hw:1,0",
@@ -130,6 +131,7 @@ class _SetupRenderer:
             _bluetooth_services_enabled=bt_services_on,
             _bluetooth_onboard_enabled=bt_onboard_on,
             _bluetooth_onboard_refused=bt_onboard_refused,
+            _bluetooth_memory_note=bt_memory_note,
         ):
             with patch.object(
                 state, "get_monitor_devices", return_value=(monitor_devices or [])
@@ -646,33 +648,95 @@ class TestSyntheticOptionSuppression:
 
 
 # ---------------------------------------------------------------------------
-# Input 3's Enable switch is the services switch: busy while the services
-# change, restored on failure, the page reloaded on success.
+# Input 3's Enable switch is the services switch: a tap opens the services
+# modal (confirm -> busy -> reload or error) and the switch itself only moves
+# when the page reloads with the services changed.
 # ---------------------------------------------------------------------------
+
+_MEMORY_NOTE = "Bluetooth uses about 40 MB of memory. This board has 512 MB."
+
 
 class TestBluetoothServicesToggle:
     @pytest.fixture
-    def segment(self, tmp_path: Path) -> str:
-        html = _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
-        start = html.index("function btServicesToggle(el)")
+    def html(self, tmp_path: Path) -> str:
+        return _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
+
+    @pytest.fixture
+    def segment(self, html: str) -> str:
+        start = html.index("var _btServicesText")
         return html[start:html.index("function btOnboardToggleChanged", start)]
 
-    def test_the_old_buttons_are_gone(self, tmp_path):
-        html = _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
+    def test_the_old_buttons_are_gone(self, html):
         for gone in ("btnBtEnableServices", "btnBtDisableServices", "btEnableServices()",
                      "btDisableServices()"):
             assert gone not in html, gone
 
-    def test_disable_is_confirmed_before_anything_changes(self, segment):
-        assert segment.index("window.confirm(") < segment.index("el.disabled = true;")
+    def test_the_services_modal_is_on_the_page(self, html):
+        for element_id in ("btServicesModal", "btServicesModalMsg", "btServicesModalNote",
+                           "btServicesModalError", "btServicesModalFt", "btServicesOk",
+                           "btServicesCancel"):
+            assert f'id="{element_id}"' in html, element_id
 
-    def test_busy_before_the_request(self, segment):
-        assert segment.index("el.disabled = true;") < segment.index("settingsTransact(")
-        assert "'/api/bluetooth/services'" in segment
+    def test_no_services_modal_without_bluetooth(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path, bt_enabled=False)
+        assert 'id="btServicesModal"' not in html
 
-    def test_success_reloads_and_failure_restores(self, segment):
+    def test_a_tap_leaves_the_switch_and_asks_first(self, segment):
+        toggle = segment[segment.index("function btServicesToggle(el)"):]
+        toggle = toggle[:toggle.index("\n        }\n")]
+        assert "el.checked = !el.checked;" in toggle
+        assert "_btServicesView('confirm');" in toggle
+        assert "settingsTransact(" not in toggle
+        assert "window.confirm(" not in segment
+
+    def test_the_request_runs_behind_the_busy_view(self, segment):
+        run = segment[segment.index("function _btServicesRun()"):]
+        assert run.index("_btServicesView('busy');") < run.index("settingsTransact(")
+        assert "'/api/bluetooth/services', {action: _btServicesAction}" in run
+
+    def test_success_reloads_and_failure_shows_the_error(self, segment):
         assert "onSuccess: function() { window.location.reload(); }" in segment
-        assert "onError: function() { el.checked = !enable; el.disabled = false; }" in segment
+        assert "onError: function(d) { _btServicesView('error', (d && d.message) || text.failed); }" in segment
+
+    def test_the_busy_view_has_no_buttons_and_says_it_takes_time(self, segment):
+        assert "byId('btServicesModalFt').style.display = view === 'busy' ? 'none' : '';" in segment
+        assert "Starting the Bluetooth services. This can take up to 30 seconds" in segment
+
+    def test_the_memory_note_shows_only_when_confirming_an_enable(self, segment):
+        assert ("noteEl.style.display = (view === 'confirm' && _btServicesAction === 'enable' && note)"
+                in segment)
+
+
+class TestBluetoothMemoryNote:
+    def test_note_on_the_card_and_in_page_data_while_disabled(self, tmp_path):
+        html = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, bt_memory_note=_MEMORY_NOTE, audio3={"enabled": False})
+        assert f'id="btMemoryNote" style="text-align:left;margin:0 0 0.5rem;">{_MEMORY_NOTE}</p>' in html
+        assert json.dumps(_MEMORY_NOTE) in html
+
+    def test_no_card_note_once_enabled(self, tmp_path):
+        html = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, bt_services_on=True, bt_memory_note=_MEMORY_NOTE,
+            audio3={"enabled": True})
+        assert 'id="btMemoryNote"' not in html
+
+    def test_no_card_note_on_a_larger_board(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path, bt_enabled=True, audio3={"enabled": False})
+        assert 'id="btMemoryNote"' not in html
+
+    @pytest.mark.parametrize("info, noted", [
+        ((90, 462), True),
+        ((300, 599), True),
+        ((600, 906), False),
+        (None, False),
+    ])
+    def test_the_note_follows_the_board_size(self, info, noted):
+        from webui.browser.setup import cards_bluetooth
+        with patch.object(cards_bluetooth, "get_effective_memory_info", return_value=info):
+            note = cards_bluetooth._bluetooth_memory_note()
+        assert bool(note) is noted
+        if noted:
+            assert "about 40 MB" in note and "512 MB" in note
 
 
 class TestUnconfiguredInputPlaceholder:
