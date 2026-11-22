@@ -48,6 +48,10 @@ Update every appliance and every dial together, as for 0.8.0.
   player or other source searching for one finds it. Before, BlueZ never read
   autostream's settings, and a source that had lost its pairing could not
   pair again.
+- fixed: while the paired Bluetooth device was switched off, autostream tried
+  to reach it every 30 seconds, and on an appliance whose Bluetooth and Wi-Fi
+  share a radio each try stopped the music for up to five seconds. autostream
+  no longer calls the device; it connects to autostream when switched on.
 
 ## Version 0.8.0-beta.1 - 2026-11-18
 

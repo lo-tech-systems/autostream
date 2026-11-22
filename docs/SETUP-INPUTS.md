@@ -230,7 +230,7 @@ The screen has to stay open and visible for pairing to continue. Switching tabs,
 It may still remember an old pairing that autostream no longer has. Open the pairing screen and let the device pair again from its side.
 
 **Device doesn't reconnect after being paired before.**
-Power-cycle it. Check the paired-device row on the Input 3 card to see whether autostream currently sees it as connected. If it still won't reconnect, try **Forget** and pair again.
+autostream doesn't call a paired device; the device connects to autostream when it's switched on, so make sure it's on and within range. Power-cycle it. Check the paired-device row on the Input 3 card to see whether autostream currently sees it as connected. If it still won't reconnect, try **Forget** and pair again.
 
 **Audio is choppy or cuts out.**
 Usually distance or interference: move the source and the Pi closer together, and keep other Wi-Fi/Bluetooth-heavy devices out of the space between them. If you're using the Pi's built-in radio rather than a USB adapter, the shared Wi-Fi/Bluetooth antenna can cause exactly this; switching to a USB adapter usually resolves it. On an appliance with a power board the built-in radio isn't offered at all, for the same reason. A larger **Bluetooth Audio Buffer** can also help ride out brief glitches.

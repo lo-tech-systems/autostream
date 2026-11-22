@@ -53,7 +53,7 @@ class FakeOps:
     """Records every call the state machine issues. The op launchers
     resolve synchronously by default, standing in for an op whose async
     D-Bus calls all landed straight away; ``resolve_adopt``/
-    ``resolve_remove``/``resolve_reconnect`` set to False leave the op in
+    ``resolve_remove`` set to False leave the op in
     flight (the callback is kept in ``pending_*`` for the test to fire)."""
 
     def __init__(self) -> None:
@@ -64,7 +64,6 @@ class FakeOps:
         self.fail_adopt: str | None = None
         self.resolve_adopt = True
         self.resolve_remove = True
-        self.resolve_reconnect = True
         self.pending_adopt = None
         self.pending_remove = None
         self.connected_macs: set[str] = set()
@@ -108,13 +107,6 @@ class FakeOps:
             self.pending_remove = on_done
             return
         on_done()
-
-    def start_reconnect_probe(self, mac, on_result, is_stale) -> None:
-        self.calls.append(("start_reconnect_probe", mac))
-        if not self.resolve_reconnect or is_stale():
-            return
-        if mac in self.connected_macs:
-            on_result(mac, True)
 
     def device_alias_async(self, mac, on_result, on_error) -> None:
         self.calls.append(("device_alias_async", mac))
@@ -540,60 +532,28 @@ class TestLinkStateAndStatus:
         assert machine.get_status()["adapter_kind"] is None
 
 
-class TestReconnectSupervisor:
-    def test_no_reconnect_attempt_without_paired_device(self, tmp_path):
-        machine, ops, _ = _make_machine(tmp_path)
-        machine.reconnect_tick()
-        assert ops.calls == []
+class TestNoOutgoingReconnect:
+    """The paired source connects to the appliance; the appliance never
+    pages it, since paging an absent source stalls a shared radio's Wi-Fi."""
 
-    def test_no_reconnect_attempt_while_connected(self, tmp_path):
-        machine, ops, _ = _make_machine(tmp_path, paired=MAC_A)
-        machine.on_link_state_changed(MAC_A, True)
-        machine.reconnect_tick()
-        assert ops.calls == []
-
-    def test_reconnect_bounded_to_interval(self, tmp_path):
+    def test_a_disconnected_paired_source_is_never_paged(self, tmp_path):
         machine, ops, clock = _make_machine(tmp_path, paired=MAC_A)
-        machine.reconnect_tick()
-        assert ops.calls.count(("start_reconnect_probe", MAC_A)) == 1
-        clock.advance(svc.RECONNECT_INTERVAL_SECONDS - 1)
-        machine.reconnect_tick()
-        assert ops.calls.count(("start_reconnect_probe", MAC_A)) == 1
-        clock.advance(2)
-        machine.reconnect_tick()
-        assert ops.calls.count(("start_reconnect_probe", MAC_A)) == 2
-
-    def test_reconnect_resets_after_reconnection(self, tmp_path):
-        machine, ops, _ = _make_machine(tmp_path, paired=MAC_A)
-        machine.reconnect_tick()
         machine.on_link_state_changed(MAC_A, True)
         machine.on_link_state_changed(MAC_A, False)
         ops.calls.clear()
-        machine.reconnect_tick()
-        assert ("start_reconnect_probe", MAC_A) in ops.calls
+        for _ in range(600):
+            clock.advance(1)
+            machine.tick()
+        assert ops.calls == []
 
-    def test_reconnect_waits_while_a_window_is_open(self, tmp_path):
-        machine, ops, _ = _make_machine(tmp_path, paired=MAC_A)
-        _open(machine, ops)
-        machine.tick()
-        assert ("start_reconnect_probe", MAC_A) not in ops.calls
-        machine.window_stop()
-        machine.tick()
-        assert ("start_reconnect_probe", MAC_A) in ops.calls
-
-    def test_probe_finding_the_link_up_reports_connected(self, tmp_path):
-        machine, ops, _ = _make_machine(tmp_path, paired=MAC_A)
-        ops.connected_macs.add(MAC_A)
-        machine.reconnect_tick()
+    def test_the_source_connecting_itself_brings_the_link_up(self, tmp_path):
+        machine, _, _ = _make_machine(tmp_path, paired=MAC_A)
+        machine.on_link_state_changed(MAC_A, True)
         assert machine.get_status()["link"] == svc.LINK_CONNECTED
 
-    def test_reconnect_is_stale_once_link_up_or_device_changed(self, tmp_path):
-        machine, _, _ = _make_machine(tmp_path, paired=MAC_A)
-        assert machine._reconnect_is_stale(MAC_A) is False
-        machine.on_link_state_changed(MAC_A, True)
-        assert machine._reconnect_is_stale(MAC_A) is True
-        machine.forget()
-        assert machine._reconnect_is_stale(MAC_A) is True
+    def test_the_service_has_no_reconnect_op(self):
+        assert not hasattr(svc.BluetoothOps, "start_reconnect_probe")
+        assert not hasattr(svc, "RECONNECT_INTERVAL_SECONDS")
 
 
 class TestBufferConfiguration:

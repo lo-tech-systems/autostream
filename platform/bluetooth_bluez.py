@@ -650,9 +650,7 @@ class BluezClient:
         )
 
     def is_connected(self, mac: str) -> bool:
-        """Bounded Device1.Connected getter: used by the
-        reconnect supervisor to avoid hammering Connect() against a device
-        BlueZ already reports connected, and by the pair-success hook to pick
+        """Bounded Device1.Connected getter: used by the pair-success hook to pick
         up a Connected=True that arrived mid-pairing, before the device was
         trusted, and so was never attributed to anyone by
         ``_on_props_changed``. A device that no longer exists is reported as

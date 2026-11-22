@@ -7,7 +7,7 @@ Entry point / main loop / thread orchestration for the autostream_bluetooth
 daemon. Runs on the system Python as the unprivileged ``autostream`` user
 (groups ``bluetooth``,
 ``audio``). Single process, three threads: GLib main loop (D-Bus, and the
-pairing window's timers and the reconnect supervisor via a
+pairing window's timers via a
 ``GLib.timeout_add_seconds`` tick), the control-socket server, and the
 loopback pump. ``bluetooth_loop.LoopBridge`` is the one point where a call
 crosses from another thread onto the loop thread.
@@ -68,7 +68,6 @@ BLUETOOTH_SERVICE_VERSION = "0.6.0"
 DEFAULT_STATE_PATH = "/var/lib/autostream/bluetooth.json"
 
 # Timers (seconds). The pairing window's limits live in bluetooth_window.
-RECONNECT_INTERVAL_SECONDS = 30
 TICK_INTERVAL_SECONDS = 1.0
 # Adapter-absent degradation: how often the tick loop
 # retries attaching to BlueZ when no adapter was found at startup.
@@ -159,7 +158,7 @@ def clear_persisted_state(path: str) -> None:
 class BluetoothOps:
     """Adapts a BluezClient to the handful of calls the state machine issues.
 
-    Adoption, window clean-up and the reconnect probe are multi-step chains
+    Adoption and window clean-up are multi-step chains
     driven entirely on the GLib loop thread via the small operation classes
     in ``bluetooth_commands.py`` rather than a worker thread, so the loop
     never stalls on a D-Bus round-trip to the far end of an A2DP handshake.
@@ -214,16 +213,6 @@ class BluetoothOps:
     def start_remove_devices(self, macs, on_done: Callable[[], None]) -> None:
         """Launch a ``RemoveDevicesOp`` (disconnect then remove each)."""
         cmd_mod.RemoveDevicesOp(self._require_bluez(), macs, on_done).start()
-
-    def start_reconnect_probe(
-        self,
-        mac: str,
-        on_result: Callable[[str, bool], None],
-        is_stale: Callable[[], bool],
-    ) -> None:
-        """Launch a ``ReconnectProbeOp`` (is-connected probe, Connect() if
-        not) against the bound BluezClient."""
-        cmd_mod.ReconnectProbeOp(self._require_bluez(), mac, on_result, is_stale).start()
 
     def device_alias_async(
         self, mac: str, on_result: Callable[[str], None], on_error: Callable[[Exception], None],
@@ -287,8 +276,8 @@ class BluetoothOps:
 
 class BluetoothStateMachine:
     """Composes the pairing window, its device list, the adapter mode and
-    the audio source machine; owns the single-paired-device record, the
-    reconnect supervisor, and presentation-state persistence.
+    the audio source machine; owns the single-paired-device record and
+    presentation-state persistence.
 
     Single-threaded on the GLib loop thread: every entry point -- socket
     commands (marshalled onto the loop via ``LoopBridge.call_sync``), the
@@ -318,7 +307,6 @@ class BluetoothStateMachine:
         self._buffer_ms: int = DEFAULT_BUFFER_MS
 
         self._link_state = LINK_DISCONNECTED
-        self._last_reconnect_attempt: Optional[float] = None
 
         self._on_link_change: Optional[Callable[[str], None]] = None
         self._on_pair_success: Optional[Callable[[str], None]] = None
@@ -564,7 +552,6 @@ class BluetoothStateMachine:
             name = self.devices.name(mac)
             if mac != self._paired_mac:
                 self._link_state = LINK_DISCONNECTED
-                self._last_reconnect_attempt = None
             self._paired_mac = mac
             self._paired_name = "" if name == mac else name
             self._paired_at = time.time()
@@ -635,9 +622,7 @@ class BluetoothStateMachine:
         if new_state == self._link_state:
             return
         self._link_state = new_state
-        if connected:
-            self._last_reconnect_attempt = None
-        else:
+        if not connected:
             # The transport goes with the link; do not wait for its signal.
             self.source.handle(pump_mod.EV_TRANSPORT_IDLE, mac)
         if self._on_link_change:
@@ -650,54 +635,16 @@ class BluetoothStateMachine:
             return
         self.source.handle(_TRANSPORT_EVENTS[state], mac, rate)
 
-    # ---- reconnect supervisor ----
-
-    def reconnect_tick(self) -> None:
-        self._assert_on_loop()
-        mac = self._paired_mac
-        if mac is None or self._link_state != LINK_DISCONNECTED:
-            return
-        # A pairing window has the adapter discovering and paging; an
-        # outgoing Connect() to a source that is off would only compete.
-        if self.window.is_active():
-            return
-        now = self._clock()
-        if (self._last_reconnect_attempt is not None
-                and now - self._last_reconnect_attempt < RECONNECT_INTERVAL_SECONDS):
-            return
-        self._last_reconnect_attempt = now
-
-        # ReconnectProbeOp checks actual connection state before hammering
-        # Connect() — a stale "disconnected" link (the PropertiesChanged
-        # subscription can miss a Connected=True that races adoption, or a
-        # daemon restart loses all signal history) must self-heal from a
-        # cheap property read instead of retrying Connect() against an
-        # already-connected device every RECONNECT_INTERVAL_SECONDS.
-        # on_link_state_changed is passed directly as the completion
-        # callback: the op only ever calls it with (mac, True), for the
-        # already-connected probe outcome (a Connect() the op issues itself
-        # is never proactively reported; the ordinary PropertiesChanged
-        # subscription is what tells the state machine a link came up).
-        self._ops.start_reconnect_probe(
-            mac, self.on_link_state_changed, lambda: self._reconnect_is_stale(mac)
-        )
-
-    def _reconnect_is_stale(self, mac: str) -> bool:
-        """Guard passed to the reconnect probe: stale once *mac* is no longer
-        the paired device, or the link is no longer disconnected (a signal
-        already brought it up while the probe was in flight). Minimal by
-        design -- ``on_link_state_changed`` already no-ops for a MAC that
-        isn't the paired device and for a state that hasn't actually
-        changed, so a probe result landing late is already safe to receive;
-        this just avoids issuing a redundant Connect()."""
-        return self._paired_mac != mac or self._link_state != LINK_DISCONNECTED
-
     # ---- the 1 s tick (driven by the GLib timer) ----
+    #
+    # There is no outgoing reconnect: the paired source connects to the
+    # appliance when it is switched on. Paging a source that is off holds a
+    # shared Wi-Fi/Bluetooth radio for the whole page timeout, which stalls
+    # the network stream of whatever input is playing.
 
     def tick(self) -> None:
         self._assert_on_loop()
         self._window_event(window_mod.TICK)
-        self.reconnect_tick()
 
     # ---- status (socket contract) ----
 
@@ -923,7 +870,7 @@ class BluetoothService:
 
     def _on_tick(self) -> bool:
         """``GLib.timeout_add_seconds`` callback: drives the pairing
-        window's limits and the reconnect supervisor. Runs on the loop
+        window's limits. Runs on the loop
         thread, same as every other D-Bus touch point. Must return True to
         stay armed -- GLib disarms a timeout source whose callback returns
         False/None."""

@@ -9,7 +9,7 @@ device calls. One small class per chain, with a named method per step rather
 than nested closures, so a traceback (or a debugger) names an actual method
 instead of ``<lambda>`` three deep.
 
-The adopt and reconnect ops take an ``is_stale`` predicate supplied by the
+The adopt op takes an ``is_stale`` predicate supplied by the
 caller: polled before every step and before the final report, it lets the
 service abandon an op whose outcome no longer matters (the window closed
 under it, or the device was forgotten) without that stale result landing
@@ -178,59 +178,3 @@ class RemoveDevicesOp:
         logger.warning("Failed to remove unconfirmed device %s: %s", self._current, error)
         self._next()
 
-
-class ReconnectProbeOp:
-    """is-connected probe -> Connect() if not already connected, mirroring
-    ``reconnect_tick()``'s worker semantics exactly: a probe failure is
-    logged and falls through to attempting Connect() anyway rather than
-    aborting, and a Connect() failure (including a routine
-    ``org.bluez.Error.InProgress`` -- a connect attempt already under way)
-    is logged and swallowed, never reported as a failure.
-
-    *on_result* is called with ``(mac, True)`` only for the "already
-    connected" probe outcome -- matching
-    ``BluetoothStateMachine.on_link_state_changed``'s signature -- since the
-    worker being replaced never proactively reported a Connect() it issued
-    itself either; that arrives (or doesn't) via the ordinary
-    PropertiesChanged subscription.
-    """
-
-    def __init__(
-        self,
-        client: "bluez_mod.BluezClient",
-        mac: str,
-        on_result: Callable[[str, bool], None],
-        is_stale: Callable[[], bool],
-    ) -> None:
-        self._client = client
-        self._mac = mac
-        self._on_result = on_result
-        self._is_stale = is_stale
-
-    def start(self) -> None:
-        if self._is_stale():
-            return
-        self._client.is_connected_async(self._mac, self._on_probe_result, self._on_probe_error)
-
-    def _on_probe_result(self, connected: bool) -> None:
-        if self._is_stale():
-            return
-        if connected:
-            self._on_result(self._mac, True)
-            return
-        self._client.connect_async(self._mac, self._on_connected, self._on_connect_error)
-
-    def _on_probe_error(self, error: Exception) -> None:
-        logger.info("Reconnect supervisor: is_connected check failed for %s: %s", self._mac, error)
-        if self._is_stale():
-            return
-        self._client.connect_async(self._mac, self._on_connected, self._on_connect_error)
-
-    def _on_connected(self) -> None:
-        # No proactive report on a Connect() this op issued itself -- see
-        # class docstring; the PropertiesChanged subscription is the path
-        # that tells the state machine a link came up.
-        pass
-
-    def _on_connect_error(self, error: Exception) -> None:
-        logger.info("Reconnect attempt to %s failed: %s", self._mac, error)
