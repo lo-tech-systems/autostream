@@ -143,19 +143,28 @@ Every Pi model this feature runs on also has a **built-in Bluetooth radio**, but
 
 If both a USB adapter and the onboard radio are available at the same time, autostream always uses the USB adapter.
 
+On an appliance with a power board, the built-in radio can't be used at all: the board takes over the connection the radio normally uses, and Bluetooth audio through what's left breaks up too badly to listen to. The **Use onboard bluetooth device** switch is greyed out there, with a note saying so. Plug in a USB adapter instead.
+
+On a Pi Zero 2 W without a power board the built-in radio works, but Wi-Fi and Bluetooth share one antenna, so Bluetooth audio can break up while autostream is streaming to your speakers over Wi-Fi. A USB adapter avoids that.
+
 ### Pairing a turntable or other source
 
 Pairing can be started two ways:
 
-1. From the Bluetooth card: tap **Pair new device…**.
+1. From the Bluetooth card: tap **Pair a device…**.
 2. From an input: choose **Bluetooth** from the **Input device** dropdown on Input 1 or Input 2.
 
-Either way, a **Pair Bluetooth Turntable** window opens and starts scanning, showing: *"Put your turntable in pairing mode. Available devices:"*.
+Either way, the **Pair a device** screen opens: *"Put your device in pairing mode. It will appear below when autostream finds it or when it tries to connect."*
 
-1. Put your source into pairing mode (check its manual, this is usually a button press or switch, often with a flashing light).
-2. Your device should appear in the scan list within a few seconds. Tap it.
-3. Confirm with **Pair with `<device name>`?**. If something is already paired, a warning notes it will be forgotten.
-4. Tap **Pair**. The window shows **Pairing…**, then a result.
+Bluetooth sources pair in one of two ways, and this one screen handles both. Some wait to be found, so autostream searches for them. Others, often the simplest players with no pairing menu at all, go looking for a speaker themselves and try to connect to it. While the screen is open autostream does both at once: it searches, and it lets itself be found under the appliance's name.
+
+1. Put your source into pairing mode (check its manual, this is usually a button press or switch, often with a flashing light). For a player that searches by itself, this may just mean switching it on with a CD playing and nothing plugged into its headphone socket.
+2. Wait for it to appear in the list. A device autostream found shows as **Found**. A device trying to connect shows as **Wants to connect**. A phone also shows a six-digit code, which should match the one on its own screen.
+3. Tap your device in the list, then tap **Pair this device**. The entry shows **Pairing…**, then the screen tells you the result.
+
+Nothing is paired until you tap it. A device that tries to connect is held in the list without playing anything until you choose it, and anything you don't choose is removed when the screen closes. If you already have a paired device, it keeps playing until you pair the new one, which then replaces it.
+
+The screen only accepts devices while it's open and visible, and for at most five minutes. If you switch to another tab, lock your phone or close the screen, pairing stops by itself shortly afterwards. Some players fail their first attempt and try again a minute or two later, so leave the screen open while you wait.
 
 ### Which input your turntable lands on
 
@@ -168,7 +177,7 @@ Once pairing succeeds, autostream assigns the Bluetooth source to an input for y
 
 The result panel names whichever input was used, and the Setup page's input controls update immediately, no reload needed.
 
-If your Bluetooth source is a record player, set the **Input type** to Turntable on whichever input it landed on. autostream doesn't set this for you.
+If your Bluetooth source is a record player, set the **Input type** to Turntable on whichever input it landed on. A tape deck or cassette player uses **Line**. autostream doesn't set this for you.
 
 Only one Bluetooth device can be paired at a time. Pairing a different one later forgets the previous device and replaces it.
 
@@ -204,13 +213,22 @@ To remove the paired device itself (rather than just switching Bluetooth off), t
 **Adapter row says no adapter was found.**
 Plug in a USB Bluetooth adapter, it's picked up automatically, no restart needed. To use the Pi's built-in radio instead, turn on **Use onboard bluetooth device** (this restarts the appliance).
 
-**Your device doesn't show up while scanning.**
-Make sure it's actually in pairing mode; many devices only stay in this mode for a short window (often around a minute), so start the scan and then immediately put the device into pairing mode. Keep it close to the Pi while pairing; walls and distance can prevent it from appearing.
+**Your device doesn't show up on the pairing screen.**
+Make sure it's actually in pairing mode; many devices only stay in this mode for a short window (often around a minute), so open the pairing screen first and then put the device into pairing mode. Keep it close to the Pi while pairing; walls and distance can prevent it from appearing.
+
+**Your device never sees autostream.**
+autostream can only be found while the pairing screen is open, so open it first and keep it open. Some players fail their first attempt and try again on their own a minute or two later; leave the screen up until the device appears.
+
+**Pairing stopped by itself.**
+The screen has to stay open and visible for pairing to continue. Switching tabs, locking your phone or closing the screen stops it shortly afterwards, and it always stops after five minutes. Open it again to carry on.
+
+**Your device says it's already paired but won't connect.**
+It may still remember an old pairing that autostream no longer has. Open the pairing screen and let the device pair again from its side.
 
 **Device doesn't reconnect after being paired before.**
 Power-cycle it. Check the Bluetooth card's paired-device row to see whether autostream currently sees it as connected. If it still won't reconnect, try **Forget** and pair again.
 
 **Audio is choppy or cuts out.**
-Usually distance or interference: move the source and the Pi closer together, and keep other Wi-Fi/Bluetooth-heavy devices out of the space between them. If you're using the Pi's built-in radio rather than a USB adapter, the shared Wi-Fi/Bluetooth antenna can cause exactly this; switching to a USB adapter usually resolves it. A larger **Bluetooth Audio Buffer** can also help ride out brief glitches.
+Usually distance or interference: move the source and the Pi closer together, and keep other Wi-Fi/Bluetooth-heavy devices out of the space between them. If you're using the Pi's built-in radio rather than a USB adapter, the shared Wi-Fi/Bluetooth antenna can cause exactly this; switching to a USB adapter usually resolves it. On an appliance with a power board the built-in radio isn't offered at all, for the same reason. A larger **Bluetooth Audio Buffer** can also help ride out brief glitches.
 
 For general connectivity and access problems, see [TROUBLESHOOTING.md](TROUBLESHOOTING.md).
