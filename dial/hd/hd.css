@@ -218,6 +218,13 @@ input.hslider:disabled { opacity: 0.4; cursor: default; }
 .mute-slash { display: none; }
 .icon-btn[aria-pressed="true"] .mute-slash { display: inline; }
 .icon-btn[aria-pressed="true"] .mute-waves { display: none; }
+/* Everything paused: the mute button is a slowly pulsing pause sign */
+.mute-pause { display: none; }
+.icon-btn.resume .mute-pause { display: inline; }
+.icon-btn.resume .mute-speaker, .icon-btn.resume .mute-waves, .icon-btn.resume .mute-slash { display: none; }
+.icon-btn.resume { color: var(--color-accent); border-color: var(--color-accent); }
+.icon-btn.pulse svg { animation: resume-pulse 2.4s ease-in-out infinite; }
+@keyframes resume-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
 /* A replay button held down until the appliance has answered */
 .icon-btn[aria-busy="true"] { background: var(--color-surface-selected); border-color: var(--color-accent); }
 .volume-row { flex: none; display: grid; grid-template-columns: var(--row-h) var(--row-h) 1fr var(--row-h); align-items: center; gap: 12px; }
@@ -250,6 +257,7 @@ button:focus-visible, input:focus-visible { outline: 2px solid var(--color-accen
 @media (prefers-reduced-motion: reduce) {
     .art, .backdrop, .ghost { transition: none; }
     .toast, .output-card, .hd .output-toggle .switch, .hd .output-toggle .switch::after { transition: none; }
+    .icon-btn.pulse svg { animation: none; }
 }
 
 /* Without a backlight to drive, the brightness setting dims the screen. */

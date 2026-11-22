@@ -156,7 +156,7 @@ class TestActionTable:
     def test_the_loopback_intents_are_a_subset_of_the_exposed_ones(self):
         import autostream_protocol
         assert set(hda.HD_INTENTS) <= set(autostream_protocol.EXPOSED_INTENTS)
-        assert len(set(hda.HD_INTENTS)) == len(hda.HD_INTENTS) == 8
+        assert len(set(hda.HD_INTENTS)) == len(hda.HD_INTENTS) == 9
         assert not {"volume.set", "volume.step", "mute.set"} & set(hda.HD_INTENTS)
 
     def test_the_page_intents_are_the_ones_the_core_forwards(self):

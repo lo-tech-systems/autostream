@@ -803,8 +803,8 @@ HD_CEILINGS = {
     "hd-derive.js": 300,
     "hd-requests.js": 130,
     # Volume minus and plus: their handler and bindings; the keypad sends its
-    # PIN with the switch-on it was opened for.
-    "hd-actions.js": 320,
+    # PIN with the switch-on it was opened for; the mute button's resume.
+    "hd-actions.js": 335,
     # The dial bell button's paint call and its import.
     "hd-paint.js": 430,
     # The warning bells: the dial bell's button, each row bell's count and the

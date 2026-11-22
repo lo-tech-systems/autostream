@@ -220,7 +220,7 @@ def _repeat_part(record) -> dict:
 def _units(held) -> list:
     return [{
         "id": row.id, "name": row.name, "selected": row.selected, "volume": row.volume,
-        "availability": "ok", "auto_start": row.is_default,
+        "availability": "ok", "auto_start": row.is_default, "held": row.paused, "muted": row.muted,
         **({"in_use_by": row.remote_owner or "another appliance", "in_use_id": KITCHEN}
            if row.remote_in_use else {}),
     } for row in held.rows]

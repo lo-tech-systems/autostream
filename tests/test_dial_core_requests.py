@@ -438,7 +438,7 @@ class TestValidators:
         assert isinstance(rq.row_refusal(None), ActionResult)
 
     def test_the_intent_table_names_every_intent_once(self):
-        assert rq.SUBMIT_INTENTS == frozenset(rq.INTENTS) and len(rq.INTENTS) == 8
+        assert rq.SUBMIT_INTENTS == frozenset(rq.INTENTS) and len(rq.INTENTS) == 9
         assert {cap for cap, _ in rq.INTENTS.values()} == {"dial_outputs", "dial_eq", "repeat_capable"}
         kinds = {kind for _, kind in rq.INTENTS.values()} - {None}
         assert kinds == {"output_set", "output_pin", "seek", "stop", "arm"}

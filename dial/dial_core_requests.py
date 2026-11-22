@@ -183,6 +183,7 @@ INTENTS = {
     "outputs.set": ("dial_outputs", "output_set"),
     "output.pin.submit": ("dial_outputs", "output_pin"),
     "outputs.save_default": ("dial_outputs", None),
+    "outputs.resume": ("dial_outputs", None),
     "output.eq.set": ("dial_eq", None),
     "output.eq.reset": ("dial_eq", None),
     "repeat.arm": ("repeat_capable", "arm"),

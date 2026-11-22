@@ -104,6 +104,8 @@ Update every appliance and every dial together, as for 0.8.0.
   with "Pause all speakers when pause is pressed on a speaker" on that paused
   every speaker. A speaker that pauses as it starts, before it plays or within
   about 5 seconds of starting, now pauses on its own.
+- new: on the HD dial, when every playing speaker is paused, the mute button
+  becomes a slowly pulsing pause sign, and a tap on it starts them all again.
 - changed: a speaker left on Automatic plays AirPlay 2 whenever it offers it,
   and AirPlay 1 only when it has no AirPlay 2. Before, a speaker with no
   buffered AirPlay 2 played AirPlay 1. A speaker that plays better on AirPlay

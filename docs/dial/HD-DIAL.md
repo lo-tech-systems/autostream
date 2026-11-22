@@ -154,7 +154,10 @@ row reads, left to right, a mute button, a minus button, the master volume
 slider and a plus button. There is no number: the slider's position shows the
 level. Minus and plus step the volume by the dial's configured step size, the
 same as a turn of the knob, and a press of either counts as a touch of the
-dial. The artwork sits on a soft, blurred copy of itself, and
+dial. When every speaker playing on the followed appliance is paused, the mute
+button becomes a slowly pulsing pause sign, and a tap on it starts them all
+again, as Play on one of them would. A speaker that could only be muted by the
+pause counts as paused. The artwork sits on a soft, blurred copy of itself, and
 the logo does the same when nothing is playing. When the track changes, the
 picture and its blurred backdrop fade into the new one together (a plain
 change if the screen is set to reduce motion). With nothing playing the side
@@ -404,8 +407,9 @@ header, and every POST must carry the header `X-Requested-With: autostream-hd`.
 
 The intents the page sends are `outputs.set` (a speaker on, off or its level),
 `output.pin.submit`, `output.eq.set`, `output.eq.reset`, `repeat.arm`,
-`repeat.seek` (play, or restart from the beginning), `repeat.transport` (stop)
-and `outputs.save_default` (the Auto-Start pin on the speakers sheet). Volume
+`repeat.seek` (play, or restart from the beginning), `repeat.transport` (stop),
+`outputs.save_default` (the Auto-Start pin on the speakers sheet) and
+`outputs.resume` (the pause sign in place of the mute button). Volume
 and mute stay on the dial's own actions, so the dial's rule for which
 appliance a knob turn reaches is the only way to change them.
 

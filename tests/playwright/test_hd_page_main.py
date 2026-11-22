@@ -464,6 +464,51 @@ class TestMute:
         page.clock.run_for(2500)
         expect(page.locator("#mute")).to_have_attribute("aria-pressed", "false")
 
+    @staticmethod
+    def speakers(**changes):
+        """playing_artwork with Patio on as well, and each speaker's row
+        changed by *changes*: id -> OutputRow fields."""
+        base = hs.SCENARIOS["playing_artwork"]
+        outputs = base.snapshot.outputs
+        rows = tuple(dataclasses.replace(r, selected=r.selected or r.id == "o2", **changes.get(r.id, {}))
+                     for r in outputs.rows)
+        return base.with_snapshot(outputs=dataclasses.replace(outputs, rows=rows))
+
+    def test_with_every_speaker_paused_it_is_a_pulsing_pause_sign_that_resumes_them(self, page, hd):
+        hd.show(self.speakers(o1={"paused": True}, o2={"paused": True}))
+        sent = watch_intents(page)
+        actions = watch_actions(page)
+        open_page(page, hd)
+        mute = page.locator("#mute")
+        expect(mute).to_have_attribute("aria-label", "Resume")
+        expect(mute).to_have_class(re.compile(r"\bpulse\b"))
+        expect(mute).to_have_attribute("aria-pressed", "false")
+        expect(mute).to_be_enabled()
+        mute.click()
+        expect(mute).not_to_have_class(re.compile(r"\bresume\b"))
+        page.wait_for_function("() => true")
+        assert sorted(sent, key=lambda s: s[1]["id"]) == [("outputs.resume", {"id": "o1"}), ("outputs.resume", {"id": "o2"})]
+        assert_appliance_accepts(sent)
+        assert actions == []
+
+    def test_a_speaker_the_pause_could_only_mute_counts_as_paused(self, page, hd):
+        hd.show(self.speakers(o1={"paused": True}, o2={"muted": True}))
+        open_page(page, hd)
+        expect(page.locator("#mute")).to_have_attribute("aria-label", "Resume")
+
+    def test_with_one_speaker_still_playing_it_stays_the_mute_button(self, page, hd):
+        hd.show(self.speakers(o1={"paused": True}))
+        open_page(page, hd)
+        expect(page.locator("#mute")).to_have_attribute("aria-label", "Mute")
+        expect(page.locator("#mute")).not_to_have_class(re.compile(r"\bresume\b"))
+
+    def test_the_pause_sign_does_not_pulse_while_the_panel_sleeps(self, page, hd):
+        scenario = self.speakers(o1={"paused": True}, o2={"paused": True})
+        hd.show(dataclasses.replace(scenario, panel=dict(scenario.panel, asleep=True)))
+        open_page(page, hd)
+        expect(page.locator("#mute")).to_have_class(re.compile(r"\bresume\b"))
+        expect(page.locator("#mute")).not_to_have_class(re.compile(r"\bpulse\b"))
+
     def test_muted_state_is_shown(self, page, hd):
         hd.show(dataclasses.replace(hs.SCENARIOS["playing_artwork"], muted=True))
         open_page(page, hd)

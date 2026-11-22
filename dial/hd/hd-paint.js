@@ -444,10 +444,15 @@ export function paint(vm) {
     paintReplay(vm.replay);
 
     const v = vm.volume;
-    els.volumeRow.classList.toggle("muted", v.muted);
-    els.mute.setAttribute("aria-pressed", v.muted ? "true" : "false");
-    els.mute.setAttribute("aria-label", v.muted ? "Unmute" : "Mute");
-    els.mute.disabled = els.volMinus.disabled = els.volPlus.disabled = !v.enabled;
+    const resume = v.resumeIds.length > 0;
+    els.volumeRow.classList.toggle("muted", v.muted && !resume);
+    els.mute.classList.toggle("resume", resume);
+    // The pause sign pulses slowly, but not behind the sleep shield
+    els.mute.classList.toggle("pulse", resume && !vm.asleep);
+    els.mute.setAttribute("aria-pressed", v.muted && !resume ? "true" : "false");
+    els.mute.setAttribute("aria-label", resume ? "Resume" : v.muted ? "Unmute" : "Mute");
+    els.mute.disabled = !v.enabled && !resume;
+    els.volMinus.disabled = els.volPlus.disabled = !v.enabled;
     if (dragging.has("master")) {
         els.master.disabled = !v.enabled;
     } else {

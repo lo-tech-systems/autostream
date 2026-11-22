@@ -50,13 +50,23 @@ function deriveSpeakers(dial, p, usable) {
         const tone = inUse ? "in-use" : paused ? "paused" : muted ? "muted" : connecting || stopping ? "connecting"
             : row.offline ? "offline" : on ? "on" : "off";
         return {
-            id: row.id, on: on, inUse: inUse, autoStart: row.autoStart, pill: AUTO_START_PILL,
+            id: row.id, on: on, inUse: inUse, paused: paused, muted: muted, autoStart: row.autoStart, pill: AUTO_START_PILL,
             name: row.name + (connecting ? CHIP.connecting : stopping ? CHIP.stopping : row.offline ? CHIP.offline : ""),
             chip: { text: inUse ? CHIP.inUse(row.inUseBy) : paused ? CHIP.paused : muted ? CHIP.muted : on ? CHIP.on : CHIP.off, tone: tone },
             level: held("out:" + row.id + ":volume", row.volume),
             enabled: usable && !row.disabled && !elsewhere
         };
     });
+}
+
+// The paused speakers' ids when every speaker playing here is paused (one a
+// Pause could only mute counts as paused), else none. While a resume sent
+// from the mute button is waiting for the appliance, none.
+function pausedIds(speakers, usable) {
+    const live = speakers.filter((s) => s.on && !s.inUse);
+    const ids = live.filter((s) => s.paused).map((s) => s.id);
+    const all = usable && ids.length > 0 && live.every((s) => s.paused || s.muted) && !held("resume", false);
+    return all ? ids : [];
 }
 
 function speakerNote(focus, focused, rows) {
@@ -255,6 +265,7 @@ export function derive(dial, focused, local) {
     });
 
     const speakers = deriveSpeakers(dial, p, usable);
+    const resumeIds = pausedIds(speakers, usable);
     // Master volume and mute act on the dial's volume target: usable only while it is focused.
     const mine = !!focused && focused.id === dial.focus.reporting_id;
     const level = mine ? masterVolume(p) : null;
@@ -295,7 +306,9 @@ export function derive(dial, focused, local) {
         volume: {
             enabled: usable && known,
             level: known ? held("master", level) : null,
-            muted: mine && !!held("mute", !!(p && p.outputs && p.outputs.muted_all))
+            muted: mine && !!held("mute", !!(p && p.outputs && p.outputs.muted_all)),
+            // Everything is paused: the mute button is a pause sign that resumes these
+            resumeIds: resumeIds
         },
         replay: replay,
         eq: eq,

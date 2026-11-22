@@ -25,7 +25,7 @@ ID_MAX = 128
 # scope policy and volume lane are the only path for them.
 HD_INTENTS = (
     "outputs.set", "output.pin.submit", "output.eq.set", "output.eq.reset",
-    "repeat.arm", "repeat.seek", "repeat.transport", "outputs.save_default",
+    "repeat.arm", "repeat.seek", "repeat.transport", "outputs.save_default", "outputs.resume",
 )
 
 

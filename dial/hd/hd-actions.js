@@ -50,7 +50,19 @@ function onMasterLevel(level, final) {
     sendDrag("master", final, post, "volume_set", { appliance_id: focusId(), level: level }, ["master"]);
 }
 
+// With everything paused the mute button resumes every paused speaker, as
+// Play on one would; a speaker its Pause already brought back ignores its own.
+function onResume(ids) {
+    holdForReply("resume", true);
+    hooks.render();
+    ids.forEach((id) => submit("outputs.resume", { id: id }, ["resume"]));
+}
+
 function onMute() {
+    if (ui.vm && ui.vm.volume.resumeIds.length) {
+        onResume(ui.vm.volume.resumeIds);
+        return;
+    }
     if (!ui.vm || !ui.vm.volume.enabled) { return; }
     hold("mute", !ui.vm.volume.muted);
     hooks.render();
