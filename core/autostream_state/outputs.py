@@ -65,6 +65,7 @@ from autostream_players import (
 )
 
 from . import live, spread
+from .player_model import PendingStart, PlayerModel
 from .origin import Origin
 from .parts import DefaultMemberView, OutputsPart, OutputUnitView, StartFailure
 from .store import store
@@ -505,7 +506,6 @@ class OutputAuthority:
         self._start_failure: Optional[StartFailure] = None
         self._failure_seq = 0
         self._session_active = False
-        self._rows_carry_session = False
         self._include_tv_supported = False
         self._delivers_device_events = False
         self._inflight = 0
@@ -538,10 +538,12 @@ class OutputAuthority:
         # as its hello last said. Kept through the polling between two sockets
         # of one boot; forgotten when a restart is seen without a hello.
         self._start_volume_cap = False
-        # Whether the player reports each speaker's transitions as events and
-        # answers a speaker request without waiting for the speaker, as its
-        # hello last said; kept and forgotten as the start-volume flag is.
-        self._async_outputs_cap = False
+        # What the player's rows can be taken to say: whether they carry a
+        # session (seen in a read, and kept), and whether the player reports
+        # each speaker's transitions as events and answers a speaker request
+        # without waiting for the speaker (as its hello last said; kept and
+        # forgotten as the start-volume flag is). Replaced whole, never edited
+        self._model = PlayerModel()
         # With events, the earliest time a "changed" read is made (worker only)
         self._next_changed_read = 0.0
         self._ever_connected = False
@@ -798,7 +800,7 @@ class OutputAuthority:
         """Whether the player answers a speaker request at once and reports
         how the start went as events (its hello lists output_state)."""
         with self._lock:
-            return self._async_outputs_cap
+            return self._model.outcome_events
 
     def _member_unit_locked(self, m: _Member) -> Optional[UnitState]:
         """The unit a member stands for: by id, else by exact name."""
@@ -898,9 +900,7 @@ class OutputAuthority:
             return False
         if u.desired.held:
             return False
-        if self._rows_carry_session:
-            return r.session_state != "streaming"
-        return not r.selected
+        return self._model.connecting(r)
 
     @staticmethod
     def _stopping_locked(u: UnitState) -> bool:
@@ -1713,9 +1713,9 @@ class OutputAuthority:
                 # Only the event channel's hello says what the player can do.
                 self._start_volume_cap = "start_volume" in info.capabilities
                 async_cap = "output_state" in info.capabilities
-                if async_cap != self._async_outputs_cap:
+                if async_cap != self._model.outcome_events:
                     async_changed = async_cap
-                self._async_outputs_cap = async_cap
+                self._model = dataclasses.replace(self._model, outcome_events=async_cap)
             changed = delivers != self._delivers_device_events
             self._delivers_device_events = delivers
             pending = self._publish_locked(Origin.BACKEND, None) if changed else None
@@ -1813,7 +1813,7 @@ class OutputAuthority:
             LOG.debug("Output read raised", exc_info=True)
             result = ListOutputsResult(ok=False, error=str(exc), error_code="request_failed")
         # Events carry each transition, so the reads they ask for are spaced out
-        self._next_changed_read = now + CHANGED_READ_MIN_S if self._async_outputs_cap else 0.0
+        self._next_changed_read = now + CHANGED_READ_MIN_S if self._model.outcome_events else 0.0
         if result.ok:
             self._on_read_ok(list(result.outputs), now)
         else:
@@ -1824,7 +1824,7 @@ class OutputAuthority:
         with self._lock:
             # A player that waits for its speakers may be too busy to answer a
             # read; one that answers at once and reports by events is not
-            exempt = not self._async_outputs_cap and (
+            exempt = not self._model.outcome_events and (
                 (self._inflight > 0 and not self._exempt_off)
                 or any(u.start_pending_until > now for u in self._units.values())
             )
@@ -1858,23 +1858,7 @@ class OutputAuthority:
         self._after_intent()
 
     def _availability_locked(self, row: OutputInfo, selected: bool) -> str:
-        if not self._rows_carry_session:
-            return "password" if (row.needs_auth_key or row.pin_pending) else "ok"
-        state = row.session_state
-        if state in ("streaming", "connected"):
-            avail = "ok"
-        elif state in ("startup", "connecting"):
-            avail = "starting"
-        elif state == "stopping":
-            # Still ending its session: wanted again, it starts once that is done
-            avail = "starting" if selected else "ok"
-        elif state == "failed":
-            avail = "failed"
-        elif state == "password":
-            avail = "password"
-        else:
-            avail = "starting" if selected else "ok"
-        return avail
+        return self._model.availability(row, selected)
 
     def _start_failure_locked(self, u: UnitState, reason: str, requester: Optional[str] = None) -> None:
         self._failure_seq += 1
@@ -1925,8 +1909,8 @@ class OutputAuthority:
             mu is not None and mu.id == u.id for mu in (self._member_unit_locked(m) for m in self._members))
 
     def _merge_locked(self, rows: list, now: float, fx: _Effects) -> None:
-        if any(row.session_state != "" for row in rows):
-            self._rows_carry_session = True
+        if not self._model.session_rows and any(row.session_state != "" for row in rows):
+            self._model = dataclasses.replace(self._model, session_rows=True)
         if any(row.has_homepods is not None for row in rows):
             self._include_tv_supported = True
         boot_changed = self._boot_changed
@@ -1938,9 +1922,9 @@ class OutputAuthority:
                 if self._ever_connected:
                     boot_changed = True
                     self._start_volume_cap = False
-                    if self._async_outputs_cap:
+                    if self._model.outcome_events:
                         fx.log(logging.INFO, "The player no longer reports speaker transitions as events")
-                    self._async_outputs_cap = False
+                    self._model = dataclasses.replace(self._model, outcome_events=False)
                 self._epoch += 1
             self._connected = True
             self._ever_connected = True
@@ -2020,7 +2004,7 @@ class OutputAuthority:
         restarted while the speaker was held), and a hold the player no
         longer has is over (its session ended or was restarted)."""
         d = u.desired
-        if not (self._rows_carry_session and d.selected):
+        if not (self._model.follows_hold and d.selected):
             return
         if self._inflight > 0 or any(w.kind == "hold" and w.unit_id == u.id for w in self._wq):
             return
@@ -2039,29 +2023,23 @@ class OutputAuthority:
         sel = d.selected
         self._follow_hold_locked(u, row, now)
         avail = self._availability_locked(row, sel)
-        if self._rows_carry_session:
-            u.was_streaming = row.session_state in ("streaming", "connected")
-            result_shown = row.session_state in ("streaming", "connected", "failed", "password")
-        else:
-            u.was_streaming = row.selected
-            result_shown = row.selected or avail == "password"
+        model = self._model
+        u.was_streaming = model.streaming(row)
+        result_shown = model.result_shown(row, avail)
         if u.was_streaming and not was:
             u.ok_since = now
         if u.start_pending_until > 0.0:
-            if result_shown:
+            pending = PendingStart.WAIT if result_shown else model.pending_start(row)
+            if result_shown or pending is PendingStart.NO_WAIT:
+                # Shown; or the player took the speaker while nothing plays
+                # and starts it with the playback, so there is nothing to wait for
                 u.start_pending_until = 0.0
-            elif self._async_outputs_cap and row.selected and row.session_state == "stopped":
-                # The player took the speaker while nothing plays: it starts
-                # it with the playback, so there is no start to wait for
-                u.start_pending_until = 0.0
-            elif not self._rows_carry_session and not row.selected:
-                # The player answers a read only after the start it was busy
-                # with has ended, so a speaker still off now did not start.
+            elif pending is PendingStart.FAILED:
                 u.start_pending_until = 0.0
                 avail = "failed"
             elif now < u.start_pending_until:
                 avail = "starting"
-        elif (not self._rows_carry_session and sel and not row.selected and u.attempt
+        elif (model.off_means_between_retries and sel and not row.selected and u.attempt
               and u.retry_at is not None and avail != "password"):
             # A player that cannot report a failed start: the speaker is
             # wanted, its start has ended and it is off, so it is between retries.
@@ -2085,9 +2063,8 @@ class OutputAuthority:
                 u.retry_n = 0
             u.retry_limit = None
             u.group_hold_backoff = RETRY_MIN_S
-        if (not outcome_handled and sel and self._rows_carry_session and avail == "failed" and was
-                and not u.attempt and self._session_active and u.retry_at is None
-                and not self._async_outputs_cap):
+        if (not outcome_handled and sel and model.authority_retries_loss and avail == "failed" and was
+                and not u.attempt and self._session_active and u.retry_at is None):
             # It failed while it played (it went away, or closed its session):
             # tried again a few times before it is given up, with no notice
             # until then. A player that reports events retries it itself, and
@@ -2229,7 +2206,7 @@ class OutputAuthority:
                     busy = True
                     changed = True
                     continue
-            elif (self._async_outputs_cap and u.availability == "ok" and r.members_missing == 0
+            elif (self._model.outcome_events and u.availability == "ok" and r.members_missing == 0
                     and not u.attempt and u.retry_at is not None):
                 # Whole again on its own: the schedule starts afresh next time
                 u.retry_at = None
@@ -2262,7 +2239,7 @@ class OutputAuthority:
                     # The player cannot take this select yet; it is tried
                     # again when the hold ends or its HomePods appear.
                     u.diff_since.setdefault("select", now)
-                elif self._rows_carry_session:
+                elif self._model.reselects_an_off_row:
                     if self._due(u, "select", now):
                         u.diff_since.pop("select", None)
                         restored += 1 if u.after_boot else 0
@@ -2484,7 +2461,7 @@ class OutputAuthority:
         wanted but not fully playing: the player gave up on it (it reads
         failed), or its group is missing a speaker. No start of ours is
         waiting for its result."""
-        return (self._async_outputs_cap and u.desired.selected and self._session_active and not u.attempt
+        return (self._model.outcome_events and u.desired.selected and self._session_active and not u.attempt
                 and (u.availability == "failed" or r.members_missing > 0)
                 and self._is_default_unit_locked(u))
 
@@ -2493,7 +2470,7 @@ class OutputAuthority:
         speaker that is not a default: its row reads failed (a speaker the
         player still retries reads connecting), whatever its selection says,
         and no start of ours is waiting for its result."""
-        return (self._async_outputs_cap and ev.state == "failed" and u.desired.selected
+        return (self._model.outcome_events and ev.state == "failed" and u.desired.selected
                 and self._session_active and (not u.attempt or u.outcome_applied)
                 and not self._is_default_unit_locked(u))
 
@@ -2754,7 +2731,7 @@ class OutputAuthority:
                 u.own_write_at = now
                 if u.desired.selected and u.availability != "password" and not u.outcome_applied:
                     u.availability = "starting"
-                    if self._async_outputs_cap and not stale:
+                    if self._model.outcome_events and not stale:
                         # Accepted, not started: the outcome comes as an
                         # event, and this guard ends a start that never says
                         u.start_pending_until = now + START_PENDING_S
@@ -2775,7 +2752,7 @@ class OutputAuthority:
                 u.own_write_at = now
                 u.availability = "starting"
                 u.start_pending_until = now + START_PENDING_S
-            if self._async_outputs_cap:
+            if self._model.outcome_events:
                 fx.log(logging.WARNING, "Start of %s not answered in %.0f s by a player that answers at once",
                        self._unit_name_locked(w.unit_id), WRITE_TIMEOUT_S)
             return WriteOutcome(ok=True, error_code="timeout", pending=True)
@@ -2808,7 +2785,7 @@ class OutputAuthority:
         answer, says whether the PIN was right, and the claim stays until it
         does."""
         stale = u is None or u.desired_seq != w.seq
-        if r.ok and u is not None and self._async_outputs_cap:
+        if r.ok and u is not None and self._model.outcome_events:
             r_now = u.reported
             if stale and u.outcome_applied and r_now is not None and r_now.session_state in ("failed", "password"):
                 # The verdict came as an event before this answer
