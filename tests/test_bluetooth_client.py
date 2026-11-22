@@ -348,6 +348,40 @@ class TestBluetoothOnboardEnabled:
 # classify_loopback_hw()
 # ---------------------------------------------------------------------------
 
+class TestOnboardRadioRefused:
+    @pytest.mark.parametrize("text", [
+        "dtoverlay=miniuart-bt\n",
+        "[all]\ndtoverlay=disable-bt\n  dtoverlay=miniuart-bt  \n",
+        "dtoverlay=miniuart-bt,krnbt=on\n",
+    ])
+    def test_refused_with_the_miniuart_overlay(self, tmp_path, text):
+        from autostream_bluetooth_facts import ONBOARD_RADIO_REFUSED_REASON, onboard_radio_refused
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(text, encoding="utf-8")
+        assert onboard_radio_refused(str(cfg)) == ONBOARD_RADIO_REFUSED_REASON
+        assert "power board" in ONBOARD_RADIO_REFUSED_REASON
+
+    @pytest.mark.parametrize("text", [
+        "dtoverlay=disable-bt\n", "#dtoverlay=miniuart-bt\n", "dtoverlay=miniuart-btx\n",
+        "maxcpus=2\n", "",
+    ])
+    def test_not_refused_otherwise(self, tmp_path, text):
+        from autostream_bluetooth_facts import onboard_radio_refused
+        cfg = tmp_path / "config.txt"
+        cfg.write_text(text, encoding="utf-8")
+        assert onboard_radio_refused(str(cfg)) is None
+
+    def test_missing_file_refuses_nothing(self, tmp_path):
+        from autostream_bluetooth_facts import onboard_radio_refused
+        assert onboard_radio_refused(str(tmp_path / "absent.txt")) is None
+
+    def test_env_var_override_and_client_re_export(self, tmp_path, monkeypatch):
+        import autostream_bluetooth_client as client_mod
+        cfg = tmp_path / "config.txt"
+        cfg.write_text("dtoverlay=miniuart-bt\n", encoding="utf-8")
+        monkeypatch.setenv("AUTOSTREAM_BOOT_CONFIG_PATH", str(cfg))
+        assert client_mod.onboard_radio_refused() is not None
+
 class TestClassifyLoopbackHw:
     def test_playback_side(self):
         assert classify_loopback_hw(BLUETOOTH_PLAYBACK_DEVICE) == "playback"

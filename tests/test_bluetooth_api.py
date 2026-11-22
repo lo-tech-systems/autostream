@@ -94,7 +94,7 @@ class TestBluetoothStatusJson:
         assert code == 200
         assert body == {
             "ok": True, "installed": False, "services_enabled": False,
-            "onboard_enabled": False, "daemon": None,
+            "onboard_enabled": False, "onboard_refused": None, "daemon": None,
             "ui": {
                 "card_summary": "Disabled",
                 "paired_text": "No device paired",
@@ -103,6 +103,22 @@ class TestBluetoothStatusJson:
             },
         }
 
+    @pytest.mark.parametrize("reason", [None, "Onboard Bluetooth is not available here."])
+    def test_onboard_refusal_is_reported(self, tmp_path, reason):
+        from webui.system.bluetooth import send_bluetooth_status_json
+        state, store = _make_state(tmp_path)
+        handler = _make_handler()
+        try:
+            with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_services_enabled", return_value=True), \
+                 patch("webui.system.bluetooth.bluetooth_onboard_enabled", return_value=False), \
+                 patch("webui.system.bluetooth.onboard_radio_refused", return_value=reason), \
+                 patch("webui.system.bluetooth.BluetoothClient") as m_cls:
+                m_cls.return_value.status.return_value = None
+                send_bluetooth_status_json(handler, state)
+        finally:
+            store.close(save=False)
+        assert _response(handler)[1]["onboard_refused"] == reason
     def test_installed_live_status_returned(self, tmp_path):
         from webui.system.bluetooth import send_bluetooth_status_json
         state, store = _make_state(tmp_path)
@@ -314,6 +330,34 @@ class TestBluetoothServicesPost:
 
 
 class TestBluetoothOnboardPost:
+    @pytest.fixture(autouse=True)
+    def _plain_board(self):
+        with patch("webui.system.bluetooth.onboard_radio_refused", return_value=None):
+            yield
+
+    def test_enable_is_refused_on_a_power_board_without_touching_the_config(self):
+        from webui.system.bluetooth import send_bluetooth_onboard_post_json
+        handler = _make_handler()
+        reason = "Onboard Bluetooth is not available with this appliance's power board; plug in a USB adapter."
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.onboard_radio_refused", return_value=reason), \
+             patch("webui.system.bluetooth.bt_onboard_set") as m_set:
+            send_bluetooth_onboard_post_json(handler, {"enabled": True})
+        code, body = _response(handler)
+        assert code == 200
+        assert body == {"ok": False, "message": reason}
+        m_set.assert_not_called()
+
+    def test_disable_is_still_allowed_on_a_power_board(self):
+        from webui.system.bluetooth import send_bluetooth_onboard_post_json
+        handler = _make_handler()
+        with patch("webui.system.bluetooth.bluetooth_installed", return_value=True), \
+             patch("webui.system.bluetooth.onboard_radio_refused", return_value="refused"), \
+             patch("webui.system.bluetooth.bt_onboard_set", return_value=(True, "onboard off")) as m_set:
+            send_bluetooth_onboard_post_json(handler, {"enabled": False})
+        assert _response(handler)[1]["ok"] is True
+        m_set.assert_called_once_with(False)
+
     def test_enable_reports_reboot_required(self):
         from webui.system.bluetooth import send_bluetooth_onboard_post_json
         handler = _make_handler()

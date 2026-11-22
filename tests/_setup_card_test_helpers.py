@@ -39,6 +39,7 @@ _SETUP_MOCK_HOMES = {
     "_bluetooth_installed": "webui.browser.setup.cards_bluetooth",
     "_bluetooth_services_enabled": "webui.browser.setup.cards_bluetooth",
     "_bluetooth_onboard_enabled": "webui.browser.setup.cards_bluetooth",
+    "_bluetooth_onboard_refused": "webui.browser.setup.cards_bluetooth",
     "_config_snapshot": "webui.common",
 }
 
@@ -51,6 +52,7 @@ _SETUP_MOCK_DEFAULTS = {
     "_get_dial_sightings": [],
     "parse_dial_entries": [],
     "build_top_banner_html": ("", ""),
+    "_bluetooth_onboard_refused": None,
 }
 
 

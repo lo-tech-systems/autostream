@@ -89,6 +89,7 @@ class _SetupRenderer:
         bt_enabled: bool = False,
         bt_services_on: bool = False,
         bt_onboard_on: bool = False,
+        bt_onboard_refused: str | None = None,
         bt_status: dict | None = None,
         monitor_devices: list | None = None,
         audio1_capture_device: str = "hw:1,0",
@@ -124,6 +125,7 @@ class _SetupRenderer:
             _bluetooth_installed=bt_enabled,
             _bluetooth_services_enabled=bt_services_on,
             _bluetooth_onboard_enabled=bt_onboard_on,
+            _bluetooth_onboard_refused=bt_onboard_refused,
         ):
             with patch.object(
                 state, "get_monitor_devices", return_value=(monitor_devices or [])
@@ -899,3 +901,47 @@ def test_pairing_modal_matches_golden(tmp_path):
     assert _PAIRING_GOLDEN.exists(), (
         f"{_PAIRING_GOLDEN} missing: set _REGENERATE_PAIRING_GOLDEN=True to create it")
     assert modal == _PAIRING_GOLDEN.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Onboard radio on power-board appliances
+# ---------------------------------------------------------------------------
+
+_REFUSED = "Onboard Bluetooth is not available with this appliance's power board; plug in a USB adapter."
+_NO_ADAPTER = {"adapter_present": False, "paired": None, "link": "disconnected",
+               "streaming": False, "scanning": False}
+
+
+def _onboard_toggle(html: str) -> str:
+    start = html.index('id="btOnboardToggle"')
+    return html[start: html.index(">", start)]
+
+
+class TestOnboardRadioRefusal:
+    def test_refused_board_disables_the_switch_with_the_reason(self, tmp_path):
+        html = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, bt_services_on=True, bt_onboard_refused=_REFUSED,
+            bt_status=_NO_ADAPTER)
+        assert " disabled" in _onboard_toggle(html)
+        assert "not available with this appliance&#x27;s power board" in html
+        assert "No Bluetooth adapter found — plug in a USB adapter.<" in html
+        assert "enable the onboard device below.</p>" not in html
+
+    def test_refused_board_still_lets_an_enabled_radio_be_turned_off(self, tmp_path):
+        html = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, bt_services_on=True, bt_onboard_on=True,
+            bt_onboard_refused=_REFUSED, bt_status=_NO_ADAPTER)
+        assert " disabled" not in _onboard_toggle(html)
+
+    def test_plain_board_recommends_a_usb_adapter_with_the_coexistence_line(self, tmp_path):
+        html = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, bt_services_on=True, bt_status=_NO_ADAPTER)
+        assert " disabled" not in _onboard_toggle(html)
+        assert "A USB Bluetooth adapter is strongly recommended" in html
+        assert "can break up on the onboard radio while streaming over Wi-Fi" in html
+        assert "power board" not in html
+
+    def test_status_poll_keeps_the_switch_locked_on_a_refused_board(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
+        assert "onboardToggle.disabled = !btServicesEnabled || (!!body.onboard_refused && !btOnboardEnabled);" in html
+        assert "var noAdapter = body.onboard_refused" in html

@@ -51,6 +51,7 @@ from autostream_bluetooth_facts import (  # noqa: F401 -- re-exported for existi
     bluetooth_installed,
     bluetooth_onboard_enabled,
     bluetooth_services_enabled,
+    onboard_radio_refused,
 )
 from autostream_bluetooth_presentation import (  # noqa: F401 -- re-exported for existing importers
     bluetooth_capture_label,

@@ -32,6 +32,7 @@ from autostream_bluetooth_client import (
     bluetooth_paired_row_text,
     bluetooth_services_enabled,
     classify_loopback_hw,
+    onboard_radio_refused,
 )
 from autostream_config import is_valid_monitor_device_id
 from autostream_intents import Intent, submit
@@ -80,6 +81,7 @@ def send_bluetooth_status_json(handler, state) -> None:
     installed = bluetooth_installed()
     services_enabled = bluetooth_services_enabled() if installed else False
     onboard_enabled = bluetooth_onboard_enabled() if installed else False
+    onboard_refused = onboard_radio_refused() if installed else None
 
     daemon = None
     if installed:
@@ -96,6 +98,8 @@ def send_bluetooth_status_json(handler, state) -> None:
         "installed": installed,
         "services_enabled": services_enabled,
         "onboard_enabled": onboard_enabled,
+        # Why the onboard radio may not be turned on here, or null.
+        "onboard_refused": onboard_refused,
         "daemon": daemon,
         "ui": {
             "card_summary": bluetooth_card_summary(services_enabled, daemon),
@@ -406,6 +410,10 @@ def send_bluetooth_onboard_post_json(handler, json_obj) -> None:
     Edits ``dtoverlay=disable-bt`` in config.txt via ``bt_onboard_set()``.
     On success, ``reboot_required: true`` tells the frontend to drive the
     existing reboot holding-page flow -- this handler does not reboot.
+
+    Turning the radio on is refused on a board whose power hardware leaves
+    it on the mini UART (``onboard_radio_refused``), so the API cannot do
+    what the Setup card does not offer. Turning it off is always allowed.
     """
     if not bluetooth_installed():
         common.send_browser_api_error(handler, 503, "bluetooth_unavailable")
@@ -417,6 +425,11 @@ def send_bluetooth_onboard_post_json(handler, json_obj) -> None:
     extra = set(json_obj.keys()) - {"enabled", "csrf_token"}
     if not isinstance(enabled, bool) or extra:
         common.send_browser_api_error(handler, 400, "Invalid enabled value")
+        return
+
+    refused = onboard_radio_refused() if enabled else None
+    if refused:
+        common.send_json(handler, 200, {"ok": False, "message": refused})
         return
 
     try:

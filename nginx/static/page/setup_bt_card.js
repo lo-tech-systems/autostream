@@ -156,15 +156,19 @@ var pageData = (function () {
           var adapterRow = document.getElementById('btAdapterRow');
           if (adapterRow) {
             var kind = daemon && daemon.adapter_kind;
+            var noAdapter = body.onboard_refused
+              ? 'No Bluetooth adapter found \u2014 plug in a USB adapter.'
+              : 'No Bluetooth adapter found \u2014 plug in a USB adapter, or enable the onboard device below.';
             var text = !adapterPresent
-              ? 'No Bluetooth adapter found \u2014 plug in a USB adapter, or enable the onboard device below.'
+              ? noAdapter
               : (kind === 'usb' ? 'USB adapter' : (kind === 'onboard' ? 'Onboard' : 'Detected'));
             adapterRow.textContent = 'Adapter: ' + text;
           }
           var onboardToggle = document.getElementById('btOnboardToggle');
           if (onboardToggle) {
             onboardToggle.checked = btOnboardEnabled;
-            onboardToggle.disabled = !btServicesEnabled;
+            // Where the board refuses the onboard radio it can only be turned off.
+            onboardToggle.disabled = !btServicesEnabled || (!!body.onboard_refused && !btOnboardEnabled);
           }
           var gatedRow = document.getElementById('btAdapterGatedRow');
           if (gatedRow) {

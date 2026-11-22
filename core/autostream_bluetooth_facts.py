@@ -4,15 +4,15 @@ Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
 Unprivileged, non-socket fact-checks for the optional Bluetooth-input
 subsystem: whether the unit is installed at all, whether it is
-enabled/running, and whether the onboard radio (as opposed to a USB
-adapter) is in use.
+enabled/running, whether the onboard radio (as opposed to a USB
+adapter) is in use, and whether this board may use the onboard radio at
+all.
 
 Split out of ``core/autostream_bluetooth_client.py``, which re-exports
 these names for existing importers. These three functions are plain
 filesystem/systemctl/text-scan reads, not socket I/O to the
 ``autostream_bluetooth`` peer daemon, so they belong next to the other
 unprivileged fact-checks rather than inside the socket-adapter module.
-Pure code motion -- no logic changed from the original module.
 """
 
 from __future__ import annotations
@@ -27,6 +27,14 @@ logger = logging.getLogger(__name__)
 _DEFAULT_UNIT_PATH = "/etc/systemd/system/autostream_bluetooth.service"
 _DEFAULT_BOOT_CONFIG_PATH = "/boot/firmware/config.txt"
 _DISABLE_BT_OVERLAY = "dtoverlay=disable-bt"
+# A power board that takes the PL011 UART moves the onboard radio to the
+# mini UART, where its audio breaks up badly enough to be unusable.
+_MINIUART_BT_OVERLAY = "dtoverlay=miniuart-bt"
+
+ONBOARD_RADIO_REFUSED_REASON = (
+    "Onboard Bluetooth is not available with this appliance's power board; "
+    "plug in a USB adapter."
+)
 
 
 def bluetooth_installed(unit_path: Optional[str] = None) -> bool:
@@ -83,16 +91,41 @@ def bluetooth_onboard_enabled(config_path: Optional[str] = None) -> bool:
     overridable via ``AUTOSTREAM_BOOT_CONFIG_PATH`` (or ``config_path``, for
     tests).
     """
-    path = (
-        config_path
-        or os.environ.get("AUTOSTREAM_BOOT_CONFIG_PATH", "").strip()
-        or _DEFAULT_BOOT_CONFIG_PATH
-    )
     try:
-        with open(path, "r", encoding="utf-8", errors="replace") as f:
+        with open(_boot_config_path(config_path), "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 if line.strip() == _DISABLE_BT_OVERLAY:
                     return False
         return True
     except OSError:
         return False
+
+
+def _boot_config_path(config_path: Optional[str]) -> str:
+    return (
+        config_path
+        or os.environ.get("AUTOSTREAM_BOOT_CONFIG_PATH", "").strip()
+        or _DEFAULT_BOOT_CONFIG_PATH
+    )
+
+
+def onboard_radio_refused(config_path: Optional[str] = None) -> Optional[str]:
+    """Return the reason the onboard radio may not be enabled on this
+    board, or None when it may.
+
+    Refused when ``/boot/firmware/config.txt`` loads the ``miniuart-bt``
+    overlay (with or without parameters): the board's power hardware has
+    the PL011 UART, and the radio on the mini UART loses too much audio to
+    be any use. Commented-out lines do not count. A missing or unreadable
+    file refuses nothing. Path is overridable as for
+    ``bluetooth_onboard_enabled``.
+    """
+    try:
+        with open(_boot_config_path(config_path), "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                text = line.strip()
+                if text == _MINIUART_BT_OVERLAY or text.startswith(_MINIUART_BT_OVERLAY + ","):
+                    return ONBOARD_RADIO_REFUSED_REASON
+    except OSError:
+        return None
+    return None

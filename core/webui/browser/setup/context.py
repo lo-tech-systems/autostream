@@ -53,6 +53,7 @@ class SetupCtx:
     bt_paired: bool
     bt_services_on: bool
     bt_onboard_on: bool
+    bt_onboard_refused: Optional[str]
     bt_buffer_ms: int
     bt_card_summary: str
     bt_paired_row_text: str
@@ -105,6 +106,7 @@ def _setup_build_ctx(handler, state: WebUIState, auth) -> SetupCtx:
         bt_paired=_bt_state["bt_paired"],
         bt_services_on=_bt_state["bt_services_on"],
         bt_onboard_on=_bt_state["bt_onboard_on"],
+        bt_onboard_refused=_bt_state["bt_onboard_refused"],
         bt_buffer_ms=_bt_state["bt_buffer_ms"],
         bt_card_summary=_bt_state["bt_card_summary"],
         bt_paired_row_text=_bt_state["bt_paired_row_text"],

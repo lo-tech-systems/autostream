@@ -135,6 +135,18 @@ def _bluetooth_input_fragment_text(bt_status: Optional[dict]) -> str:
         return "Not Connected"
 
 
+def _bluetooth_onboard_refused() -> Optional[str]:
+    """Why the onboard radio may not be enabled on this board, or None."""
+    try:
+        from autostream_bluetooth_client import onboard_radio_refused as _real_check
+    except ImportError:
+        return None
+    try:
+        return _real_check()
+    except Exception:
+        return None
+
+
 def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
     """Shared Bluetooth state used by the Input cards, the Bluetooth card,
     and the Bluetooth JS blocks. Returns a dict rather than a dataclass to
@@ -144,6 +156,7 @@ def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
     bt_paired = bool(bt_status and bt_status.get("paired"))
     bt_services_on = _bluetooth_services_enabled() if bt_enabled else False
     bt_onboard_on = _bluetooth_onboard_enabled() if bt_enabled else False
+    bt_onboard_refused = _bluetooth_onboard_refused() if bt_enabled else None
     bt_buffer_ms = BLUETOOTH_BUFFER_MS_DEFAULT
     try:
         if isinstance(bt_status, dict) and isinstance(bt_status.get("buffer_ms"), int):
@@ -160,6 +173,7 @@ def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
         "bt_paired": bt_paired,
         "bt_services_on": bt_services_on,
         "bt_onboard_on": bt_onboard_on,
+        "bt_onboard_refused": bt_onboard_refused,
         "bt_buffer_ms": bt_buffer_ms,
         "bt_card_summary": bt_card_summary,
         "bt_paired_row_text": bt_paired_row_text,
@@ -233,11 +247,14 @@ def _setup_bluetooth_card_html(
     bt_onboard_on: bool,
     bt_buffer_ms: int,
     bt_paired_row_text: str,
+    bt_onboard_refused: Optional[str] = None,
 ) -> str:
     """Bluetooth detail-panel card."""
     _bt_adapter_present = bool(bt_status and bt_status.get("adapter_present"))
     _bt_adapter_kind = str((bt_status or {}).get("adapter_kind") or "") if bt_status else ""
-    if not _bt_adapter_present:
+    if not _bt_adapter_present and bt_onboard_refused:
+        _bt_adapter_text = "No Bluetooth adapter found — plug in a USB adapter."
+    elif not _bt_adapter_present:
         _bt_adapter_text = "No Bluetooth adapter found — plug in a USB adapter, or enable the onboard device below."
     elif _bt_adapter_kind == "usb":
         _bt_adapter_text = "USB adapter"
@@ -246,7 +263,17 @@ def _setup_bluetooth_card_html(
     else:
         _bt_adapter_text = "Detected"
     _bt_no_adapter_grey = "" if _bt_adapter_present else "opacity:0.4;pointer-events:none;"
-    _bt_onboard_disabled_attr = "" if bt_services_on else " disabled"
+    # On a board that refuses the onboard radio the switch can only be used
+    # to turn it off, so it is disabled unless the radio is on already.
+    _bt_onboard_locked = not bt_services_on or (bool(bt_onboard_refused) and not bt_onboard_on)
+    _bt_onboard_disabled_attr = " disabled" if _bt_onboard_locked else ""
+    if bt_onboard_refused:
+        _bt_onboard_help = f"{bt_onboard_refused} Changing this restarts the appliance."
+    else:
+        _bt_onboard_help = (
+            "A USB Bluetooth adapter is strongly recommended: Bluetooth audio can break up on the "
+            "onboard radio while streaming over Wi-Fi. Changing this restarts the appliance."
+        )
     _bt_forget_style = "" if bt_paired else "display:none;"
     # The enabled-body's interactive rows (Forget/Pair/Buffer) reference JS
     # functions (openBtPairingModal, _btPost, ...) that only exist when the
@@ -272,8 +299,8 @@ def _setup_bluetooth_card_html(
               </label>
               <span>Use onboard bluetooth device</span>
             </div>
-            <div style="font-size:0.75rem;color:#888;margin-top:0.25rem;">
-              A USB Bluetooth adapter is strongly recommended. Changing this restarts the appliance.
+            <div id="btOnboardHelp" style="font-size:0.75rem;color:#888;margin-top:0.25rem;">
+              {html.escape(_bt_onboard_help)}
             </div>
             <div id="btAdapterGatedRow" style="margin-top:0.75rem;{_bt_no_adapter_grey}">
               <p id="btPairedRow" style="margin:0 0 0.5rem;">{html.escape(bt_paired_row_text)}</p>
@@ -316,6 +343,7 @@ def detail_bluetooth(ctx: context.SetupCtx) -> str:
         bt_paired=ctx.bt_paired,
         bt_services_on=ctx.bt_services_on,
         bt_onboard_on=ctx.bt_onboard_on,
+        bt_onboard_refused=ctx.bt_onboard_refused,
         bt_buffer_ms=ctx.bt_buffer_ms,
         bt_paired_row_text=ctx.bt_paired_row_text,
     )
