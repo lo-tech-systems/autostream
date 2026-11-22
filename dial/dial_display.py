@@ -3042,6 +3042,11 @@ class DialDisplay:
                         self._screen_request = "outputs"
             if state is not None:
                 self._overlay_signal.set()
+        if (new.outputs_request != prev.outputs_request and self._outputs is not None
+                and self._screen in ("outputs", "output")):
+            # The value a tap shows goes once the appliance's state has caught
+            # up, which can come after the outputs themselves last changed
+            self._overlay_signal.set()
         if new.eq != prev.eq and self._eq is not None:
             self._overlay_signal.set()
         screen = self._repeat_screen

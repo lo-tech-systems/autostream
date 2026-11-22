@@ -25228,7 +25228,7 @@
       "outputs_optimistic": [
         "1",
         true,
-        0,
+        null,
         1000.0
       ],
       "page_request": 0,
@@ -25312,7 +25312,7 @@
       "outputs_optimistic": [
         "1",
         true,
-        0,
+        null,
         1000.0
       ],
       "page_request": 0,
@@ -26242,7 +26242,7 @@
       "outputs_optimistic": [
         "1",
         true,
-        0,
+        null,
         1000.0
       ],
       "page_request": 0,
@@ -26326,7 +26326,7 @@
       "outputs_optimistic": [
         "1",
         true,
-        0,
+        null,
         1000.0
       ],
       "page_request": 0,

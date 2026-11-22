@@ -1121,6 +1121,67 @@ class _SpyLock:
         self.release()
 
 
+class TestOutputDetailLevel:
+    """The speaker page's header level: none while the speaker is off or a
+    switch-on is still to report the start level the appliance chose, then
+    the speaker's own; and a repaint once the tap's shown value goes."""
+    AID = "a" * 20
+
+    def _detail(self, selected=False, volume=35):
+        display = _make_outputs_display()
+        display._open_outputs_locked()
+        row = OutputRow(id="1", name="Kitchen", selected=selected, volume=volume)
+        seed_outputs(display, (row,), loaded=True)
+        display._output_detail = dds.OutputDetailState(
+            appliance_id=self.AID, output_id="1", opened_at=time.monotonic(),
+        )
+        display._screen = "output"
+        return display
+
+    def _switch(self, display, selected):
+        with patch("dial_core.DialCore._send"):
+            assert display.core.set_output(self.AID, "1", selected=selected).accepted
+
+    def test_a_speaker_that_is_off_shows_no_level(self):
+        display = self._detail(selected=False, volume=35)
+        view = display._build_output_view_locked(time.monotonic())
+        assert (view.selected, view.level) == (False, None)
+
+    def test_a_pending_switch_on_shows_on_with_no_level(self):
+        display = self._detail(selected=False, volume=35)
+        self._switch(display, True)
+        view = display._build_output_view_locked(time.monotonic())
+        assert (view.selected, view.level) == (True, None)
+        row = display._row_with_optimistic_locked(dds.held_outputs(display.core.snapshot(), display._outputs).rows[0])
+        assert dds.output_list_row(row)[2] == ""
+
+    def test_a_playing_speaker_shows_its_own_level(self):
+        display = self._detail(selected=True, volume=20)
+        view = display._build_output_view_locked(time.monotonic())
+        assert (view.selected, view.level) == (True, 20)
+
+    def test_the_shown_value_going_repaints_an_open_speaker_page(self):
+        import dataclasses
+        display = self._detail(selected=False)
+        self._switch(display, True)
+        prev = display.core.snapshot()
+        new = dataclasses.replace(prev, outputs_request=dataclasses.replace(prev.outputs_request, shown=None))
+        display._overlay_signal.clear()
+        display._follow_screen_data(prev, new)
+        assert display._overlay_signal.is_set()
+
+    def test_the_shown_value_going_leaves_other_screens_alone(self):
+        import dataclasses
+        display = self._detail(selected=False)
+        self._switch(display, True)
+        display._screen = "main"
+        prev = display.core.snapshot()
+        new = dataclasses.replace(prev, outputs_request=dataclasses.replace(prev.outputs_request, shown=None))
+        display._overlay_signal.clear()
+        display._follow_screen_data(prev, new)
+        assert not display._overlay_signal.is_set()
+
+
 class TestPairInAutostreamPage:
     AID = "a" * 20
     PIN_REQUIRED = {"ok": False, "pin_required": True, "error": "Output requires PIN"}

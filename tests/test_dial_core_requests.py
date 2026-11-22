@@ -507,8 +507,17 @@ class TestIntentValidators:
             "outputs_request", "output_set", "u1", (True, 20))
         assert record_of("outputs.set", {"id": "u1", "selected": 1, "volume": True}) == (
             "outputs_request", "output_set", "u1", (False, 30))
+        # Switched on without a level: none is shown until the appliance
+        # reports the start level it chose
+        assert record_of("outputs.set", {"id": "u1", "selected": True}) == (
+            "outputs_request", "output_set", "u1", (True, None))
         assert record_of("output.pin.submit", {"id": "u1", "pin": "1234", "volume": 5}) == (
-            "outputs_request", "output_pin", "u1", (True, 30))
+            "outputs_request", "output_pin", "u1", (True, None))
+        playing = outputs(row("u1", selected=True, volume=30))
+        assert rq.intent_record(playing, AID, "outputs.set", {"id": "u1", "selected": True}) == (
+            "outputs_request", "output_set", "u1", (True, 30))
+        assert rq.intent_record(playing, AID, "outputs.set", {"id": "u1", "selected": False}) == (
+            "outputs_request", "output_set", "u1", (False, 30))
         for name in ("output.eq.set", "output.eq.reset", "outputs.save_default"):
             assert record_of(name, {}) is None, name
 

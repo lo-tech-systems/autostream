@@ -250,7 +250,8 @@ def output_list_row(row: "OutputRow") -> tuple:
     and none carries the play marker — the outputs list has no notion of
     either. The default output carries the trailing default mark."""
     if row.selected:
-        right = PAUSED_TEXT if row.paused else str(row.volume)
+        # No level while one switched on is still to report the level it starts at
+        right = PAUSED_TEXT if row.paused else ("" if row.volume is None else str(row.volume))
     else:
         right = STOPPING_TEXT if row.stopping else ""
     return (row.name, False, right, _OUTPUT_ROW_MARKS[row.is_default])

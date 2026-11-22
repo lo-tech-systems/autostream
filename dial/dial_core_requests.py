@@ -166,9 +166,15 @@ def pin_refusal(pin) -> ActionResult | None:
 def output_shown(row, selected, volume, *, pin: bool) -> tuple[bool, int | None]:
     """What a speaker request shows until the appliance's state catches up:
     on for a PIN, else the *selected* given (a bool) or the row's; and the
-    *volume* given (an int, not a bool) or the row's."""
+    *volume* given (an int, not a bool), else the row's. A speaker switched on
+    without a level shows none: the appliance starts it at its configured
+    start level, which the row's old level is not."""
     shown_selected = True if pin else (selected if isinstance(selected, bool) else row.selected)
-    return shown_selected, (volume if is_int(volume) else row.volume)
+    if is_int(volume):
+        return shown_selected, volume
+    if shown_selected and not row.selected:
+        return shown_selected, None
+    return shown_selected, row.volume
 
 
 # The intents the HD page may send, each with what it needs of the appliance
