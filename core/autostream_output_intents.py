@@ -123,8 +123,8 @@ def _outputs_set(intent: Intent, wait: float) -> Outcome:
 def _outputs_resume(intent: Intent, wait: float) -> Outcome:
     """End the hold of a speaker that paused itself, as its own Play would:
     the player restarts it at the live position, and the output policy then
-    unmutes the speakers its Pause muted. A speaker that is not held is left
-    as it is."""
+    brings back the other speakers the same Pause held or muted. A speaker
+    that is not held is left as it is."""
     out_id = intent.args["id"]
     applied = get_authority().resume(out_id, Origin.USER, requester=intent.requester)
     if applied.refused is not None:

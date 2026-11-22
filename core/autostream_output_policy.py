@@ -7,21 +7,24 @@ worker thread, and the policy turns it into intents.
 
 A speaker that pauses itself stops playing whatever autostream does, and
 its own Play does not start it again. So a Pause always holds that speaker:
-the player sends it no audio until the hold ends. The device pause setting
-says what happens to the other playing speakers: nothing, muted, or
-switched off. A speaker the player cannot hold is muted instead. A Play on
-the held speaker ends the hold, which restarts it at the live position, and
-unmutes the speakers its Pause muted; speakers it switched off stay off. A
-Play from a speaker that is not paused is ignored: an Apple TV sends one
-when its own screens change.
+the player sends it no audio until the hold ends. A speaker the player
+cannot hold is muted instead. The device pause setting says whether the
+other playing speakers pause too: each is held, or muted when it cannot be
+held (one already muted is left as it is). A Play on any speaker that Pause
+held or muted ends every hold it made, which restarts those speakers at the
+live position, and unmutes the speakers it muted. A Play from a speaker
+that is not paused is ignored: an Apple TV sends one when its own screens
+change.
 
 Every Pause also starts the pause timeout. When it runs out with no Play,
-the held speaker and the speakers that Pause muted and that are still muted
-are turned off (deselected; the player is never stopped). A hold ended any
-other way counts as the Play for the speakers it muted: the player ended it
-(its session ended or was restarted), or a client resumed the speaker (the
-outputs.resume intent). Switching the paused speaker off ends its Pause and
-leaves the others as they are.
+the speakers that Pause held and that are still held, and those it muted
+that are still muted, are turned off (deselected; the player is never
+stopped). A hold it made that ends any other way counts as its Play: the
+player ended it (its session ended or was restarted), or a client resumed
+the speaker (the outputs.resume intent). Switching a speaker it held off
+takes that speaker out of the Pause; when that is the speaker the Pause
+came from, the others it held stay paused together, and with none left the
+Pause ends and the speakers it muted stay as they are.
 
 A turn of a paused or muted speaker's own volume knob arrives as a wake:
 the player does not report the level of a silent speaker. A wake on a
@@ -34,7 +37,7 @@ thread, where the hooks run, and what it calls takes its own short locks.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Callable, Optional
 
 import autostream_repeat_idle as repeat_idle
@@ -65,6 +68,7 @@ class PauseEntry:
     since_token: Optional[int]       # the mute counter after the first mute; None: it muted nothing
     off_at: Optional[float] = None   # when the speakers it paused or muted are turned off
     held: bool = False               # the speaker itself is held, not muted
+    others_held: dict = field(default_factory=dict)  # unit id -> select_seq of the others it held
 
 
 @dataclass(frozen=True)
@@ -138,16 +142,18 @@ class OutputPolicy:
         if not self._entries:
             return
         for entry in list(self._entries.values()):
-            if self._stale(entry, outputs):
-                self._entries.pop(entry.unit_id, None)
+            entry = self._settle(entry, outputs)
+            if entry is None:
                 continue
-            if entry.held and not self._unit_held(entry.unit_id, outputs):
-                # The hold ended without the speaker's Play (the player ended
-                # it, or a client resumed the speaker): the speaker plays
-                # again, so the speakers its Pause muted play again too.
+            ended = self._hold_ended(entry, outputs)
+            if ended is not None:
+                # A hold this Pause made ended without a Play (the player
+                # ended it, or a client resumed the speaker): that speaker
+                # plays again, so everything the Pause held or muted does too.
                 self._entries.pop(entry.unit_id, None)
-                restored = self._restore_others(entry, outputs, _REQUESTER)
-                LOG.info("hold of %s ended: %s restored", entry.name, _names(outputs, restored))
+                restored = self._resume_all(entry, outputs, _REQUESTER, except_id=ended)
+                name = entry.name if ended == entry.unit_id else _names(outputs, [ended])
+                LOG.info("hold of %s ended: %s restored", name, _names(outputs, restored))
                 continue
             if entry.off_at is not None and entry.off_at <= now:
                 self._entries.pop(entry.unit_id, None)
@@ -168,16 +174,82 @@ class OutputPolicy:
         unit = outputs.unit(unit_id)
         return unit is not None and unit.held
 
+    def _entry_for(self, unit_id: str) -> Optional[PauseEntry]:
+        """The Pause that paused this speaker: its own, or a Pause on another
+        speaker that held or muted it too."""
+        entry = self._entries.get(unit_id)
+        if entry is not None:
+            return entry
+        for other in self._entries.values():
+            if unit_id in other.others_held or unit_id in other.muted:
+                return other
+        return None
+
     def _paused(self, unit_id: str, outputs: OutputsPart) -> bool:
-        """The speaker's own Pause is in force: it is held, or the mute its
-        Pause made is still the one it has. What a toggle from it means."""
+        """A Pause is in force on the speaker: it is held, or the mute a Pause
+        made is still the one it has. What a toggle from it means."""
         if self._unit_held(unit_id, outputs):
             return True
-        entry = self._entries.get(unit_id)
-        if entry is None or entry.held or unit_id not in entry.muted:
+        entry = self._entry_for(unit_id)
+        if entry is None or unit_id not in entry.muted:
             return False
         marks = get_authority().unit_marks(unit_id)
         return marks is not None and marks.mute_token == entry.muted[unit_id]
+
+    @staticmethod
+    def _in_pause(unit_id: str, select_seq: int, outputs: OutputsPart) -> bool:
+        """The speaker is still on with the selection it was paused with."""
+        unit = outputs.unit(unit_id)
+        if unit is None or not unit.selected:
+            return False
+        marks = get_authority().unit_marks(unit_id)
+        return marks is not None and marks.select_seq == select_seq
+
+    def _settle(self, entry: PauseEntry, outputs: OutputsPart) -> Optional[PauseEntry]:
+        """Take the speakers switched off since out of a Pause. When the
+        speaker it came from is one of them, the others it held stay paused
+        together under one of them; with none left the Pause ends. Returns
+        the entry as it now stands, or None."""
+        for uid, seq in list(entry.others_held.items()):
+            if not self._in_pause(uid, seq, outputs):
+                del entry.others_held[uid]
+        if not self._stale(entry, outputs):
+            return entry
+        self._entries.pop(entry.unit_id, None)
+        if not entry.others_held:
+            return None
+        lead, seq = next(iter(entry.others_held.items()))
+        others = {uid: s for uid, s in entry.others_held.items() if uid != lead}
+        entry = replace(entry, unit_id=lead, name=_names(outputs, [lead]), select_seq=seq,
+                        held=True, others_held=others)
+        self._entries[lead] = entry
+        return entry
+
+    def _held_members(self, entry: PauseEntry, outputs: OutputsPart) -> list:
+        """The speakers this Pause held that are held still."""
+        ids = ([entry.unit_id] if entry.held else []) + list(entry.others_held)
+        return [uid for uid in ids if self._unit_held(uid, outputs)]
+
+    def _hold_ended(self, entry: PauseEntry, outputs: OutputsPart) -> Optional[str]:
+        """A speaker whose hold this Pause made has ended while it stayed on."""
+        ids = ([entry.unit_id] if entry.held else []) + list(entry.others_held)
+        for uid in ids:
+            if not self._unit_held(uid, outputs):
+                return uid
+        return None
+
+    def _resume_all(self, entry: PauseEntry, outputs: OutputsPart, requester: str,
+                    except_id: Optional[str] = None) -> list:
+        """End every hold this Pause made and unmute what it muted. Returns
+        the speakers brought back, other than the held *except_id*, for the
+        log."""
+        authority = get_authority()
+        resumed = []
+        for uid in self._held_members(entry, outputs):
+            authority.resume(uid, Origin.DEVICE, requester=requester)
+            if uid != except_id:
+                resumed.append(uid)
+        return resumed + self._restore_others(entry, outputs, requester)
 
     @staticmethod
     def _stale(entry: PauseEntry, outputs: OutputsPart) -> bool:
@@ -223,6 +295,7 @@ class OutputPolicy:
         off = self._still_muted(entry, outputs)
         if entry.held and self._unit_held(entry.unit_id, outputs) and entry.unit_id not in off:
             off.insert(0, entry.unit_id)
+        off += [uid for uid in self._held_members(entry, outputs) if uid not in off]
         if not off:
             LOG.info("pause from %s: nothing it paused or muted is still so; nothing turned off", entry.name)
             return
@@ -269,33 +342,70 @@ class OutputPolicy:
             tokens.update(dict(muted.mute_tokens))
             since_token = muted.token_at
         others = "nothing else changed"
+        others_held: dict = {}
         if scope == DEVICE_PAUSE_ALL:
-            muted_all = authority.mute_all(Origin.DEVICE, requester=intent.requester, except_id=uid)
-            if muted_all.refused is None:
-                tokens.update(dict(muted_all.mute_tokens))
-                if since_token is None:
-                    since_token = muted_all.token_at
-                others = _names(ctx.outputs, [u for u, _ in muted_all.mute_tokens]) + " muted"
+            others_held, others_muted, others_token = self._pause_others(uid, ctx.outputs, intent.requester)
+            tokens.update(others_muted)
+            if since_token is None:
+                since_token = others_token
+            parts = []
+            if others_held:
+                parts.append(_names(ctx.outputs, others_held) + " held")
+            if others_muted:
+                parts.append(_names(ctx.outputs, others_muted) + " muted")
+            others = ", ".join(parts) or others
         marks = authority.unit_marks(uid)
         entry = PauseEntry(
             unit_id=uid, name=who, by=by, at=ctx.now,
             select_seq=marks.select_seq if marks is not None else 0,
             muted=tokens, since_token=since_token,
             off_at=ctx.now + settings.pause_off_seconds, held=held,
+            others_held=others_held,
         )
         self._entries[uid] = entry
         LOG.info(
             "receiver pause from %s (%s): %s %s; %s", who, by, who,
             "held" if held else "muted (it cannot be held)", others,
         )
-        return Outcome(ok=True, result={"action": "held" if held else "muted", "muted": list(tokens)})
+        return Outcome(ok=True, result={
+            "action": "held" if held else "muted", "muted": list(tokens), "held": list(others_held),
+        })
+
+    @staticmethod
+    def _pause_others(uid: str, outputs: OutputsPart, requester: str) -> tuple:
+        """Pause every other speaker that is on and playing: hold it, or mute
+        it when it cannot be held. One that is held or muted already is left
+        as it is: a hold of a muted speaker would end its mute when resumed.
+        Returns (unit id -> select_seq of those held, unit id -> mute token
+        of those muted, the mute counter after the first mute or None)."""
+        authority = get_authority()
+        held: dict = {}
+        muted: dict = {}
+        token_at: Optional[int] = None
+        for unit in outputs.units:
+            if unit.id == uid or not unit.selected or unit.held or unit.muted:
+                continue
+            applied = authority.hold(unit.id, Origin.DEVICE, requester=requester)
+            if applied.refused is None:
+                marks = authority.unit_marks(unit.id)
+                held[unit.id] = marks.select_seq if marks is not None else 0
+                continue
+            if applied.refused != "not_holdable":
+                LOG.info("pause of %s: not held (%s)", _names(outputs, [unit.id]), applied.refused)
+                continue
+            result = authority.mute(unit.id, Origin.DEVICE, requester=requester)
+            if result.refused is None and result.mute_tokens:
+                muted.update(dict(result.mute_tokens))
+                if token_at is None:
+                    token_at = result.token_at
+        return held, muted, token_at
 
     def play(self, intent: Intent, wait: float) -> Outcome:
         ctx: EventContext = intent.context
         uid = intent.args["id"]
         who = ctx.speaker_name or uid
         authority = get_authority()
-        entry = self._entries.get(uid)
+        entry = self._entry_for(uid)
         if entry is None:
             if self._unit_held(uid, ctx.outputs):
                 # Held with no Pause on record (autostream restarted since):
@@ -305,24 +415,23 @@ class OutputPolicy:
                 return Outcome(ok=True, result={"action": "resumed"})
             LOG.info("receiver play from %s: not paused; ignored", who)
             return Outcome(ok=True, result={"action": "none"})
-        if self._stale(entry, ctx.outputs):
-            self._entries.pop(uid, None)
+        entry = self._settle(entry, ctx.outputs)
+        if entry is None:
             LOG.info("receiver play from %s: that pause is over; nothing to undo", who)
             return Outcome(ok=True, result={"action": "none"})
-        self._entries.pop(uid, None)
-        if entry.held:
-            authority.resume(uid, Origin.DEVICE, requester=intent.requester)
-        restored = self._restore_others(entry, ctx.outputs, intent.requester)
+        self._entries.pop(entry.unit_id, None)
+        was_held = self._unit_held(uid, ctx.outputs)
+        restored = self._resume_all(entry, ctx.outputs, intent.requester, except_id=uid)
         LOG.info(
             "receiver play from %s: %s%s restored", who,
-            "hold ended, " if entry.held else "", _names(ctx.outputs, restored),
+            "hold ended, " if was_held else "", _names(ctx.outputs, restored),
         )
         return Outcome(ok=True, result={"action": "restored"})
 
     def wake(self, intent: Intent, wait: float) -> Outcome:
         """A paused or muted speaker's own knob was turned. On a paused one
-        it is its Play: the speaker resumes at its own level and what its
-        Pause muted is restored. On a speaker that is only muted it unmutes
+        it is its Play: the speaker resumes at its own level and what the
+        Pause held or muted is restored. On a speaker that is only muted it unmutes
         that speaker alone, at its own level."""
         ctx: EventContext = intent.context
         uid = intent.args["id"]

@@ -77,7 +77,7 @@
     true
    ],
    [
-    "set_output_muted",
+    "set_output_hold",
     "1002",
     true
    ],
@@ -87,7 +87,7 @@
     false
    ],
    [
-    "set_output_muted",
+    "set_output_hold",
     "1002",
     false
    ]
@@ -109,7 +109,7 @@
   "silence_chosen": false,
   "paused": [],
   "log": [
-   "receiver pause from Speaker A (1001): Speaker A held; Speaker B muted",
+   "receiver pause from Speaker A (1001): Speaker A held; Speaker B held",
    "receiver play from Speaker A: hold ended, Speaker B restored"
   ]
  }

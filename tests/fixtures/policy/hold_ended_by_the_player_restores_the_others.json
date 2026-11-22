@@ -73,10 +73,10 @@
      "session": {
       "state": "streaming",
       "failure": "none",
-      "holdable": true
+      "holdable": true,
+      "held": true
      },
-     "has_homepods": false,
-     "muted": true
+     "has_homepods": false
     }
    ]
   }
@@ -89,12 +89,12 @@
     true
    ],
    [
-    "set_output_muted",
+    "set_output_hold",
     "1002",
     true
    ],
    [
-    "set_output_muted",
+    "set_output_hold",
     "1002",
     false
    ]
@@ -116,7 +116,7 @@
   "silence_chosen": false,
   "paused": [],
   "log": [
-   "receiver pause from Speaker A (1001): Speaker A held; Speaker B muted",
+   "receiver pause from Speaker A (1001): Speaker A held; Speaker B held",
    "hold of Speaker A ended: Speaker B restored"
   ]
  }

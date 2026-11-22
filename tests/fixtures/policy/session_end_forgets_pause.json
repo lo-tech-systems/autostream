@@ -65,13 +65,18 @@
     true
    ],
    [
-    "set_output_muted",
+    "set_output_hold",
     "1002",
     true
    ],
    [
     "set_output_hold",
     "1020",
+    false
+   ],
+   [
+    "set_output_hold",
+    "1002",
     false
    ]
   ],
@@ -84,7 +89,7 @@
    },
    "1002": {
     "selected": true,
-    "muted": true,
+    "muted": false,
     "volume": 30,
     "held": false
    }
@@ -92,7 +97,7 @@
   "silence_chosen": false,
   "paused": [],
   "log": [
-   "receiver pause from TV A (1020): TV A held; Speaker B muted"
+   "receiver pause from TV A (1020): TV A held; Speaker B held"
   ]
  }
 }

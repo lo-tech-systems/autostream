@@ -267,7 +267,7 @@ class TestAClientResume:
     def held(self, w):
         w.a.merge_for_tests([
             group_row(1, "streaming", selected=True, volume_percent=40, session_holdable=True),
-            group_row(2, "streaming", selected=True, volume_percent=30, session_holdable=True),
+            group_row(2, "streaming", selected=True, volume_percent=30),
         ], boot="b0", now=T0)
         deliver(w, event("paus", received=T0 + 1))
         assert snap().unit("1").held and snap().unit("2").muted
@@ -296,6 +296,89 @@ class TestAClientResume:
         assert self.resume("77").error == "unknown_output"
         held.a.deselect("2", Origin.USER)
         assert self.resume("2").error == "not_selected"
+
+
+class TestPauseAllHoldsTheOthers:
+    """With the setting to pause them all, the other speakers are held too
+    (muted when they cannot be held), and a Play on any of them brings back
+    everything that Pause paused."""
+
+    @pytest.fixture
+    def three(self, w):
+        w.a.merge_for_tests([
+            group_row(1, "streaming", selected=True, volume_percent=40, session_holdable=True),
+            group_row(2, "streaming", selected=True, volume_percent=30, session_holdable=True),
+            group_row(3, "streaming", selected=True, volume_percent=20),
+        ], boot="b0", now=T0)
+        deliver(w, event("paus", received=T0 + 1))
+        p = snap()
+        assert p.unit("1").held and p.unit("2").held and not p.unit("2").muted
+        assert p.unit("3").muted and not p.unit("3").held
+        w.fb.calls.clear()
+        return w
+
+    @staticmethod
+    def all_back(w):
+        p = snap()
+        return (not p.unit("1").held and not p.unit("2").held and not p.unit("3").muted
+                and w.pol.paused_units() == ())
+
+    def test_a_play_on_another_speaker_it_held_brings_them_all_back(self, three):
+        deliver(three, event("play", id="2", received=T0 + 2))
+        assert self.all_back(three)
+
+    def test_a_play_on_a_speaker_it_muted_brings_them_all_back(self, three):
+        deliver(three, event("play", id="3", received=T0 + 2))
+        assert self.all_back(three)
+
+    def test_a_wake_on_another_speaker_it_held_brings_them_all_back(self, three):
+        deliver(three, event("wake", id="2", received=T0 + 2))
+        assert self.all_back(three)
+
+    def test_a_pause_from_a_speaker_it_paused_changes_nothing(self, three, caplog):
+        with caplog.at_level(logging.INFO, logger="autostream.output_policy"):
+            deliver(three, event("paus", id="2", received=T0 + 2))
+        assert three.fb.calls == [] and three.pol.paused_units() == ("1",)
+        assert any("already paused" in r.getMessage() for r in caplog.records)
+
+    def test_a_speaker_already_muted_is_left_muted(self, w):
+        w.a.merge_for_tests([
+            group_row(1, "streaming", selected=True, volume_percent=40, session_holdable=True),
+            group_row(2, "streaming", selected=True, volume_percent=30, session_holdable=True),
+        ], boot="b0", now=T0)
+        w.a.mute("2", Origin.USER)
+        deliver(w, event("paus", received=T0 + 1))
+        assert not snap().unit("2").held and snap().unit("2").muted
+        deliver(w, event("play", received=T0 + 2))
+        assert not snap().unit("1").held and snap().unit("2").muted
+
+    def test_switching_the_speaker_it_came_from_off_keeps_the_others_paused(self, three):
+        three.a.deselect("1", Origin.USER)
+        three.a.step(now=T0 + 2)
+        assert three.pol.paused_units() == ("2",)
+        assert snap().unit("2").held and snap().unit("3").muted
+        deliver(three, event("play", id="2", received=T0 + 3))
+        p = snap()
+        assert not p.unit("2").held and not p.unit("3").muted and three.pol.paused_units() == ()
+
+    def test_switching_another_speaker_it_held_off_takes_it_out(self, three):
+        three.a.deselect("2", Origin.USER)
+        three.a.step(now=T0 + 2)
+        three.fb.calls.clear()
+        deliver(three, event("play", received=T0 + 3))
+        assert ("set_output_hold", ("2", False)) not in [c[:2] for c in three.fb.calls]
+        assert not snap().unit("1").held and not snap().unit("3").muted
+
+    def test_a_client_resume_of_another_speaker_it_held_brings_them_all_back(self, three):
+        reply = submit(Intent("outputs.resume", {"id": "2"}, Origin.USER, "dial:test"), wait=0.5)
+        assert reply.ok
+        three.a.step(now=T0 + 2)
+        assert self.all_back(three)
+
+    def test_the_timeout_turns_off_every_speaker_it_paused(self, three):
+        three.t[0] = T0 + 400
+        three.a.step(now=T0 + 400)
+        assert [u.id for u in snap().units if u.selected] == []
 
 
 class TestReset:

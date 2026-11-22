@@ -560,9 +560,11 @@ def test_a_receiver_pause_and_play_break_no_rule(authority, monkeypatch, scope):
     assert not a._units["1"].desired.muted
     a.note_session(False)
     a.step(now=201.0)
-    # These rows cannot be held, so the speaker is muted instead
-    assert {name for name, _ in held} >= {"hold", "mute", "unmute"} | (
-        {"mute_all"} if scope == "all" else set())
+    # These rows cannot be held, so the speaker is muted instead, and with
+    # "all" so is the other one, after its hold is refused
+    names = [name for name, _ in held]
+    assert set(names) >= {"hold", "mute", "unmute"}
+    assert names.count("hold") == (4 if scope == "all" else 2)
     assert all(h == frozenset() for _, h in held)
     assert lockcheck.ORDER_VIOLATIONS == []
     assert lockcheck.ACQUIRED_UNDER_STORE == []

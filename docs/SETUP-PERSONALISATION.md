@@ -50,8 +50,8 @@ stereo pair, or an Apple TV with its HomePods, counts as one speaker.
     Pressing Play on it starts it again, at the point the music has reached (a record or CD
     keeps playing while it is paused).
   - With this off, only that speaker pauses and the others carry on.
-  - With it on, the other playing speakers are muted too, and Play on the paused speaker
-    brings them all back.
+  - With it on, the other playing speakers pause too and show as **Paused**, and Play on any
+    of them brings them all back. A speaker you had already muted stays muted.
 
   Switching a paused speaker off and on again also starts it, and on a small-screen dial a
   tap on the speaker in its speaker list does the same as Play. A speaker that streams in
@@ -62,7 +62,7 @@ stereo pair, or an Apple TV with its HomePods, counts as one speaker.
   Play unmutes it. Some speakers do not tell the appliance about their own Pause at all (the
   Edifier MS50A, for example), so the setting does nothing for them.
 - **Stop paused speakers after** - 1, 3, 5 or 10 minutes, 5 by default. A paused speaker,
-  and any speakers its Pause muted, are turned off once the Pause has lasted this long. This
+  and any speakers its Pause paused or muted, are turned off once the Pause has lasted this long. This
   applies whether or not **Pause all speakers** is on. If that leaves no speaker on, repeat is
   stopped too (see [Repeat playback](SETUP-PLAYBACK.md#repeat-playback)). A time set by hand in the
   configuration file that is not one of these shows as the nearest choice, and stays as it

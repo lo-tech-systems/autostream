@@ -22,7 +22,7 @@
    "session": {
     "state": "streaming",
     "failure": "none",
-    "holdable": true
+    "holdable": false
    },
    "has_homepods": false
   }

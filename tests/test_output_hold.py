@@ -160,30 +160,6 @@ class TestTheRowsHeldFlag:
         assert snap().unit("1").held and not snap().unit("1").connecting
 
 
-class TestTheOthers:
-    def test_mute_all_but_the_held_speaker(self, w):
-        merge(w, [playing(1), playing(2), playing(3)])
-        w.a.hold("1", Origin.DEVICE)
-        w.fb.calls.clear()
-        applied = w.a.mute_all(Origin.DEVICE, except_id="1")
-        p = snap()
-        assert not p.unit("1").muted and p.unit("2").muted and p.unit("3").muted
-        assert sorted(u for u, _ in applied.mute_tokens) == ["2", "3"]
-        assert not p.muted_all
-        assert [(c[0], c[1][:2]) for c in w.fb.calls] == [
-            ("set_output_muted", ("2", True)), ("set_output_muted", ("3", True))]
-
-    def test_a_speaker_switched_on_later_does_not_join_a_mute_that_left_one_out(self, w):
-        merge(w, [playing(1), playing(2), group_row(3, "stopped", session_holdable=True)])
-        w.a.mute_all(Origin.DEVICE, except_id="1")
-        w.a.select("3", Origin.USER, volume=30)
-        assert not snap().unit("3").muted
-
-    def test_mute_all_with_no_other_speaker_is_refused(self, w):
-        merge(w, [playing(1)])
-        assert w.a.mute_all(Origin.DEVICE, except_id="1").refused == "no_active_outputs"
-
-
 class TestResumeMeansSound:
     def test_resuming_a_muted_held_speaker_ends_the_hold_then_the_mute(self, w):
         merge(w, [playing(1), playing(2)])

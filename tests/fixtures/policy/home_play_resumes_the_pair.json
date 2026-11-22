@@ -73,7 +73,7 @@
     true
    ],
    [
-    "set_output_muted",
+    "set_output_hold",
     "1002",
     true
    ],
@@ -83,7 +83,7 @@
     false
    ],
    [
-    "set_output_muted",
+    "set_output_hold",
     "1002",
     false
    ]
@@ -105,7 +105,7 @@
   "silence_chosen": false,
   "paused": [],
   "log": [
-   "receiver pause from Study (1011): Study held; Speaker B muted",
+   "receiver pause from Study (1011): Study held; Speaker B held",
    "receiver play from Study: hold ended, Speaker B restored"
   ]
  }

@@ -94,6 +94,10 @@ Update every appliance and every dial together, as for 0.8.0.
   missing speaker back without interrupting the one playing.
 - changed: a speaker that comes back while its group is paused stays paused
   with the rest of the group.
+- fixed: with "Pause all speakers when pause is pressed on a speaker" on, the
+  other speakers pause too and show as Paused, and Play on any of them brings
+  them all back. Before, they were muted and still showed as On, and only
+  Play on the speaker paused first brought them back.
 - changed: a speaker left on Automatic plays AirPlay 2 whenever it offers it,
   and AirPlay 1 only when it has no AirPlay 2. Before, a speaker with no
   buffered AirPlay 2 played AirPlay 1. A speaker that plays better on AirPlay

@@ -1355,17 +1355,14 @@ class OutputAuthority:
             pending = self._publish_locked(cause, requester)
         return self._finish_intent(pending, future, master=master, muted=False, restored=restored)
 
-    def mute_all(self, cause: Origin, *, requester: Optional[str] = None,
-                 except_id: Optional[str] = None) -> Applied:
-        """Mute every selected speaker. With *except_id*, every one but that
-        speaker (a Pause holds it instead), and the mute is not carried over
-        to speakers switched on later."""
+    def mute_all(self, cause: Origin, *, requester: Optional[str] = None) -> Applied:
+        """Mute every selected speaker."""
         self._touched = True
         now = self._clock()
         with self._lock:
             if not self._connected:
                 return self._refused("not_connected")
-            selected = [u for u in self._selected_locked() if u.id != except_id]
+            selected = self._selected_locked()
             if not selected:
                 return self._refused("no_active_outputs")
             writes = []
@@ -1385,8 +1382,7 @@ class OutputAuthority:
                 tokens.append((u.id, d.mute_token))
                 self._stamp(u, cause, now)
                 writes.append(("mute", u))
-            if except_id is None:
-                self._mute_held = True
+            self._mute_held = True
             future = self._queue_writes_locked(writes)
             master = self._master_locked()
             token_at = self._mute_counter
