@@ -1,4 +1,4 @@
-<!DOCTYPE html><html lang="en" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><title>autostream</title><link rel="stylesheet" href="/static/theme.css?v={ASSET}"><link rel="stylesheet" href="/static/page/modal.css?v={ASSET}"><link rel="stylesheet" href="/static/page/setup.css?v={ASSET}"><meta name='csrf-token' content='{CSRF_TOKEN}'><script>window.__CSRF='{CSRF_TOKEN}';</script><script src="/static/page/csrf_recovery.js?v={ASSET}"></script><script type="application/json" id="page-data">{"app_version":"{APP_VERSION}","icons":{"padlock_locked":"\u003csvg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--color-accent)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"\u003e\u003crect x=\"3\" y=\"11\" width=\"18\" height=\"11\" rx=\"2\"/\u003e\u003cpath d=\"M7 11V7a5 5 0 0 1 10 0v4\"/\u003e\u003c/svg\u003e","padlock_unlocked":"\u003csvg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--color-accent)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"\u003e\u003crect x=\"3\" y=\"11\" width=\"18\" height=\"11\" rx=\"2\"/\u003e\u003cpath d=\"M7 11V7a5 5 0 0 1 9.9-1\"/\u003e\u003c/svg\u003e"},"bt_loopback_hw":"hw:CARD=ASBT,DEV=1","bt_paired":false,"bt_link_state":"disconnected","bt_services_enabled":false,"bt_onboard_enabled":false,"bt_status":null,"bt_ui_text":"Not Connected","sd_health":{"tool_present":false,"timer_enabled":false,"method":"auto","check":"none","serial":"","at":"","reason":"","card":{"manfid":null,"oemid":null,"name":"","serial":"","likely_supported":false},"health_percent":null,"last_sampled_at":null},"missing_rate_texts":["Follows the sample rate of the source. Turn on for an optical (S/PDIF) adapter fed by a CD or DVD player.","Sample rate: not running"]}</script><script src="/static/poll.js?v={ASSET}"></script></head><body class="has-bottom-nav">
+<!DOCTYPE html><html lang="en" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"><title>autostream</title><link rel="stylesheet" href="/static/theme.css?v={ASSET}"><link rel="stylesheet" href="/static/page/modal.css?v={ASSET}"><link rel="stylesheet" href="/static/page/setup.css?v={ASSET}"><meta name='csrf-token' content='{CSRF_TOKEN}'><script>window.__CSRF='{CSRF_TOKEN}';</script><script src="/static/page/csrf_recovery.js?v={ASSET}"></script><script type="application/json" id="page-data">{"app_version":"{APP_VERSION}","icons":{"padlock_locked":"\u003csvg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--color-accent)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"\u003e\u003crect x=\"3\" y=\"11\" width=\"18\" height=\"11\" rx=\"2\"/\u003e\u003cpath d=\"M7 11V7a5 5 0 0 1 10 0v4\"/\u003e\u003c/svg\u003e","padlock_unlocked":"\u003csvg viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"var(--color-accent)\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"\u003e\u003crect x=\"3\" y=\"11\" width=\"18\" height=\"11\" rx=\"2\"/\u003e\u003cpath d=\"M7 11V7a5 5 0 0 1 9.9-1\"/\u003e\u003c/svg\u003e"},"input_indices":[1,2],"bluetooth_input_index":3,"legacy_input_fields":{"1":{"capture_device":"audio_capture_device","silence_threshold":"audio_silence_threshold"}},"input_disabled_text":{"1":"Not configured"},"bt_paired":false,"bt_link_state":"disconnected","bt_services_enabled":false,"bt_onboard_enabled":false,"bt_status":null,"bt_ui_text":"Not Connected","sd_health":{"tool_present":false,"timer_enabled":false,"method":"auto","check":"none","serial":"","at":"","reason":"","card":{"manfid":null,"oemid":null,"name":"","serial":"","likely_supported":false},"health_percent":null,"last_sampled_at":null},"missing_rate_texts":["Follows the sample rate of the source. Turn on for an optical (S/PDIF) adapter fed by a CD or DVD player.","Sample rate: not running"]}</script><script src="/static/poll.js?v={ASSET}"></script></head><body class="has-bottom-nav">
       <div id="factoryResetModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="factoryResetModalTitle">
         <div class="panel modal-panel">
           <div class="hdr modal-hdr" id="factoryResetModalTitle">Factory Reset</div>
@@ -213,13 +213,6 @@
         </div>
         <span class="setup-list-chevron">&rsaquo;</span>
       </div>
-      <div class="setup-list-card" onclick="openPanel('bluetooth')">
-        <div class="setup-list-card-body">
-          <span class="setup-list-card-title">Bluetooth</span>
-          <span class="setup-list-card-sub" id="bluetooth-card-sub">Disabled</span>
-        </div>
-        <span class="setup-list-chevron">&rsaquo;</span>
-      </div>
       <div class="setup-list-card" onclick="openPanel('playback')">
         <div class="setup-list-card-body">
           <span class="setup-list-card-title">Playback</span>
@@ -278,13 +271,6 @@
         </div>
         <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Setup Input 2</h1></div></div>
         <div class="setup-detail-panel-body" id="panel-body-input2"></div>
-      </div>
-      <div class="setup-detail-panel" id="panel-bluetooth">
-        <div class="setup-detail-back">
-          <button type="button" class="pill-btn small" onclick="closePanel()">&larr; Back</button>
-        </div>
-        <div class='eq-page-header'><div style='display:flex;align-items:center;gap:0.5rem;'><h1>Bluetooth</h1></div></div>
-        <div class="setup-detail-panel-body" id="panel-body-bluetooth"></div>
       </div>
       <div class="setup-detail-panel" id="panel-playback">
         <div class="setup-detail-back">

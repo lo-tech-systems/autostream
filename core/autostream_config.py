@@ -765,6 +765,10 @@ class AutostreamConfig:
     track_identification: TrackIdentificationConfig
     repeat: RepeatConfig
     outputs: OutputsConfig = field(default_factory=OutputsConfig)
+    # The wired input Bluetooth was moved from by an update, while the cards
+    # still say so (until either input's settings are next written); None
+    # otherwise.
+    bluetooth_moved_from: Optional[int] = None
 
     def audio_section(self, index: int) -> AudioInputConfig:
         """Input *index*'s settings (one of INPUT_INDICES)."""
@@ -782,6 +786,19 @@ class AutostreamConfig:
 # Wired sections already warned about holding the Bluetooth loopback, so a
 # config that still has one logs it once rather than on every parse.
 _warned_wired_loopback: set[str] = set()
+
+
+BLUETOOTH_MOVED_FROM_KEY = "moved_from"
+
+
+def bluetooth_moved_from(data: dict) -> Optional[int]:
+    """The wired input an update moved Bluetooth from, as recorded in
+    input 3's section, or None when there is no move to mention."""
+    section = data.get(audio_section_name(BLUETOOTH_INPUT_INDEX)) or {}
+    value = section.get(BLUETOOTH_MOVED_FROM_KEY)
+    if isinstance(value, bool) or value not in WIRED_INPUT_INDICES:
+        return None
+    return value
 
 
 def _wired_capture_device(section_name: str, section: dict) -> str:
@@ -1070,6 +1087,7 @@ def parse_config(
         track_identification=track_identification,
         repeat=repeat,
         outputs=outputs,
+        bluetooth_moved_from=bluetooth_moved_from(data),
     )
 
 

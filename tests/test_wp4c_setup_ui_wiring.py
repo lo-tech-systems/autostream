@@ -451,8 +451,7 @@ class TestSetupPageHtmlControls:
         assert "rate.textContent = item.sample_rate_text" in handler
 
     def test_setup_opens_an_input_card_from_its_link_fragment(self, html):
-        for n in (1, 2):
-            assert f"if (location.hash === '#input{n}') openPanel('input{n}');" in html
+        assert "if (location.hash === '#input' + i) openPanel('input' + i);" in html
 
     def test_no_hidden_threshold_field(self, html):
         assert 'type="hidden" id="audio_silence_threshold"' not in html
@@ -556,8 +555,8 @@ class TestInput1EnableToggle:
 
     def test_sync_input_ui_reads_audio1_enabled_checkbox(self, tmp_path):
         html = self._render_with_audio1_enabled(tmp_path, True)
-        assert "const enabledName = prefix + '_enabled';" in html
-        assert "document.querySelector('input[name=\"' + enabledName + '\"]')" in html
+        assert "const prefix = 'audio' + inputIndex;" in html
+        assert "document.querySelector('input[name=\"' + prefix + '_enabled\"]')" in html
 
 
 # ---------------------------------------------------------------------------

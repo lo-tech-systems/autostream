@@ -350,7 +350,7 @@ class TestAuth:
 
 
 SETUP_CARD_KEYS = (
-    "input1", "input2", "bluetooth", "playback", "track-id", "dials", "customise", "system", "factory-reset",
+    "input1", "input2", "playback", "track-id", "dials", "customise", "system", "factory-reset",
 )
 
 
@@ -552,14 +552,17 @@ class TestSetup:
             errors = _watch_errors(page)
             page.goto(f"{base}/")
             page.wait_for_load_state("networkidle")
-            assert page.evaluate("BT_LOOPBACK_HW") == page.evaluate("pageData.bt_loopback_hw")
+            assert page.evaluate("SETUP_INPUT_INDICES") == [1, 2, 3]
             assert page.evaluate("btPaired") is True
             assert page.evaluate("_btLinkState") == "connected"
             assert page.evaluate("window._btUiText") == page.evaluate("pageData.bt_ui_text") == "Test Turntable"
-            page.evaluate("openBtPairingModal(1, null)")
+            page.evaluate("openBtPairingModal()")
             expect(page.locator("#btPairingModal")).to_have_class(_SHOWN)
             page.click("#btPairingCancel")
             expect(page.locator("#btPairingModal")).not_to_have_class(_SHOWN)
+            _open_setup_panel(page, "input3")
+            expect(page.locator("#btnBtPairNew")).to_have_count(1)
+            page.evaluate("closePanel()")
             assert errors == []
         finally:
             server.shutdown()
@@ -591,7 +594,7 @@ class TestSetup:
             page.route("**/api/bluetooth/pair", _pair)
             page.goto(f"{base}/")
             page.wait_for_load_state("networkidle")
-            page.evaluate("openBtPairingModal(null, null)")
+            page.evaluate("openBtPairingModal()")
             row = page.locator("#btWindowDeviceList .bt-scan-row")
             expect(row).to_have_count(1)
             expect(row.locator(".bt-row-state")).to_have_text("Code 000042 · Wants to connect")

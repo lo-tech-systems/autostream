@@ -2,46 +2,43 @@ var pageData = (function () {
   try { return JSON.parse(document.getElementById('page-data').textContent); }
   catch (e) { return {}; }
 })();
-        function _inputCardSub(captureSelName, typeSelName, gainId) {
-          var sel = document.querySelector('select[name="' + captureSelName + '"]');
-          var opt = sel ? sel.options[sel.selectedIndex] : null;
-          var dev = (opt && opt.dataset.card) ? opt.dataset.card : (sel && sel.value ? sel.value : 'Not configured');
-          var typeSel = document.querySelector('select[name="' + typeSelName + '"]');
+        // An input's card summary: its device, type and gain. Input 3's device
+        // part is the Bluetooth device or connection state, verbatim from the
+        // status poll's server-computed ui.bt_input_text, so it can't drift
+        // from the server's own summary.
+        function _inputCardSub(inputIndex) {
+          var dev;
+          if (inputIndex === BLUETOOTH_INPUT_INDEX) {
+            dev = window._btUiText || 'Not Connected';
+          } else {
+            var sel = document.querySelector('select[name="' + inputField(inputIndex, 'capture_device') + '"]');
+            var opt = sel ? sel.options[sel.selectedIndex] : null;
+            dev = (opt && opt.dataset.card) ? opt.dataset.card : (sel && sel.value ? sel.value : 'Not configured');
+          }
+          var typeSel = document.getElementById('audio' + inputIndex + '_input_type');
           var typeOpt = typeSel ? typeSel.options[typeSel.selectedIndex] : null;
           var mode = typeOpt ? typeOpt.text : 'Line';
-          if (opt && opt.dataset.bt === '1') {
-            // Bluetooth input: show the connected device name (or connection
-            // state) instead of the ALSA card name and input type. The
-            // string itself comes verbatim from the status poll's server-
-            // computed ui.bt_input_text -- never re-derived from link/paired
-            // here, so it can't drift from the card summary's own state.
-            dev = 'Bluetooth';
-            mode = window._btUiText || 'Not Connected';
-          }
-          var gainEl = document.getElementById(gainId);
+          var gainEl = document.getElementById('audio' + inputIndex + '_gain_db');
           var gain = gainEl ? parseInt(gainEl.value, 10) : 0;
           var gainStr = gain > 0 ? '+' + gain + ' dB' : (gain < 0 ? gain + ' dB' : '0 dB');
           return dev + ' \u00b7 ' + mode + ' \u00b7 ' + gainStr;
         }
         function refreshInputCardSubs() {
-          var s1 = document.getElementById('input1-card-sub');
-          if (s1 && _setupPanelIsLoaded('input1')) {
-            var en1 = document.querySelector('input[name="audio1_enabled"]');
-            if (en1 && !en1.checked) {
-              s1.textContent = 'Not configured';
-            } else {
-              s1.textContent = _inputCardSub('audio_capture_device', 'audio1_input_type', 'audio1_gain_db');
-            }
-          }
-          var s2 = document.getElementById('input2-card-sub');
-          if (s2 && _setupPanelIsLoaded('input2')) {
-            var en = document.querySelector('input[name="audio2_enabled"]');
+          SETUP_INPUT_INDICES.forEach(function(i) {
+            var sub = document.getElementById('input' + i + '-card-sub');
+            if (!sub || !_setupPanelIsLoaded('input' + i)) return;
+            var en = document.querySelector('input[name="audio' + i + '_enabled"]');
             if (en && !en.checked) {
-              s2.textContent = 'Disabled';
+              sub.textContent = (pageData.input_disabled_text || {})[String(i)] || 'Disabled';
             } else {
-              s2.textContent = _inputCardSub('audio2_capture_device', 'audio2_input_type', 'audio2_gain_db');
+              sub.textContent = _inputCardSub(i);
             }
-          }
+          });
+        }
+        // The input number of an input card's panel id ("input2" -> 2), or null.
+        function _inputPanelIndex(id) {
+          var m = /^input(\d+)$/.exec(String(id || ''));
+          return m ? Number(m[1]) : null;
         }
         // Lazy per-card detail fetch: a panel's body starts empty
         // (an id="panel-body-<key>" placeholder -- see _setup_panel_shell_html())
@@ -84,8 +81,8 @@ var pageData = (function () {
         // deferred to first open since the elements don't exist in the DOM
         // until the lazy fetch above has injected them.
         function _setupInitPanel(id) {
-          if (id === 'input1') { syncInputUi(1); refreshExclusivityOptions(); }
-          if (id === 'input2') { syncInputUi(2); refreshExclusivityOptions(); }
+          var inputIndex = _inputPanelIndex(id);
+          if (inputIndex !== null) { syncInputUi(inputIndex); refreshExclusivityOptions(); }
           if (id === 'system' && typeof _initSystemCard === 'function') _initSystemCard();
           if (id === 'customise' && typeof _initCustomiseCard === 'function') _initCustomiseCard();
           if (id === 'dials' && typeof _initDialsCard === 'function') _initDialsCard();
@@ -107,15 +104,17 @@ var pageData = (function () {
           // The Bluetooth/System ambient status polls only run while
           // their own panel is open (activeOnly Pollers -- see
           // _bt_card_js/refreshNetworkAdapterInfo's Poller construction).
-          if (id === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.start();
-          if ((id === 'input1' || id === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.start();
+          var openedInput = _inputPanelIndex(id);
+          if (openedInput === BLUETOOTH_INPUT_INDEX && typeof _btStatusPoller !== 'undefined') _btStatusPoller.start();
+          if (openedInput !== null && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.start();
           if (id === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.start();
         }
         // Deep links from the Home page's warning cards (dial update, sample rate).
         window.addEventListener('DOMContentLoaded', function() {
           if (location.hash === '#dials') openPanel('dials');
-          if (location.hash === '#input1') openPanel('input1');
-          if (location.hash === '#input2') openPanel('input2');
+          SETUP_INPUT_INDICES.forEach(function(i) {
+            if (location.hash === '#input' + i) openPanel('input' + i);
+          });
         });
         function _repeatCodecLabel(codec) {
           if (!codec) return '';
@@ -318,8 +317,9 @@ var pageData = (function () {
           // panel closes (mirrors openPanel()'s .start() calls above).
           var activePanel = document.querySelector('.setup-detail-panel.active');
           var activeId = activePanel ? activePanel.id.replace(/^panel-/, '') : null;
-          if (activeId === 'bluetooth' && typeof _btStatusPoller !== 'undefined') _btStatusPoller.stop();
-          if ((activeId === 'input1' || activeId === 'input2') && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.stop();
+          var closedInput = _inputPanelIndex(activeId);
+          if (closedInput === BLUETOOTH_INPUT_INDEX && typeof _btStatusPoller !== 'undefined') _btStatusPoller.stop();
+          if (closedInput !== null && typeof _inputLevelPoller !== 'undefined') _inputLevelPoller.stop();
           if (activeId === 'system' && typeof _networkAdapterInfoPoller !== 'undefined') _networkAdapterInfoPoller.stop();
           if (activeId === 'dials' && typeof _dialLockAll === 'function') _dialLockAll();
           var track = document.getElementById('setupSlideTrack');

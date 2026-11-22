@@ -172,8 +172,8 @@ def base_url():
 
     # Render production HTML once; raise clearly if the renderer is broken.
     global _STUB_HTML_BYTES, _STUB_CARD_JSON
-    _STUB_HTML_BYTES = _page_stub.render("setup")
-    _STUB_CARD_JSON = _page_stub.setup_card_json()
+    _STUB_HTML_BYTES = _page_stub.render("setup", bt_enabled=True)
+    _STUB_CARD_JSON = _page_stub.setup_card_json(bt_enabled=True)
 
     server = HTTPServer(("127.0.0.1", 0), _StubHandler)
     port = server.server_address[1]
@@ -349,9 +349,9 @@ class TestLazyPanelsPreserveSummaries:
         before = self._summaries(page)
         assert before.get("track-id-card-sub"), "expected a server-rendered Track ID summary"
 
-        _open_setup_panel(page, "Bluetooth")
-        expect(page.locator("#panel-bluetooth")).to_be_visible()
-        _close_setup_panel(page, "panel-bluetooth")
+        _open_setup_panel(page, "Input 2")
+        expect(page.locator("#panel-input2")).to_be_visible()
+        _close_setup_panel(page, "panel-input2")
         page.wait_for_timeout(250)
 
         assert self._summaries(page) == before, (
@@ -422,7 +422,7 @@ def _assert_poll_is_panel_scoped(page: "Page", base_url: str, api_path: str,
 class TestPanelScopedPolling:
     def test_bluetooth_link_status_poll_is_panel_scoped(self, page: "Page", base_url: str):
         _assert_poll_is_panel_scoped(
-            page, base_url, "/api/bluetooth/status", "Bluetooth", "panel-bluetooth"
+            page, base_url, "/api/bluetooth/status", "Input 3 (Bluetooth)", "panel-input3"
         )
 
     def test_network_adapter_poll_is_panel_scoped(self, page: "Page", base_url: str):

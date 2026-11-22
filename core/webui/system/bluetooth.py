@@ -21,8 +21,6 @@ import re
 
 from autostream_bluetooth_client import (
     BluetoothClient,
-    bluetooth_capture_label,
-    bluetooth_card_summary,
     bluetooth_input_fragment_text,
     bluetooth_installed,
     bluetooth_onboard_enabled,
@@ -72,8 +70,8 @@ def send_bluetooth_status_json(handler, state) -> None:
     back to the cache populated by the webui's background scan loop
     (``WebUIState.get_bluetooth_status``) if the live query fails.
 
-    Also returns a ``ui`` object -- ``card_summary``, ``paired_text``,
-    ``bt_input_text`` -- computed from the same ``services_enabled``/
+    Also returns a ``ui`` object -- ``paired_text`` and ``bt_input_text``
+    -- computed from the same ``services_enabled``/
     ``daemon`` data by the single shared presentation-string implementation
     also used by the Setup page's server render, so the card's summary line
     can never disagree between the initial render and this poll.
@@ -102,13 +100,8 @@ def send_bluetooth_status_json(handler, state) -> None:
         "onboard_refused": onboard_refused,
         "daemon": daemon,
         "ui": {
-            "card_summary": bluetooth_card_summary(services_enabled, daemon),
             "paired_text": bluetooth_paired_row_text(daemon),
             "bt_input_text": bluetooth_input_fragment_text(daemon),
-            # Label for the loopback entry in the capture-device dropdowns,
-            # so the poll can relabel it live ("Bluetooth: <name>" after a
-            # pair, back to unpaired after a forget) without a page reload.
-            "capture_label": bluetooth_capture_label(daemon),
         },
     })
 

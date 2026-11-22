@@ -3,8 +3,8 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-The Bluetooth card of the Setup page, the Bluetooth gates and text helpers the
-Input cards also read, and the SD card health rows.
+Input 3's Bluetooth rows and audio buffer on the Setup page, the Bluetooth
+gates and text helpers the input cards read, and the SD card health rows.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from __future__ import annotations
 import html
 from typing import Optional
 
+from autostream_config import BLUETOOTH_INPUT_INDEX
 from autostream_sysutils import SDCARD_HEALTH_METHODS
 from webui.common import settings_card_html
 from webui.session_state import WebUIState
@@ -19,23 +20,21 @@ from webui.browser.setup import context
 
 
 # -----------------------------------------------------------------------------
-# Bluetooth input — Setup page surface (the always-rendered Bluetooth card,
-# plus the Input cards' dropdown/pairing-modal wiring).
+# Bluetooth input — Setup page surface (Input 3's card rows and the pairing
+# modal).
 #
 # Three independent gates:
 #   - installed:        the Bluetooth-input subsystem's unit file exists.
-#                        Drives the dropdown/relabel/pairing-modal surface
-#                        (the loopback card exists once installed, whether
-#                        or not the service itself is enabled).
-#   - services_enabled:  the systemd unit is enabled/running. Drives the
-#                        Bluetooth card's enabled-vs-disabled body.
+#                        Input 3's card and the pairing modal exist only
+#                        then, whether or not the service itself is enabled.
+#   - services_enabled:  the systemd unit is enabled/running (input 3's
+#                        enable); the onboard switch needs it.
 #   - onboard_enabled:   the onboard radio (vs. a USB adapter) is in use.
 #
 # All three lookups are defensive (getattr + try/except) so this page keeps
 # rendering identically wherever the helper module is absent.
 # -----------------------------------------------------------------------------
 
-BLUETOOTH_LOOPBACK_HW = "hw:CARD=ASBT,DEV=1"
 BLUETOOTH_BUFFER_MS_DEFAULT = 200
 BLUETOOTH_BUFFER_MS_MIN = 100
 BLUETOOTH_BUFFER_MS_MAX = 500
@@ -93,24 +92,6 @@ def _bluetooth_status_from_state(state: WebUIState) -> Optional[dict]:
     return status if isinstance(status, dict) else None
 
 
-def _bluetooth_card_summary(services_enabled: bool, bt_status: Optional[dict]) -> str:
-    """Bluetooth card summary line -- delegates to the single shared implementation.
-
-    Defensive-import wrapper, same pattern as the gate checks above: falls
-    back to a state derivable from ``services_enabled`` alone wherever the
-    helper module is absent, so this page keeps rendering wherever the
-    Bluetooth subsystem isn't installed at all.
-    """
-    try:
-        from autostream_bluetooth_client import bluetooth_card_summary as _real
-    except ImportError:
-        return "Disabled" if not services_enabled else "Enabled · No adapter found"
-    try:
-        return _real(services_enabled, bt_status)
-    except Exception:
-        return "Disabled" if not services_enabled else "Enabled · No adapter found"
-
-
 def _bluetooth_paired_row_text(bt_status: Optional[dict]) -> str:
     """Card 'Paired' row text -- delegates to the single shared implementation."""
     try:
@@ -148,8 +129,8 @@ def _bluetooth_onboard_refused() -> Optional[str]:
 
 
 def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
-    """Shared Bluetooth state used by the Input cards, the Bluetooth card,
-    and the Bluetooth JS blocks. Returns a dict rather than a dataclass to
+    """Shared Bluetooth state used by the input cards and the Bluetooth JS
+    blocks. Returns a dict rather than a dataclass to
     keep this a pure mechanical relocation of the original locals."""
     bt_enabled = _bluetooth_installed()
     bt_status = _bluetooth_status_from_state(state) if bt_enabled else None
@@ -165,7 +146,6 @@ def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
             )
     except Exception:
         bt_buffer_ms = BLUETOOTH_BUFFER_MS_DEFAULT
-    bt_card_summary = _bluetooth_card_summary(bt_services_on, bt_status)
     bt_paired_row_text = _bluetooth_paired_row_text(bt_status)
     return {
         "bt_enabled": bt_enabled,
@@ -175,7 +155,6 @@ def _setup_compute_bluetooth_state(state: WebUIState) -> dict:
         "bt_onboard_on": bt_onboard_on,
         "bt_onboard_refused": bt_onboard_refused,
         "bt_buffer_ms": bt_buffer_ms,
-        "bt_card_summary": bt_card_summary,
         "bt_paired_row_text": bt_paired_row_text,
     }
 
@@ -238,21 +217,14 @@ def _setup_sdcard_health_row_html(sd_health: dict) -> str:
       </div>"""
 
 
-def _setup_bluetooth_card_html(
-    *,
-    bt_enabled: bool,
-    bt_status: Optional[dict],
-    bt_paired: bool,
-    bt_services_on: bool,
-    bt_onboard_on: bool,
-    bt_buffer_ms: int,
-    bt_paired_row_text: str,
-    bt_onboard_refused: Optional[str] = None,
-) -> str:
-    """Bluetooth detail-panel card."""
+def _bluetooth_rows_html(ctx: context.SetupCtx) -> str:
+    """Input 3's Bluetooth rows, where a wired input has its device select:
+    the adapter, the onboard radio switch, the paired device with Forget,
+    and Pair a device."""
+    bt_status = ctx.bt_status
     _bt_adapter_present = bool(bt_status and bt_status.get("adapter_present"))
     _bt_adapter_kind = str((bt_status or {}).get("adapter_kind") or "") if bt_status else ""
-    if not _bt_adapter_present and bt_onboard_refused:
+    if not _bt_adapter_present and ctx.bt_onboard_refused:
         _bt_adapter_text = "No Bluetooth adapter found — plug in a USB adapter."
     elif not _bt_adapter_present:
         _bt_adapter_text = "No Bluetooth adapter found — plug in a USB adapter, or enable the onboard device below."
@@ -265,35 +237,21 @@ def _setup_bluetooth_card_html(
     _bt_no_adapter_grey = "" if _bt_adapter_present else "opacity:0.4;pointer-events:none;"
     # On a board that refuses the onboard radio the switch can only be used
     # to turn it off, so it is disabled unless the radio is on already.
-    _bt_onboard_locked = not bt_services_on or (bool(bt_onboard_refused) and not bt_onboard_on)
+    _bt_onboard_locked = not ctx.bt_services_on or (bool(ctx.bt_onboard_refused) and not ctx.bt_onboard_on)
     _bt_onboard_disabled_attr = " disabled" if _bt_onboard_locked else ""
-    if bt_onboard_refused:
-        _bt_onboard_help = f"{bt_onboard_refused} Changing this restarts the appliance."
+    if ctx.bt_onboard_refused:
+        _bt_onboard_help = f"{ctx.bt_onboard_refused} Changing this restarts the appliance."
     else:
         _bt_onboard_help = (
             "A USB Bluetooth adapter is strongly recommended: Bluetooth audio can break up on the "
             "onboard radio while streaming over Wi-Fi. Changing this restarts the appliance."
         )
-    _bt_forget_style = "" if bt_paired else "display:none;"
-    # The enabled-body's interactive rows (Forget/Pair/Buffer) reference JS
-    # functions (openBtPairingModal, _btPost, ...) that only exist when the
-    # subsystem is installed -- bt_services_on can only be True when
-    # bt_enabled is also True, so this body is otherwise unreachable, but it
-    # is only emitted at all when installed to avoid dead references to
-    # functions that were never rendered.
-    _bt_enabled_body = ""
-    if bt_enabled:
-        _bt_enabled_body = f"""
-          <div id="btEnabledBody" style="display:{'block' if bt_services_on else 'none'};">
-            <div style="display:flex;align-items:center;gap:.75rem;">
-              <span>Bluetooth services: Enabled</span>
-              <button type="button" id="btnBtDisableServices" class="pill-btn small" style="margin-left:auto;"
-                onclick="btDisableServices()">Disable</button>
-            </div>
+    _bt_forget_style = "" if ctx.bt_paired else "display:none;"
+    return f"""
             <p id="btAdapterRow" style="margin:0.5rem 0;font-size:0.9rem;">Adapter: {html.escape(_bt_adapter_text)}</p>
             <div style="display:flex;align-items:center;gap:.75rem;margin-top:.5rem;">
               <label class="output-toggle" style="margin:0;">
-                <input type="checkbox" id="btOnboardToggle"{' checked' if bt_onboard_on else ''}{_bt_onboard_disabled_attr}
+                <input type="checkbox" id="btOnboardToggle"{' checked' if ctx.bt_onboard_on else ''}{_bt_onboard_disabled_attr}
                   onchange="btOnboardToggleChanged(this.checked)">
                 <span class="switch"></span>
               </label>
@@ -302,48 +260,31 @@ def _setup_bluetooth_card_html(
             <div id="btOnboardHelp" style="font-size:0.75rem;color:#888;margin-top:0.25rem;">
               {html.escape(_bt_onboard_help)}
             </div>
-            <div id="btAdapterGatedRow" style="margin-top:0.75rem;{_bt_no_adapter_grey}">
-              <p id="btPairedRow" style="margin:0 0 0.5rem;">{html.escape(bt_paired_row_text)}</p>
+            <div id="btAdapterGatedRow" style="margin:0.75rem 0;{_bt_no_adapter_grey}">
+              <p id="btPairedRow" style="margin:0 0 0.5rem;">{html.escape(ctx.bt_paired_row_text)}</p>
               <button type="button" id="btnBtForget" class="pill-btn small" style="width:100%;{_bt_forget_style}"
                 onclick="btForgetFromCard()">Forget</button>
               <button type="button" id="btnBtPairNew" class="pill-btn small" style="width:100%;margin-top:0.5rem;"
-                onclick="openBtPairingModal(null, null)">Pair a device&hellip;</button>
-              <label style="display:block;margin-top:0.75rem;">
-                <div class="slider-header"><span>Bluetooth Audio Buffer:</span><span id="btBufferVal">{bt_buffer_ms} ms</span></div>
-                <input type="range" id="btBufferRange" min="{BLUETOOTH_BUFFER_MS_MIN}" max="{BLUETOOTH_BUFFER_MS_MAX}"
-                  step="10" value="{bt_buffer_ms}" oninput="btBufferInput(this.value)">
-                <div class="helptext">Larger values ride out wireless glitches; smaller values reduce the
-                  delay before you hear the needle drop.</div>
-              </label>
-            </div>
-          </div>
-        """
-    bluetooth_card_inner_html = f"""
+                onclick="openBtPairingModal()">Pair a device&hellip;</button>
+            </div>"""
+
+
+def _bluetooth_buffer_card_html(ctx: context.SetupCtx) -> str:
+    """Input 3's Bluetooth audio buffer, after its gain and equaliser card.
+    Shown with the rest of the input's settings while it is enabled."""
+    inner_html = f"""
           <input type="hidden" name="bluetooth_present" value="1">
-          <div id="btDisabledBody" style="display:{'none' if bt_services_on else 'block'};">
-            <p style="margin:0 0 0.5rem;">Connect a Bluetooth device (such as a turntable with Bluetooth
-              output) as an audio input.</p>
-            <button type="button" id="btnBtEnableServices" class="pill-btn small" style="width:100%;"
-              onclick="btEnableServices()">Enable Bluetooth Services</button>
-          </div>
-          {_bt_enabled_body}
+          <label style="display:block;">
+            <div class="slider-header"><span>Bluetooth Audio Buffer:</span><span id="btBufferVal">{ctx.bt_buffer_ms} ms</span></div>
+            <input type="range" id="btBufferRange" min="{BLUETOOTH_BUFFER_MS_MIN}" max="{BLUETOOTH_BUFFER_MS_MAX}"
+              step="10" value="{ctx.bt_buffer_ms}" oninput="btBufferInput(this.value)">
+            <div class="helptext">Larger values ride out wireless glitches; smaller values reduce the
+              delay before you hear the needle drop.</div>
+          </label>
         """
-    bluetooth_card_html = settings_card_html(bluetooth_card_inner_html, margin_top="0")
-    return bluetooth_card_html
-
-
-def summary_bluetooth(ctx: context.SetupCtx) -> str:
-    return ctx.bt_card_summary
-
-
-def detail_bluetooth(ctx: context.SetupCtx) -> str:
-    return _setup_bluetooth_card_html(
-        bt_enabled=ctx.bt_enabled,
-        bt_status=ctx.bt_status,
-        bt_paired=ctx.bt_paired,
-        bt_services_on=ctx.bt_services_on,
-        bt_onboard_on=ctx.bt_onboard_on,
-        bt_onboard_refused=ctx.bt_onboard_refused,
-        bt_buffer_ms=ctx.bt_buffer_ms,
-        bt_paired_row_text=ctx.bt_paired_row_text,
+    enabled = ctx.parsed.audio_enabled(BLUETOOTH_INPUT_INDEX)
+    return (
+        f'<div id="audio{BLUETOOTH_INPUT_INDEX}_buffer_card" style="display:{"block" if enabled else "none"};">'
+        + settings_card_html(inner_html)
+        + "</div>"
     )

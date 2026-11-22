@@ -5,7 +5,7 @@ Covers:
     request/reply per connection)
   - bluetooth_installed() / bluetooth_services_enabled() /
     bluetooth_onboard_enabled() gating helpers
-  - classify_loopback_hw() / bluetooth_capture_label() relabel-hook helpers
+  - classify_loopback_hw() and the presentation strings
 """
 from __future__ import annotations
 
@@ -29,8 +29,6 @@ from autostream_bluetooth_client import (
     BLUETOOTH_PLAYBACK_DEVICE,
     BLUETOOTH_SERVICE_VERSION,
     BluetoothClient,
-    bluetooth_capture_label,
-    bluetooth_card_summary,
     bluetooth_input_fragment_text,
     bluetooth_installed,
     bluetooth_onboard_enabled,
@@ -404,38 +402,9 @@ class TestClassifyLoopbackHw:
 
 
 # ---------------------------------------------------------------------------
-# bluetooth_capture_label()
-# ---------------------------------------------------------------------------
-
-class TestBluetoothCaptureLabel:
-    def test_none_status_is_unavailable(self):
-        assert bluetooth_capture_label(None) == "Bluetooth (service unavailable)"
-
-    def test_ok_false_is_unavailable(self):
-        assert bluetooth_capture_label({"ok": False}) == "Bluetooth (service unavailable)"
-
-    def test_not_a_dict_is_unavailable(self):
-        assert bluetooth_capture_label("nope") == "Bluetooth (service unavailable)"
-
-    def test_ok_true_no_paired_is_not_paired(self):
-        assert bluetooth_capture_label({"ok": True, "paired": None}) == "Bluetooth (not paired)"
-
-    def test_ok_true_missing_paired_key_is_not_paired(self):
-        assert bluetooth_capture_label({"ok": True}) == "Bluetooth (not paired)"
-
-    def test_paired_with_name(self):
-        status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Technics SL-1200"}}
-        assert bluetooth_capture_label(status) == "Bluetooth: Technics SL-1200"
-
-    def test_paired_with_blank_name_falls_back(self):
-        status = {"ok": True, "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "  "}}
-        assert bluetooth_capture_label(status) == "Bluetooth (not paired)"
-
-
-# ---------------------------------------------------------------------------
-# Setup-card codec/rate presentation: bluetooth_card_summary() /
-# bluetooth_paired_row_text() append the negotiated format when the daemon
-# status carries codec/sample_rate, and are unchanged when it doesn't.
+# Setup-card codec/rate presentation: bluetooth_paired_row_text() appends
+# the negotiated format when the daemon status carries codec/sample_rate,
+# and is unchanged when it doesn't.
 # ---------------------------------------------------------------------------
 
 _CONNECTED_STATUS = {
@@ -445,40 +414,19 @@ _CONNECTED_STATUS = {
 }
 
 
-class TestCardSummaryCodecRate:
-    def test_no_codec_fields_leaves_text_unchanged(self):
-        assert bluetooth_card_summary(True, _CONNECTED_STATUS) == "Enabled · My Turntable connected"
-
-    def test_codec_and_rate_appended_when_present(self):
-        status = dict(_CONNECTED_STATUS, codec="SBC", sample_rate=44100)
-        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable connected - SBC 44.1 kHz"
-
+class TestPairedRowCodecRate:
     def test_48khz_rendered_without_decimal(self):
         status = dict(_CONNECTED_STATUS, codec="SBC", sample_rate=48000)
-        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable connected - SBC 48 kHz"
+        assert bluetooth_paired_row_text(status) == "My Turntable · Connected - SBC 48 kHz"
 
     def test_codec_only_no_rate(self):
         status = dict(_CONNECTED_STATUS, codec="SBC")
-        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable connected - SBC"
+        assert bluetooth_paired_row_text(status) == "My Turntable · Connected - SBC"
 
     def test_rate_only_no_codec(self):
         status = dict(_CONNECTED_STATUS, sample_rate=44100)
-        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable connected - 44.1 kHz"
+        assert bluetooth_paired_row_text(status) == "My Turntable · Connected - 44.1 kHz"
 
-    def test_not_connected_state_never_gets_suffix_even_with_fields(self):
-        status = {
-            "adapter_present": True,
-            "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Turntable"},
-            "link": "disconnected", "codec": "SBC", "sample_rate": 44100,
-        }
-        assert bluetooth_card_summary(True, status) == "Enabled · My Turntable (not connected)"
-
-    def test_disabled_state_never_gets_suffix(self):
-        status = dict(_CONNECTED_STATUS, codec="SBC", sample_rate=44100)
-        assert bluetooth_card_summary(False, status) == "Disabled"
-
-
-class TestPairedRowCodecRate:
     def test_no_codec_fields_leaves_text_unchanged(self):
         assert bluetooth_paired_row_text(_CONNECTED_STATUS) == "My Turntable · Connected"
 

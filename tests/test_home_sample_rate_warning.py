@@ -63,15 +63,12 @@ class TestDeepLink:
 
     def test_setup_page_script_opens_the_input_panels_for_the_hash(self):
         src = self._src()
-        assert "location.hash === '#input1'" in src
-        assert "openPanel('input1')" in src
-        assert "location.hash === '#input2'" in src
-        assert "openPanel('input2')" in src
+        assert "if (location.hash === '#input' + i) openPanel('input' + i);" in src
 
     def test_input_panel_targets_exist(self):
         src = self._src()
-        assert 'register_card("input1"' in src
-        assert 'register_card("input2"' in src
+        assert "cards_inputs.register_input_card(_index)" in src
+        assert 'f"input{index}",' in src
 
 
 # ---------------------------------------------------------------------------

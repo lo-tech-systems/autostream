@@ -1,7 +1,8 @@
 """tests/test_setup_card_registry.py
 
 The Setup page's card registry: importing the page module fills it with the
-nine cards, in the order they appear on the page.
+nine cards, in the order they appear on the page (Input 3 is registered on
+every appliance and shown only where Bluetooth is installed).
 """
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ CORE = Path(__file__).resolve().parent.parent / "core"
 EXPECTED = [
     ("input1", "Input 1"),
     ("input2", "Input 2"),
-    ("bluetooth", "Bluetooth"),
+    ("input3", "Input 3 (Bluetooth)"),
     ("playback", "Playback"),
     ("track-id", "Track Identification"),
     ("dials", "Dials"),

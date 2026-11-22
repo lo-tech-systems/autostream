@@ -63,7 +63,7 @@ def format_khz(hz: float) -> str:
 @dataclass(frozen=True)
 class SessionPart:
     active: bool = False
-    source: Optional[str] = None            # "input1" | "input2" | "replay" | None
+    source: Optional[str] = None            # "input1" | "input2" | "input3" | "replay" | None
 
     def as_dict(self) -> dict:
         return {"active": self.active, "source": self.source}

@@ -1,3 +1,16 @@
+        // The inputs with a card on this page, which one is Bluetooth, and the
+        // form field names that predate the numbering scheme (input 1's device
+        // and threshold fields carry no number); see cards_inputs.py.
+        var _setupInputData = (function () {
+          try { return JSON.parse(document.getElementById('page-data').textContent); }
+          catch (e) { return {}; }
+        })();
+        var SETUP_INPUT_INDICES = _setupInputData.input_indices || [];
+        var BLUETOOTH_INPUT_INDEX = _setupInputData.bluetooth_input_index;
+        function inputField(inputIndex, base) {
+          var names = (_setupInputData.legacy_input_fields || {})[String(inputIndex)] || {};
+          return names[base] || ('audio' + inputIndex + '_' + base);
+        }
         const pinChangeState = {
           busy: false,
         };
@@ -320,13 +333,12 @@
           }));
         }
         function syncInputUi(inputIndex){
-          const prefix = inputIndex === 1 ? 'audio1' : 'audio2';
-          const enabledName = prefix + '_enabled';
-          const enabled = !!document.querySelector('input[name="' + enabledName + '"]')?.checked;
-          const settings = document.getElementById(prefix + '_settings');
-          const preampCard = document.getElementById(prefix + '_preamp_card');
-          if (settings) settings.style.display = enabled ? 'block' : 'none';
-          if (preampCard) preampCard.style.display = enabled ? 'block' : 'none';
+          const prefix = 'audio' + inputIndex;
+          const enabled = !!document.querySelector('input[name="' + prefix + '_enabled"]')?.checked;
+          ['_settings', '_preamp_card', '_buffer_card'].forEach(function(suffix){
+            const el = document.getElementById(prefix + suffix);
+            if (el) el.style.display = enabled ? 'block' : 'none';
+          });
         }
         function inputTypePreset(inputIndex, type){
           const sel = document.getElementById('audio' + inputIndex + '_input_type');
@@ -347,7 +359,7 @@
           // The server moves the threshold to the new preset only when the
           // preset changes; mirror that so the slider agrees with the file.
           if (Number.isFinite(preset) && preset !== inputTypePreset(inputIndex, prev)) {
-            const slider = document.getElementById(inputIndex === 1 ? 'audio_silence_threshold' : 'audio2_silence_threshold');
+            const slider = document.getElementById(inputField(inputIndex, 'silence_threshold'));
             if (slider) slider.value = String(preset);
             _showSilenceThreshold(inputIndex, preset);
           }
@@ -393,9 +405,8 @@
         function startAfterReset(inputIndex){
           _startAfterSave(inputIndex, START_AFTER_DEFAULT_MS);
         }
-        function eqPrefix(inputIndex){ return inputIndex===1 ? 'audio1' : 'audio2'; }
         function syncGain(inputIndex, value){
-          const prefix = eqPrefix(inputIndex);
+          const prefix = 'audio' + inputIndex;
           const inputEl = document.getElementById(prefix + '_gain_db');
           const valueEl = document.getElementById(prefix + '_gain_db_val');
           if (inputEl) inputEl.value = value;
@@ -403,7 +414,7 @@
           if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.gain_db', Number(value), 120);
         }
         function syncEq(inputIndex, band, value){
-          const prefix = eqPrefix(inputIndex);
+          const prefix = 'audio' + inputIndex;
           const valueEl = document.getElementById(prefix + '_eq_' + band + '_db_val');
           if (valueEl) valueEl.textContent = value + ' dB';
           if (liveEnabled) settingsSaveFieldDebounced('audio' + inputIndex + '.eq_' + band + '_db', Number(value), 120);

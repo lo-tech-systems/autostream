@@ -28,6 +28,7 @@ from autostream_bluetooth_client import (
     BLUETOOTH_SERVICE_VERSION,
     BluetoothClient,
 )
+from autostream_config import INPUT_INDICES
 from autostream_system_stats import get_cpu_busy_percent, get_cpu_temperature_c
 from autostream_state import store
 from autostream_state.live import get_owntone_runtime_info, get_vibra_runtime_info
@@ -352,14 +353,14 @@ def _collect_system_info() -> dict:
     except Exception:
         bluetooth_build = BLUETOOTH_SERVICE_VERSION
 
-    # 5. Playback totals across inputs 1 and 2
+    # 5. Playback totals across every input
     playback_hours = 0.0
     try:
         playback_snapshot = store().snapshot().playback
         total_seconds = sum(
             int(snap.total_playback_seconds)
             for idx, snap in playback_snapshot.inputs.items()
-            if int(idx) in (1, 2)
+            if int(idx) in INPUT_INDICES
         )
         playback_hours = round(total_seconds / 3600.0, 1)
     except Exception:

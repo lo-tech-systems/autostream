@@ -256,7 +256,7 @@ def test_importing_the_server_runs_every_registration_before_the_first_request()
     assert any(name.startswith("service_") and "_life_years_input2" in name for name in added)
     # The Setup page's cards, in page order.
     assert out["cards"] == [
-        "input1", "input2", "bluetooth", "playback", "track-id", "dials",
+        "input1", "input2", "input3", "playback", "track-id", "dials",
         "customise", "system", "factory-reset",
     ]
     # The table is filled and every module it names is already loaded.

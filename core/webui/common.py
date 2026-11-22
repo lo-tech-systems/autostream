@@ -20,10 +20,12 @@ from typing import Optional
 
 from webui import static
 from autostream_settings import SettingsView
-from autostream_bluetooth_client import classify_loopback_hw
+from autostream_bluetooth_client import bluetooth_installed
 from autostream_config import (
+    BLUETOOTH_INPUT_INDEX,
     DEFAULT_AIRPLAY_MODE,
     DEFAULT_STYLUS_LIFE_HOURS,
+    WIRED_INPUT_INDICES,
     normalize_input_type,
 )
 from autostream_player_service import config_airplay_mode_to_backend
@@ -323,6 +325,14 @@ def service_severity(snap=None) -> Optional[str]:
 # Fallback input snapshot
 # -----------------------------------------------------------------------------
 
+def present_input_indices(bt_installed: Optional[bool] = None) -> list[int]:
+    """The inputs this appliance has: the wired ones, and input 3 where
+    Bluetooth is installed (*bt_installed*, looked up when not given)."""
+    if bt_installed is None:
+        bt_installed = bluetooth_installed()
+    return list(WIRED_INPUT_INDICES) + ([BLUETOOTH_INPUT_INDEX] if bt_installed else [])
+
+
 def _fallback_input_snapshot(
     parsed_input,
     input_index: int,
@@ -341,9 +351,7 @@ def _fallback_input_snapshot(
         f"Input {input_index}",
         enabled=bool(enabled),
         is_turntable=bool(getattr(parsed_input, "is_turntable", False)),
-        is_bluetooth=classify_loopback_hw(
-            str(getattr(parsed_input, "capture_device", "") or "")
-        ) == "capture",
+        is_bluetooth=input_index == BLUETOOTH_INPUT_INDEX,
         stylus_life_hours=int(getattr(parsed_input, "stylus_life_hours", DEFAULT_STYLUS_LIFE_HOURS)),
         belt_life_hours=int(getattr(parsed_input, "belt_life_hours", 0)),
         belt_life_years=int(getattr(parsed_input, "belt_life_years", 0)),

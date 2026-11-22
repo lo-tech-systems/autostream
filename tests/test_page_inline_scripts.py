@@ -99,8 +99,9 @@ ISLAND_KEYS = {
     "hostname_changed": {"redirect_url"},
     "auth": set(),
     "setup": {
-        "app_version", "icons", "bt_loopback_hw", "bt_paired", "bt_link_state", "bt_services_enabled",
+        "app_version", "icons", "bt_paired", "bt_link_state", "bt_services_enabled",
         "bt_onboard_enabled", "bt_status", "bt_ui_text", "sd_health", "missing_rate_texts",
+        "input_indices", "bluetooth_input_index", "legacy_input_fields", "input_disabled_text",
     },
 }
 PAGE_PATH = {
@@ -266,10 +267,15 @@ def test_the_routes_that_carry_the_setup_island_and_cards_need_a_full_sign_in():
 def test_the_setup_island_holds_the_values_the_old_substitutions_did():
     from webui.assets import ICON_PADLOCK_UNLOCKED
     from webui.assets import ICON_PADLOCK_LOCKED  # noqa: PLC0415
-    from webui.browser.setup.cards_bluetooth import BLUETOOTH_LOOPBACK_HW  # noqa: PLC0415
     island = _source_text.page_data(_render("setup"))
     assert island["icons"] == {"padlock_locked": ICON_PADLOCK_LOCKED, "padlock_unlocked": ICON_PADLOCK_UNLOCKED}
-    assert island["bt_loopback_hw"] == BLUETOOTH_LOOPBACK_HW
+    assert "bt_loopback_hw" not in island
+    assert island["input_indices"] == [1, 2]
+    assert island["bluetooth_input_index"] == 3
+    assert island["legacy_input_fields"] == {
+        "1": {"capture_device": "audio_capture_device", "silence_threshold": "audio_silence_threshold"},
+    }
+    assert island["input_disabled_text"] == {"1": "Not configured"}
     assert island["app_version"] == "2.0.0"
     assert island["bt_link_state"] == "disconnected"
     assert island["bt_status"] is None
@@ -285,3 +291,5 @@ def test_the_setup_island_and_scripts_follow_the_bluetooth_state():
     island = _source_text.page_data(with_bt)
     assert island["bt_status"]["adapter_present"] is True
     assert island["bt_services_enabled"] is True
+    assert island["input_indices"] == [1, 2, 3]
+    assert "input3-card-sub" in with_bt and "input3-card-sub" not in plain

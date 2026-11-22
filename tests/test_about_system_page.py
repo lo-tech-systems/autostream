@@ -270,7 +270,7 @@ class TestCollectSystemInfoShape:
 
 class TestPlaybackTotals:
 
-    def test_hours_sum_inputs_1_and_2_only(self):
+    def test_hours_sum_every_input_and_nothing_else(self):
         snap = MagicMock()
         from autostream_playback_stats import InputPlaybackSnapshot
 
@@ -279,9 +279,9 @@ class TestPlaybackTotals:
             m.total_playback_seconds = s
             return m
 
-        snap.inputs = {1: _inp(3600), 2: _inp(7200), 3: _inp(100000)}
+        snap.inputs = {1: _inp(3600), 2: _inp(7200), 3: _inp(3600), 4: _inp(100000)}
         result = _collect_with_mocks(playback_snap=snap, systemctl_stdout=_ACTIVE_SYSTEMCTL)
-        assert result["playback_hours"] == 3.0  # 10800 / 3600 = 3.0
+        assert result["playback_hours"] == 4.0  # 14400 / 3600 = 4.0
 
     def test_hours_rounded_to_one_decimal(self):
         snap = MagicMock()

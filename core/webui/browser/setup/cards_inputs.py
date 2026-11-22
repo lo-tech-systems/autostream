@@ -3,8 +3,9 @@
 
 Copyright (c) 2025-2026 Lo-tech Systems Limited. All rights reserved.
 
-The Input 1 and Input 2 cards of the Setup page, with the silence-detection
-slider maps and the gain/equaliser controls they share.
+The input cards of the Setup page (Inputs 1 and 2 wired, Input 3 Bluetooth),
+with the silence-detection slider maps and the gain/equaliser controls they
+share.
 """
 
 from __future__ import annotations
@@ -12,9 +13,11 @@ from __future__ import annotations
 import html
 import json
 import math
+from functools import partial
 from typing import Optional
 
 from autostream_config import (
+    BLUETOOTH_INPUT_INDEX,
     INPUT_TYPES,
     INPUT_TYPE_LABELS,
     INPUT_TYPE_SILENCE_THRESHOLD_DBFS,
@@ -23,11 +26,13 @@ from autostream_config import (
     START_AFTER_MS_DEFAULT,
     START_AFTER_MS_MAX,
     START_AFTER_MS_MIN,
+    WIRED_INPUT_INDICES,
     input_type_label,
     normalize_input_type,
     normalize_start_after_ms,
 )
 from autostream_state import store
+from webui import common
 from webui.common import settings_card_html
 from webui.browser.setup import cards_bluetooth, context
 
@@ -181,168 +186,176 @@ def _start_after_html(input_index: int, prefix: str, input_type: str, start_afte
             </div>"""
 
 
-def _setup_input_card_html(
-    *,
-    input_index: int,
-    title: str,
-    parsed_input,
-    capture_name: str,
-    threshold_name: str,
-    type_name: str,
-    enabled: bool = True,
-    enabled_name: Optional[str] = None,
-    bt_enabled: bool = False,
-    other_capture_device: Optional[str] = None,
-    monitor_devices,
-) -> str:
-    """Input 1 / Input 2 detail-panel card (shared render function -- one
-    per instance, called twice)."""
-    def _is_bt_loopback_playback_value(value: str) -> bool:
-        """True when ``value`` is the ASBT loopback's PLAYBACK side.
+# -----------------------------------------------------------------------------
+# One card per input. Inputs 1 and 2 are wired: each has a capture device
+# chosen from the monitor's list. Input 3 is Bluetooth: its device is fixed,
+# its enable is the Bluetooth services switch, and its card carries the
+# adapter, pairing and buffer controls. Its card exists only where Bluetooth
+# is installed.
+# -----------------------------------------------------------------------------
 
-        Guarded the same way as ``_bluetooth_installed()`` elsewhere on
-        this page: defensive import, quiet fallback to False so the page
-        keeps rendering identically wherever the Bluetooth helper module or
-        the feature itself is absent.
-        """
-        if not bt_enabled:
-            return False
-        try:
-            from autostream_bluetooth_client import is_loopback_playback
-        except ImportError:
-            return False
-        try:
-            return bool(is_loopback_playback(value))
-        except Exception:
-            return False
+# Form field names that predate the numbering scheme: input 1's device and
+# threshold fields carry no number. Every other field is "audio<N>_<base>".
+LEGACY_INPUT_FIELDS = {
+    1: {"capture_device": "audio_capture_device", "silence_threshold": "audio_silence_threshold"},
+}
+LEGACY_INPUT_FIELDS_JSON = {str(i): names for i, names in LEGACY_INPUT_FIELDS.items()}
 
-    def build_opts(cur, other_value: Optional[str] = None):
-        opts = ""
-        found = False
-        cur_str = str(cur).strip() if cur else ""
-        other_str = str(other_value or "").strip()
-        if not cur_str:
-            # An unconfigured input must not implicitly display the first
-            # device in the list as selected: the browser would show it as
-            # chosen without any save having happened, and re-selecting the
-            # displayed option fires no change event, so the user could never
-            # actually save that device. An explicit disabled placeholder
-            # keeps the displayed state truthful and makes any real choice a
-            # change event.
-            opts += (
-                "<option value='' selected disabled>"
-                "&#8212; select input device &#8212;</option>"
-            )
+# What a disabled input's summary says. Input 1's wording predates the others'.
+_DISABLED_SUMMARY = {1: "Not configured"}
+DISABLED_SUMMARY_JSON = {str(i): text for i, text in _DISABLED_SUMMARY.items()}
+
+
+def input_field_name(index: int, base: str) -> str:
+    """The form field name (and element id) of input *index*'s *base* field."""
+    return LEGACY_INPUT_FIELDS.get(index, {}).get(base, f"audio{index}_{base}")
+
+
+def present_input_indices(ctx: context.SetupCtx) -> list:
+    """The inputs that have a card on this appliance: the wired ones, and
+    input 3 where Bluetooth is installed."""
+    return common.present_input_indices(ctx.bt_enabled)
+
+
+def _moved_note_html(index: int, moved_from: Optional[int]) -> str:
+    """The note an update leaves on input 3's card and on the card of the
+    wired input Bluetooth was moved from, until either is next changed."""
+    if moved_from is None:
+        return ""
+    if index == BLUETOOTH_INPUT_INDEX:
+        text = f"Bluetooth was moved here from Input {moved_from} by the update."
+    elif index == moved_from:
+        text = f"Bluetooth was moved to Input {BLUETOOTH_INPUT_INDEX} by the update."
+    else:
+        return ""
+    return (
+        f'<p id="audio{index}_moved_note" class="helptext" style="text-align:left;margin:0 0 0.75rem;">'
+        f"{html.escape(text)}</p>"
+    )
+
+
+def _device_options_html(cur: str, taken: set, monitor_devices) -> str:
+    """The capture-device options of a wired input: every listed device but
+    the ones another wired input has taken, with this input's own choice
+    selected (offered as "not currently detected" when it is not listed)."""
+    opts = ""
+    found = False
+    cur_str = str(cur or "").strip()
+    if not cur_str:
+        # An unconfigured input must not implicitly display the first
+        # device in the list as selected: the browser would show it as
+        # chosen without any save having happened, and re-selecting the
+        # displayed option fires no change event, so the user could never
+        # actually save that device. An explicit disabled placeholder
+        # keeps the displayed state truthful and makes any real choice a
+        # change event.
+        opts += (
+            "<option value='' selected disabled>"
+            "&#8212; select input device &#8212;</option>"
+        )
+        found = True
+    for dev in monitor_devices:
+        hw = str(dev.get("hw") or "").strip()
+        if not hw:
+            continue
+        if hw in taken and hw != cur_str:
+            # Cross-input exclusivity (server render): a device already
+            # selected on another wired input is not offered here, so the
+            # same physical device can never be attached to two inputs.
+            # This input's own current selection always still renders,
+            # even if it happens to equal another input's value (a
+            # pre-existing duplicate from before this guard existed).
+            continue
+        label = str(dev.get("label") or hw).strip()
+        card = str(dev.get("card") or "").strip()
+        card_short = card.split(", ")[0].strip() if card else hw
+        sel = " selected" if hw == cur_str else ""
+        if sel:
             found = True
-        for dev in monitor_devices:
-            hw = str(dev.get("hw") or "").strip()
-            if not hw:
-                continue
-            if other_str and hw == other_str and hw != cur_str:
-                # Cross-input exclusivity (server render): a device already
-                # selected on the other input is not offered here, so the
-                # same physical device can never be attached to both inputs.
-                # This input's own current selection always still renders,
-                # even if it happens to equal the other input's value (a
-                # pre-existing duplicate from before this guard existed).
-                continue
-            label = str(dev.get("label") or hw).strip()
-            card = str(dev.get("card") or "").strip()
-            card_short = card.split(", ")[0].strip() if card else hw
-            sel = " selected" if hw == cur_str else ""
-            if sel:
-                found = True
-            bt_attr = " data-bt='1'" if hw == cards_bluetooth.BLUETOOTH_LOOPBACK_HW else ""
-            opts += (
-                f"<option value='{html.escape(hw)}' data-card='{html.escape(card_short)}'{bt_attr}{sel}>"
-                f"{html.escape(label)}</option>"
-            )
-        if not found and cur and not _is_bt_loopback_playback_value(cur_str):
-            # A stale saved capture_device pointing at the loopback PLAYBACK side (an
-            # internal device the pump feeds, never a valid input) must not
-            # resurface as a bare "hw:CARD=ASBT,DEV=0 (not currently
-            # detected)" option -- the normalize relabel hook already
-            # correctly drops that side from monitor_devices, so injecting it
-            # back here via the synthetic-fallback path would defeat that.
-            # Genuinely-missing real devices are unaffected and still get the
-            # synthetic option below.
-            missing = html.escape(cur_str)
-            opts = (
-                f"<option value='{missing}' selected>"
-                f"{missing} (not currently detected)</option>"
-            ) + opts
-        return opts
-
-    def input_fieldset_html(
-        *,
-        input_index: int,
-        title: str,
-        parsed_input,
-        capture_name: str,
-        threshold_name: str,
-        type_name: str,
-        enabled: bool = True,
-        enabled_name: Optional[str] = None,
-        bt_enabled: bool = False,
-        other_capture_device: Optional[str] = None,
-    ) -> str:
-        prefix = "audio1" if input_index == 1 else "audio2"
-        threshold_id = "audio_silence_threshold" if input_index == 1 else "audio2_silence_threshold"
-        settings_wrap_id = f"{prefix}_settings"
-        input_type = normalize_input_type(getattr(parsed_input, "input_type", "line"))
-        threshold = float(parsed_input.silence_threshold_dbfs)
-        rate_matching = bool(getattr(parsed_input, "dynamic_rate_matching", True))
-        rate_matching_note_raw, sample_rate_line_raw = store().snapshot().inputs.rate_texts(input_index)
-        rate_matching_note = html.escape(rate_matching_note_raw)
-        sample_rate_line = html.escape(sample_rate_line_raw)
-        type_options = "".join(
-            f'<option value="{t}"{" selected" if t == input_type else ""}>{INPUT_TYPE_LABELS[t]}</option>'
-            for t in INPUT_TYPES
+        opts += (
+            f"<option value='{html.escape(hw)}' data-card='{html.escape(card_short)}'{sel}>"
+            f"{html.escape(label)}</option>"
         )
-        presets_json = json.dumps(INPUT_TYPE_SILENCE_THRESHOLD_DBFS)
-        start_after_html = _start_after_html(
-            input_index, prefix, input_type,
-            getattr(parsed_input, "start_after_ms", START_AFTER_MS_DEFAULT),
-        )
+    if not found:
+        missing = html.escape(cur_str)
+        opts = (
+            f"<option value='{missing}' selected>"
+            f"{missing} (not currently detected)</option>"
+        ) + opts
+    return opts
 
-        enabled_html = ""
-        wrap_style = "block" if enabled else "none"
-        if enabled_name:
-            enabled_html = f"""
+
+def _enable_toggle_html(index: int, enabled: bool, bluetooth: bool) -> str:
+    """The Enable switch. Input 3's is the Bluetooth services switch, which
+    reloads the page once the services have changed."""
+    onchange = "btServicesToggle(this)" if bluetooth else f"onInputEnableToggle({index}, this.checked)"
+    help_html = (
+        '<p class="helptext" style="text-align:left;margin:0 0 0.5rem;">Connect a Bluetooth device '
+        "(such as a turntable with Bluetooth output) as an audio input.</p>"
+        if bluetooth else ""
+    )
+    return f"""
           <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem;">
             <label class="output-toggle" style="margin:0;">
-              <input type="checkbox" name="{enabled_name}" {'checked' if enabled else ''} onchange="onInputEnableToggle({input_index}, this.checked)">
+              <input type="checkbox" name="audio{index}_enabled" {'checked' if enabled else ''} onchange="{onchange}">
               <span class="switch"></span>
             </label>
             <span>Enable</span>
           </div>
-            """
+          {help_html}"""
 
-        settings_open = "" if enabled_name is None else f"<div id=\"{settings_wrap_id}\" style=\"display:{wrap_style};\">"
-        settings_close = "" if enabled_name is None else "</div>"
 
-        if bt_enabled:
-            capture_onchange = (
-                f"if (isBluetoothDevice(this.value) && !btPaired) {{ openBtPairingModal({input_index}, this); return; }} "
-                f"if(liveEnabled) settingsSaveField('audio{input_index}.capture_device', this.value); "
-                f"this.dataset.prev = this.value; syncInputExclusivity({input_index}, this.value);"
-            )
-        else:
-            capture_onchange = (
-                f"if(liveEnabled) settingsSaveField('audio{input_index}.capture_device', this.value); "
-                f"syncInputExclusivity({input_index}, this.value);"
-            )
+def _setup_input_card_html(ctx: context.SetupCtx, index: int) -> str:
+    """An input's detail-panel card: the enable switch, then the device (a
+    wired input's select, or input 3's Bluetooth rows), the input type,
+    sensitivity with the level, Start after and Dynamic Rate Matching."""
+    parsed_input = ctx.parsed.audio_section(index)
+    enabled = ctx.parsed.audio_enabled(index)
+    bluetooth = index == BLUETOOTH_INPUT_INDEX
+    prefix = f"audio{index}"
+    threshold_name = input_field_name(index, "silence_threshold")
+    input_type = normalize_input_type(getattr(parsed_input, "input_type", "line"))
+    threshold = float(parsed_input.silence_threshold_dbfs)
+    rate_matching = bool(getattr(parsed_input, "dynamic_rate_matching", True))
+    rate_matching_note_raw, sample_rate_line_raw = store().snapshot().inputs.rate_texts(index)
+    rate_matching_note = html.escape(rate_matching_note_raw)
+    sample_rate_line = html.escape(sample_rate_line_raw)
+    type_options = "".join(
+        f'<option value="{t}"{" selected" if t == input_type else ""}>{INPUT_TYPE_LABELS[t]}</option>'
+        for t in INPUT_TYPES
+    )
+    presets_json = json.dumps(INPUT_TYPE_SILENCE_THRESHOLD_DBFS)
+    start_after_html = _start_after_html(
+        index, prefix, input_type,
+        getattr(parsed_input, "start_after_ms", START_AFTER_MS_DEFAULT),
+    )
 
-        data_prev_attr = (
-            f" data-prev='{html.escape(str(parsed_input.capture_device or '').strip())}'" if bt_enabled else ""
+    if bluetooth:
+        device_html = cards_bluetooth._bluetooth_rows_html(ctx)
+    else:
+        capture_name = input_field_name(index, "capture_device")
+        taken = {
+            ctx.parsed.audio_section(other).capture_device
+            for other in WIRED_INPUT_INDICES if other != index
+        } - {""}
+        capture_onchange = (
+            f"if(liveEnabled) settingsSaveField('{prefix}.capture_device', this.value); "
+            f"syncInputExclusivity({index}, this.value);"
         )
-        inner_html = f"""
-          {enabled_html}
-          {settings_open}
-            <label>Input device: <select name="{capture_name}" id="{capture_name}_select" data-input-index="{input_index}"{data_prev_attr} onchange="{capture_onchange}">{build_opts(parsed_input.capture_device, other_capture_device)}</select></label>
-            <label>Input type: <select name="{type_name}" id="{prefix}_input_type" data-current-type="{input_type}" data-presets='{presets_json}' onchange="onInputTypeChange({input_index}, this.value)">{type_options}</select></label>
+        options = _device_options_html(parsed_input.capture_device, taken, ctx.monitor_devices)
+        device_html = (
+            f'<label>Input device: <select name="{capture_name}" id="{capture_name}_select" '
+            f'data-input-index="{index}" onchange="{capture_onchange}">{options}</select></label>'
+        )
+
+    inner_html = f"""
+          {_moved_note_html(index, ctx.parsed.bluetooth_moved_from)}
+          {_enable_toggle_html(index, enabled, bluetooth)}
+          <div id="{prefix}_settings" style="display:{'block' if enabled else 'none'};">
+            {device_html}
+            <label>Input type: <select name="{prefix}_input_type" id="{prefix}_input_type" data-current-type="{input_type}" data-presets='{presets_json}' onchange="onInputTypeChange({index}, this.value)">{type_options}</select></label>
             <label><div class="slider-header"><span>Sensitivity:</span><span id="{prefix}_silence_threshold_val">{threshold:.0f} dB</span></div>
-            <input type="range" min="{SILENCE_THRESHOLD_MIN_DBFS:.0f}" max="{SILENCE_THRESHOLD_MAX_DBFS:.0f}" step="1" id="{threshold_id}" name="{threshold_name}" value="{threshold:.0f}" oninput="syncSilenceThreshold({input_index}, this.value)"></label>
+            <input type="range" min="{SILENCE_THRESHOLD_MIN_DBFS:.0f}" max="{SILENCE_THRESHOLD_MAX_DBFS:.0f}" step="1" id="{threshold_name}" name="{threshold_name}" value="{threshold:.0f}" oninput="syncSilenceThreshold({index}, this.value)"></label>
             <div id="{prefix}_sensitivity_note" class="helptext" style="text-align:left;">
               Further left picks up quieter audio; further right ignores more background noise.
             </div>
@@ -355,7 +368,7 @@ def _setup_input_card_html(
             </div>
             <div style="display:flex;align-items:center;gap:0.75rem;margin-top:0.9rem;">
               <label class="output-toggle" style="margin:0;">
-                <input type="checkbox" id="{prefix}_dynamic_rate_matching" {'checked' if rate_matching else ''} onchange="if(liveEnabled) settingsSaveField('audio{input_index}.dynamic_rate_matching', this.checked);">
+                <input type="checkbox" id="{prefix}_dynamic_rate_matching" {'checked' if rate_matching else ''} onchange="if(liveEnabled) settingsSaveField('{prefix}.dynamic_rate_matching', this.checked);">
                 <span class="switch"></span>
               </label>
               <span>Dynamic Rate Matching</span>
@@ -363,129 +376,66 @@ def _setup_input_card_html(
             <div id="{prefix}_rate_matching_note" class="helptext" style="text-align:left;">
               {rate_matching_note}
             </div>
-          {settings_close}
+          </div>
         """
-        return settings_card_html(inner_html, margin_top="0")
-    return input_fieldset_html(
-        input_index=input_index,
-        title=title,
-        parsed_input=parsed_input,
-        capture_name=capture_name,
-        threshold_name=threshold_name,
-        type_name=type_name,
-        enabled=enabled,
-        enabled_name=enabled_name,
-        bt_enabled=bt_enabled,
-        other_capture_device=other_capture_device,
-    )
+    return settings_card_html(inner_html, margin_top="0")
 
 
-def _setup_input_summary_text(
-    parsed_input,
-    *,
-    enabled: bool,
-    disabled_text: str,
-    monitor_devices,
-    bt_enabled: bool,
-    bt_status: Optional[dict],
-) -> str:
-    """Input 1 / Input 2 list-card summary text (collapsed-row subtitle)."""
-    if not enabled:
-        return disabled_text
-    def _friendly(hw) -> str:
-        """Return shortened card name for use in sub-labels (first segment before ', ')."""
-        for d in monitor_devices:
-            if str(d.get("hw") or "").strip() == str(hw or "").strip():
-                c = str(d.get("card") or "").strip()
-                return c.split(", ")[0].strip() if c else str(hw)
-        return str(hw) if hw else "Not configured"
-
-    def _input_card_summary(parsed_input) -> str:
-        dev = _friendly(parsed_input.capture_device)
-        mode = input_type_label(getattr(parsed_input, "input_type", "line"))
-        if bt_enabled and parsed_input.capture_device == cards_bluetooth.BLUETOOTH_LOOPBACK_HW:
-            # Bluetooth input: the ALSA card name ("Loopback") and the
-            # input type are implementation detail here \u2014 show the
-            # connected device's name (or the connection state) instead.
-            dev = "Bluetooth"
-            mode = cards_bluetooth._bluetooth_input_fragment_text(bt_status)
-        gain = int(parsed_input.gain_db)
-        gain_str = f"{gain:+d} dB" if gain != 0 else "0 dB"
-        return html.escape(f"{dev} \u00b7 {mode} \u00b7 {gain_str}")
-    return _input_card_summary(parsed_input)
+def _friendly_device(hw, monitor_devices) -> str:
+    """Shortened card name for a device in a summary line (the first
+    segment of the card description before ', ')."""
+    for d in monitor_devices:
+        if str(d.get("hw") or "").strip() == str(hw or "").strip():
+            c = str(d.get("card") or "").strip()
+            return c.split(", ")[0].strip() if c else str(hw)
+    return str(hw) if hw else "Not configured"
 
 
-def summary_input1(ctx: context.SetupCtx) -> str:
-    return _setup_input_summary_text(
-        ctx.parsed.audio1,
-        enabled=ctx.parsed.audio1_enabled,
-        disabled_text="Not configured",
-        monitor_devices=ctx.monitor_devices,
-        bt_enabled=ctx.bt_enabled,
-        bt_status=ctx.bt_status,
-    )
+def summary_input(index: int, ctx: context.SetupCtx) -> str:
+    """An input's list-card summary text (collapsed-row subtitle): its
+    device (or, for input 3, the Bluetooth device or connection state),
+    type and gain."""
+    if not ctx.parsed.audio_enabled(index):
+        return _DISABLED_SUMMARY.get(index, "Disabled")
+    parsed_input = ctx.parsed.audio_section(index)
+    if index == BLUETOOTH_INPUT_INDEX:
+        dev = cards_bluetooth._bluetooth_input_fragment_text(ctx.bt_status)
+    else:
+        dev = _friendly_device(parsed_input.capture_device, ctx.monitor_devices)
+    mode = input_type_label(getattr(parsed_input, "input_type", "line"))
+    gain = int(parsed_input.gain_db)
+    gain_str = f"{gain:+d} dB" if gain != 0 else "0 dB"
+    return html.escape(f"{dev} · {mode} · {gain_str}")
 
 
-def detail_input1(ctx: context.SetupCtx) -> str:
-    input1_html = _setup_input_card_html(
-        input_index=1,
-        title="Input 1",
-        parsed_input=ctx.parsed.audio1,
-        capture_name="audio_capture_device",
-        threshold_name="audio_silence_threshold",
-        type_name="audio1_input_type",
-        enabled=ctx.parsed.audio1_enabled,
-        enabled_name="audio1_enabled",
-        bt_enabled=ctx.bt_enabled,
-        other_capture_device=ctx.parsed.audio2.capture_device,
-        monitor_devices=ctx.monitor_devices,
-    )
-    return input1_html + (
-        f'<div id="audio1_preamp_card" style="display:{"block" if ctx.parsed.audio1_enabled else "none"};">'
+def detail_input(index: int, ctx: context.SetupCtx) -> str:
+    """An input's detail panel: its card, then its gain and equaliser card,
+    and for input 3 the Bluetooth audio buffer."""
+    a = ctx.parsed.audio_section(index)
+    enabled = ctx.parsed.audio_enabled(index)
+    preamp_html = (
+        f'<div id="audio{index}_preamp_card" style="display:{"block" if enabled else "none"};">'
         + _audio_controls_card_html(
-            input_index=1,
-            gain_db=ctx.parsed.audio1.gain_db,
-            eq_40hz_db=ctx.parsed.audio1.eq_40hz_db,
-            eq_100hz_db=ctx.parsed.audio1.eq_100hz_db,
-            eq_8khz_db=ctx.parsed.audio1.eq_8khz_db,
+            input_index=index,
+            gain_db=a.gain_db,
+            eq_40hz_db=a.eq_40hz_db,
+            eq_100hz_db=a.eq_100hz_db,
+            eq_8khz_db=a.eq_8khz_db,
         )
         + "</div>"
     )
+    buffer_html = cards_bluetooth._bluetooth_buffer_card_html(ctx) if index == BLUETOOTH_INPUT_INDEX else ""
+    return _setup_input_card_html(ctx, index) + preamp_html + buffer_html
 
 
-def summary_input2(ctx: context.SetupCtx) -> str:
-    return _setup_input_summary_text(
-        ctx.parsed.audio2,
-        enabled=ctx.parsed.audio2_enabled,
-        disabled_text="Disabled",
-        monitor_devices=ctx.monitor_devices,
-        bt_enabled=ctx.bt_enabled,
-        bt_status=ctx.bt_status,
-    )
-
-
-def detail_input2(ctx: context.SetupCtx) -> str:
-    input2_html = _setup_input_card_html(
-        input_index=2,
-        title="Input 2",
-        parsed_input=ctx.parsed.audio2,
-        capture_name="audio2_capture_device",
-        threshold_name="audio2_silence_threshold",
-        type_name="audio2_input_type",
-        enabled=ctx.parsed.audio2_enabled,
-        enabled_name="audio2_enabled",
-        bt_enabled=ctx.bt_enabled,
-        other_capture_device=ctx.parsed.audio1.capture_device,
-        monitor_devices=ctx.monitor_devices,
-    )
-    return input2_html + (
-        f'<div id="audio2_preamp_card" style="display:{"block" if ctx.parsed.audio2_enabled else "none"};">'
-        + _audio_controls_card_html(
-            input_index=2,
-            gain_db=ctx.parsed.audio2.gain_db,
-            eq_40hz_db=ctx.parsed.audio2.eq_40hz_db,
-            eq_100hz_db=ctx.parsed.audio2.eq_100hz_db,
-            eq_8khz_db=ctx.parsed.audio2.eq_8khz_db,
-        )
-        + "</div>"
+def register_input_card(index: int) -> None:
+    """Add input *index*'s card to the Setup page's registry."""
+    bluetooth = index == BLUETOOTH_INPUT_INDEX
+    context.register_card(
+        f"input{index}",
+        f"Input {index} (Bluetooth)" if bluetooth else f"Input {index}",
+        partial(summary_input, index),
+        partial(detail_input, index),
+        detail_header=f"Setup Input {index}",
+        present=(lambda ctx: index in present_input_indices(ctx)) if bluetooth else None,
     )

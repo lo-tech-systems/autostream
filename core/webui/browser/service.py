@@ -24,6 +24,7 @@ import html
 from dataclasses import dataclass
 
 from autostream_config import (
+    INPUT_INDICES,
     VALID_STYLUS_LIFE_HOURS,
     VALID_MAINTENANCE_LIFE_HOURS,
     VALID_BEARING_LIFE_HOURS,
@@ -109,13 +110,13 @@ def _gather_input_render_data(parsed, playback_snapshot, input_index: int, *, en
             stylus_sub="Disabled", belt_sub="Disabled", bearing_sub="Disabled",
             stylus_html=(
                 "<p style='margin:0.5rem 0;color:var(--color-text-secondary);font-size:0.95rem;'>"
-                "Input 2 is disabled.</p>"
+                f"Input {input_index} is disabled.</p>"
             ),
             belt_html="",
             bearing_html="",
         )
 
-    audio = parsed.audio1 if input_index == 1 else parsed.audio2
+    audio = parsed.audio_section(input_index)
     snap = playback_snapshot.inputs.get(input_index) or _fallback_input_snapshot(
         audio, input_index, enabled=True,
     )
@@ -555,18 +556,25 @@ def send_service_page(handler, state: WebUIState) -> None:
     playback_snapshot = snap.playback
     csrf_token = getattr(handler, "_csrf_token", None) or ""
 
-    if parsed is not None:
-        d1 = _gather_input_render_data(parsed, playback_snapshot, 1, enabled=True)
-        d2 = _gather_input_render_data(parsed, playback_snapshot, 2, enabled=bool(parsed.audio2_enabled))
-    else:
-        d1 = d2 = _UNAVAILABLE_INPUT
+    # Input 1 is always shown as enabled here, as it always has been; the
+    # others follow their enable. Input 3 is listed only where Bluetooth is
+    # installed.
+    inputs = []
+    for index in common.present_input_indices():
+        if parsed is None:
+            inputs.append((index, _UNAVAILABLE_INPUT))
+        else:
+            enabled = index == INPUT_INDICES[0] or parsed.audio_enabled(index)
+            inputs.append((index, _gather_input_render_data(parsed, playback_snapshot, index, enabled=enabled)))
 
     _back = _back_bar()
     _page_header = _service_page_header("Service")
 
     # ── Pane 1: flat card list (one per item × input, divided by input) ────────
     list_cards = ""
-    for inp_idx, inp_data in ((1, d1), (2, d2)):
+    for position, (inp_idx, inp_data) in enumerate(inputs):
+        if position:
+            list_cards += "<hr class='service-divider'>"
         for si in _SERVICE_ITEMS:
             sub  = getattr(inp_data, f"{si.key}_sub")
             warn = getattr(inp_data, f"{si.key}_warn")
@@ -574,12 +582,10 @@ def send_service_page(handler, state: WebUIState) -> None:
                 si.key, inp_idx, f"Input {inp_idx} {si.card_title}",
                 sub, warn, inp_data.cards_disabled,
             )
-        if inp_idx == 1:
-            list_cards += "<hr class='service-divider'>"
 
     # ── Pane 2: detail panels (one per item × input) ───────────────────────────
     detail_panels = ""
-    for inp_idx, inp_data in ((1, d1), (2, d2)):
+    for inp_idx, inp_data in inputs:
         for si in _SERVICE_ITEMS:
             panel_html = getattr(inp_data, f"{si.key}_html")
             panel_title = f"Input {inp_idx} {si.card_title}"

@@ -24,10 +24,11 @@ Three paths are characterised:
   - the "broken config" failure path (`_config_snapshot` raising), which
     send_setup_page() handles by 302-redirecting to "/" -- easy to lose
     silently when the function is split;
-  - one lazy card-detail response (`GET /api/setup/card/bluetooth`, via
+  - one lazy card-detail response (`GET /api/setup/card/input3`, via
     `handle_setup_card_get()`), characterising the JSON `{ok, html}` shape
-    and the Bluetooth card's detail HTML the browser injects into
-    `#panel-body-bluetooth` on first open.
+    and Input 3's detail HTML (Bluetooth installed and enabled, moved from
+    Input 2 by an update) the browser injects into `#panel-body-input3` on
+    first open.
 
 Genuinely run-varying values (app version, CSRF token) are pinned to fixed
 mock values by the test harness itself; `_normalise()` is still applied
@@ -54,7 +55,7 @@ if _CORE not in sys.path:
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 GOLDEN_FULL_PAGE = GOLDEN_DIR / "setup_page_full.html"
-GOLDEN_CARD_DETAIL = GOLDEN_DIR / "setup_card_detail_bluetooth.json"
+GOLDEN_CARD_DETAIL = GOLDEN_DIR / "setup_card_detail_input3.json"
 
 # Set to True locally to regenerate the golden file after a *deliberate*,
 # reviewed change to the rendered output. Must be False in committed code.
@@ -114,6 +115,12 @@ def _minimal_cfg(tmp_path: Path) -> Path:
             "eq_8khz_db": 0,
             "turntable": False,
             "enabled": True,
+        },
+        "audio3": {
+            "enabled": True,
+            "input_type": "turntable",
+            "gain_db": 1,
+            "moved_from": 2,
         },
         "repeat": {
             "enabled": True,
@@ -229,7 +236,7 @@ def _render_full_page(tmp_path: Path) -> str:
     return handler.wfile.getvalue().decode("utf-8", errors="replace")
 
 
-def _render_card_detail(tmp_path: Path, key: str) -> str:
+def _render_card_detail(tmp_path: Path, key: str, **mocks) -> str:
     """Render one lazy card-detail response -- the JSON body
     `GET /api/setup/card/<key>` returns, matching `_render_full_page()`'s
     fixed config/mocks so the two goldens describe the same appliance
@@ -264,6 +271,7 @@ def _render_card_detail(tmp_path: Path, key: str) -> str:
         _get_dial_sightings=sightings,
         parse_dial_entries=entries,
         is_high_performance_pi=True,
+        **mocks,
     ):
         with patch.object(
             state, "get_monitor_devices",
@@ -342,8 +350,10 @@ class TestSetupCardDetailGolden:
     used to carry inline in the full-page golden above, just wrapped in a
     `{ok, html}` JSON envelope and fetched on demand instead."""
 
-    def test_bluetooth_card_detail_matches_golden(self, tmp_path: Path):
-        body = _normalise(_render_card_detail(tmp_path, "bluetooth"))
+    def test_input3_card_detail_matches_golden(self, tmp_path: Path):
+        body = _normalise(_render_card_detail(
+            tmp_path, "input3", _bluetooth_installed=True, _bluetooth_services_enabled=True,
+            _bluetooth_onboard_enabled=False))
 
         if _REGENERATE:
             GOLDEN_DIR.mkdir(parents=True, exist_ok=True)
@@ -356,12 +366,16 @@ class TestSetupCardDetailGolden:
         )
         expected = GOLDEN_CARD_DETAIL.read_text(encoding="utf-8")
         assert body == expected, (
-            "GET /api/setup/card/bluetooth's response diverged from the "
+            "GET /api/setup/card/input3's response diverged from the "
             "golden file."
         )
         payload = json.loads(body)
         assert payload["ok"] is True
-        assert "bt-card-summary" not in payload["html"]  # sanity: detail, not the list row
+        assert "input3-card-sub" not in payload["html"]  # sanity: detail, not the list row
+
+    def test_input3_is_absent_without_bluetooth(self, tmp_path: Path):
+        body = _normalise(_render_card_detail(tmp_path, "input3", _bluetooth_installed=False))
+        assert json.loads(body) == {"ok": False, "error": "unknown_card"}
 
     def test_unknown_card_key_returns_404_shape(self, tmp_path: Path):
         body = _normalise(_render_card_detail(tmp_path, "not-a-real-card"))

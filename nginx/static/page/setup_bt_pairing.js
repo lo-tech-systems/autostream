@@ -7,13 +7,8 @@ var pageData = (function () {
         // searching at once, and its poll is the heartbeat that keeps the
         // window open. Nothing pairs for audio until the user taps an entry
         // and confirms it with the button.
-        var BT_LOOPBACK_HW = pageData.bt_loopback_hw;
         var btPaired = pageData.bt_paired;
         var _btLinkState = pageData.bt_link_state;
-        var _btInputIndex = null;
-        var _btSelectEl = null;
-        var _btPriorSelectValue = null;
-        var _btPairSucceeded = false;
         var _btSelectedMac = null;
         var _btDevices = [];
         var _btWindowState = 'idle';
@@ -40,8 +35,6 @@ var pageData = (function () {
           onData: _btOnWindowPoll,
           onError: _btOnWindowError
         });
-
-        function isBluetoothDevice(value) { return value === BT_LOOPBACK_HW; }
 
         async function _btFetch(path, opts) {
           opts = opts || {};
@@ -226,57 +219,12 @@ var pageData = (function () {
           _btWindowPoller.stop();
           var close = body.last_close || {};
           if (close.reason === 'paired') {
-            var msg = 'Paired with ' + _btDeviceName(_btSelectedMac) + ' (' + _btSelectedMac + ').';
-            var auto = body.input_auto_configure;
-            if (auto) {
-              var inputLabel = auto.input === 'audio2' ? 'Input 2' : 'Input 1';
-              if (auto.action === 'enabled') {
-                msg += ' Bluetooth assigned to ' + inputLabel + '.';
-              } else if (auto.action === 'device_set_only') {
-                msg += ' Bluetooth set as ' + inputLabel + '\'s capture device -- enable it on the Setup page.';
-              } else if (auto.action === 'notice' && auto.notice) {
-                msg += ' ' + auto.notice;
-              }
-              if (auto.action === 'enabled' || auto.action === 'device_set_only') {
-                _btApplyAutoConfigureToPage(auto);
-              }
-            }
-            _btShowResult(true, msg);
+            _btShowResult(true, 'Paired with ' + _btDeviceName(_btSelectedMac) + ' (' + _btSelectedMac + ').');
             return;
           }
           var line = _BT_STOP_REASONS[close.reason] || 'Pairing stopped. Open it again.';
           if (close.error) line += ' (' + close.error + ')';
           _btShowResult(false, line);
-        }
-
-        function _btApplyAutoConfigureToPage(auto) {
-          var inputIndex = auto.input === 'audio2' ? 2 : 1;
-          var captureName = inputIndex === 2 ? 'audio2_capture_device' : 'audio_capture_device';
-          var enabledName = inputIndex === 2 ? 'audio2_enabled' : 'audio1_enabled';
-          var selectEl = document.querySelector('select[name="' + captureName + '"]');
-          if (selectEl) {
-            var hasLoopbackOption = Array.prototype.some.call(
-              selectEl.options || [], function(opt) { return opt.value === BT_LOOPBACK_HW; }
-            );
-            if (hasLoopbackOption) selectEl.value = BT_LOOPBACK_HW;
-          }
-          // Relabel the loopback entries immediately with the just-paired
-          // name; the periodic status poll re-applies the server's own
-          // label afterwards.
-          if (_btSelectedMac) {
-            var pairedName = _btDeviceName(_btSelectedMac);
-            document.querySelectorAll(
-              'select[name="audio_capture_device"] option, select[name="audio2_capture_device"] option'
-            ).forEach(function(opt) {
-              if (opt.value === BT_LOOPBACK_HW) opt.textContent = 'Bluetooth: ' + pairedName;
-            });
-          }
-          if (auto.action === 'enabled') {
-            var enabledEl = document.querySelector('input[name="' + enabledName + '"]');
-            if (enabledEl) enabledEl.checked = true;
-          }
-          if (typeof syncInputUi === 'function') syncInputUi(inputIndex);
-          if (typeof refreshInputCardSubs === 'function') refreshInputCardSubs();
         }
 
         function _btShowResult(success, message) {
@@ -291,25 +239,13 @@ var pageData = (function () {
             if (msgEl) msgEl.textContent = message;
             if (errEl) errEl.style.display = 'none';
             btPaired = true;
-            _btPairSucceeded = true;
             _btLinkState = 'connected';
-            if (_btSelectEl && _btInputIndex) {
-              _btSelectEl.value = BT_LOOPBACK_HW;
-              _btSelectEl.dataset.prev = BT_LOOPBACK_HW;
-              if (liveEnabled) {
-                settingsSaveField('audio' + _btInputIndex + '.capture_device', BT_LOOPBACK_HW);
-              }
-              syncInputExclusivity(_btInputIndex, BT_LOOPBACK_HW);
-            }
             _btRefreshLinkStatus();
             if (okBtn) { okBtn.style.display = ''; okBtn.textContent = 'Done'; okBtn.onclick = closeBtPairingModal; }
           } else {
             if (titleEl) titleEl.textContent = 'Pairing Stopped';
             if (msgEl) msgEl.textContent = '';
             if (errEl) { errEl.textContent = message; errEl.style.display = ''; }
-            if (_btSelectEl && _btPriorSelectValue !== null) {
-              _btSelectEl.value = _btPriorSelectValue;
-            }
             if (okBtn) {
               okBtn.style.display = '';
               okBtn.textContent = 'Open Again';
@@ -343,14 +279,8 @@ var pageData = (function () {
           _btStartWindow();
         }
 
-        function openBtPairingModal(inputIndex, selectEl) {
-          _btInputIndex = inputIndex;
-          _btSelectEl = selectEl || null;
-          // Revert target is the last known-committed value (data-prev), not
-          // .value -- by the time this fires the onchange event has already
-          // set .value to the newly-selected (Bluetooth) option.
-          _btPriorSelectValue = selectEl && selectEl.dataset.prev !== undefined ? selectEl.dataset.prev : null;
-          _btPairSucceeded = false;
+        // Opened from Input 3's "Pair a device" button.
+        function openBtPairingModal() {
           var modal = document.getElementById('btPairingModal');
           if (!modal) return;
           var forgetBtn = document.getElementById('btPairingForget');
@@ -369,15 +299,6 @@ var pageData = (function () {
           // (this screen's poll) stops.
           if (!_btFinished) _btPost('/api/bluetooth/pair_window', {action: 'stop'});
           _btFinished = true;
-          // Cancel/dismiss without a successful pairing in this session: undo
-          // the onchange event's already-committed selection change.  A no-op
-          // when the select's value/data-prev already match (e.g. opening the
-          // modal from the card's "Pair a device" button, which has no
-          // associated select).
-          if (_btSelectEl && !_btPairSucceeded && _btPriorSelectValue !== null) {
-            _btSelectEl.value = _btPriorSelectValue;
-            _btSelectEl.dataset.prev = _btPriorSelectValue;
-          }
           var modal = document.getElementById('btPairingModal');
           if (modal) modal.classList.remove('show');
         }

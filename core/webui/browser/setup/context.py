@@ -55,7 +55,6 @@ class SetupCtx:
     bt_onboard_on: bool
     bt_onboard_refused: Optional[str]
     bt_buffer_ms: int
-    bt_card_summary: str
     bt_paired_row_text: str
     sd_health: dict
     current_hostname: str
@@ -108,7 +107,6 @@ def _setup_build_ctx(handler, state: WebUIState, auth) -> SetupCtx:
         bt_onboard_on=_bt_state["bt_onboard_on"],
         bt_onboard_refused=_bt_state["bt_onboard_refused"],
         bt_buffer_ms=_bt_state["bt_buffer_ms"],
-        bt_card_summary=_bt_state["bt_card_summary"],
         bt_paired_row_text=_bt_state["bt_paired_row_text"],
         sd_health=sd_health,
         current_hostname=current_hostname,
@@ -128,7 +126,9 @@ class Card:
     respectively. ``detail_header`` is the title passed to
     ``_setup_detail_header()`` for the detail panel's heading; ``None``
     means the card's own detail HTML supplies its own heading (only
-    Factory Reset does this today).
+    Factory Reset does this today). ``present`` says whether the card
+    exists on this appliance at all (``None``: always); an absent card has
+    no row, no panel and no detail.
     """
 
     key: str
@@ -136,6 +136,10 @@ class Card:
     render_summary: Callable[[SetupCtx], str]
     render_detail: Callable[[SetupCtx], str]
     detail_header: Optional[str] = None
+    present: Optional[Callable[[SetupCtx], bool]] = None
+
+    def is_present(self, ctx: SetupCtx) -> bool:
+        return self.present is None or bool(self.present(ctx))
 
 
 CARDS: list = []
@@ -147,6 +151,7 @@ def register_card(
     render_summary: Callable[[SetupCtx], str],
     render_detail: Callable[[SetupCtx], str],
     detail_header: Optional[str] = None,
+    present: Optional[Callable[[SetupCtx], bool]] = None,
 ) -> None:
     CARDS.append(
         Card(
@@ -155,8 +160,14 @@ def register_card(
             render_summary=render_summary,
             render_detail=render_detail,
             detail_header=detail_header,
+            present=present,
         )
     )
+
+
+def present_cards(ctx: SetupCtx) -> list:
+    """The registered cards that exist on this appliance, in page order."""
+    return [card for card in CARDS if card.is_present(ctx)]
 
 
 def _setup_list_row_html(card: Card, summary_html: str) -> str:

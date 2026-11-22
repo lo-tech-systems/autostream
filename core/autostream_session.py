@@ -2,7 +2,7 @@
 
 The playback session as a part of the state snapshot. A session is active
 while a live input is the audible source or a repeat recording is replaying;
-"source" names which ("input1", "input2" or "replay").
+"source" names which ("input1" to "input3", or "replay").
 
 The coordinator publishes the session once per poll cycle. A request thread
 that starts a replay publishes it at once through note_replay_started(), so
@@ -53,7 +53,7 @@ def note_replay_started() -> None:
 #
 # A single source-vector session model drives idle-stop gating and
 # replay-end/OwnTone-stop handling uniformly: each poll cycle,
-# the coordinator derives which of {input1, input2, replay} is the audible
+# the coordinator derives which of {input1, input2, input3, replay} is the audible
 # source from the SAME status snapshot already ingested, and diffs it
 # against the previous cycle's source. Exactly one of three events results:
 #
@@ -91,7 +91,7 @@ def _current_source_monitor(monitors, source: Optional[str], origin_input: Optio
 
 
 class SessionTracker:
-    """Diffs the {input1, input2, replay} source vector between poll cycles.
+    """Diffs the {input1, input2, input3, replay} source vector between poll cycles.
 
     See module comment above for the event semantics. Resolves the AudioMonitor
     for both the previous and new source at update() time (while the snapshot

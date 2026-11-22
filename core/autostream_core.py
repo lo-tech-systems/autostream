@@ -629,7 +629,7 @@ def run_autostream(config_path: str, start_webui=None, settings=None) -> None:
                 input_status.publish_inputs()
 
                 # ── Unified playback-session tracker ───────────────────────────
-                # Single call site: derives the {input1, input2, replay}
+                # Single call site: derives the {input1, input2, input3, replay}
                 # source vector from this SAME snapshot and fires exactly one
                 # of session_started / session_ended / source_changed / None,
                 # dispatched by autostream_session.dispatch_session_event(). This is the sole

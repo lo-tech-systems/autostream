@@ -100,6 +100,15 @@ class TestFieldSpecAndRegister:
 # here (or vice versa) is exactly the kind of drift this table exists to
 # prevent -- see test_settings_fields_rows_all_present_in_schema below.
 _EXPECTED_SETTINGS_FIELD_PATHS = frozenset({
+    "audio3.gain_db",
+    "audio3.eq_40hz_db",
+    "audio3.eq_100hz_db",
+    "audio3.eq_8khz_db",
+    "audio3.enabled",
+    "audio3.input_type",
+    "audio3.silence_threshold",
+    "audio3.dynamic_rate_matching",
+    "audio3.start_after_ms",
     "webui.dark_mode",
     "webui.show_master_volume",
     "webui.show_input_detail",
@@ -185,7 +194,7 @@ class TestServiceFieldMapMigration:
     def test_service_field_map_rows_all_present_in_schema(self):
         from autostream_settings_schema import SETTINGS_SCHEMA
 
-        assert len(webui_api_service._SERVICE_FIELD_MAP) == 10  # stylus x2 + (belt + bearing) x2 x2
+        assert len(webui_api_service._SERVICE_FIELD_MAP) == 15  # (stylus + belt x2 + bearing x2) per input
         for path in webui_api_service._SERVICE_FIELD_MAP:
             assert path in SETTINGS_SCHEMA, f"{path} missing from SETTINGS_SCHEMA"
 

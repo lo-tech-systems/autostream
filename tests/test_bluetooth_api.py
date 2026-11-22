@@ -96,10 +96,8 @@ class TestBluetoothStatusJson:
             "ok": True, "installed": False, "services_enabled": False,
             "onboard_enabled": False, "onboard_refused": None, "daemon": None,
             "ui": {
-                "card_summary": "Disabled",
                 "paired_text": "No device paired",
                 "bt_input_text": "Not Connected",
-                "capture_label": "Bluetooth (service unavailable)",
             },
         }
 
@@ -142,10 +140,8 @@ class TestBluetoothStatusJson:
         assert body["onboard_enabled"] is False
         assert body["daemon"] == live
         assert body["ui"] == {
-            "card_summary": "Enabled · Not paired",
             "paired_text": "No device paired",
             "bt_input_text": "Not Connected",
-            "capture_label": "Bluetooth (not paired)",
         }
 
     def test_ui_enabled_not_paired(self, tmp_path):
@@ -165,10 +161,8 @@ class TestBluetoothStatusJson:
             store.close(save=False)
         _, body = _response(handler)
         assert body["ui"] == {
-            "card_summary": "Enabled · Not paired",
             "paired_text": "No device paired",
             "bt_input_text": "Not Connected",
-            "capture_label": "Bluetooth (not paired)",
         }
 
     def test_ui_paired_and_connected(self, tmp_path):
@@ -189,10 +183,8 @@ class TestBluetoothStatusJson:
             store.close(save=False)
         _, body = _response(handler)
         assert body["ui"] == {
-            "card_summary": "Enabled · BT-Turntable connected",
             "paired_text": "BT-Turntable · Connected",
             "bt_input_text": "BT-Turntable",
-            "capture_label": "Bluetooth: BT-Turntable",
         }
 
     def test_ui_paired_but_disconnected(self, tmp_path):
@@ -215,10 +207,8 @@ class TestBluetoothStatusJson:
             store.close(save=False)
         _, body = _response(handler)
         assert body["ui"] == {
-            "card_summary": "Enabled · BT-Turntable (not connected)",
             "paired_text": "BT-Turntable · Not Connected",
             "bt_input_text": "Not Connected",
-            "capture_label": "Bluetooth: BT-Turntable",
         }
 
     def test_installed_live_fails_falls_back_to_cache(self, tmp_path, fake_store):

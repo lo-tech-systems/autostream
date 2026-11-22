@@ -7,7 +7,8 @@ The Setup page (/setup): the card registrations, the lazy per-card detail fetch 
 the page renderer.
 
 Importing this module fills the card registry, so anything that reads the
-registry through it sees all nine cards.
+registry through it sees every card (the Input 3 card is registered on every
+appliance and shown only where Bluetooth is installed).
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import html
 import logging
 from typing import Optional
 
+from autostream_config import BLUETOOTH_INPUT_INDEX, INPUT_INDICES
 from autostream_state import MISSING_RATE_TEXTS
 from webui.assets import ICON_PADLOCK_LOCKED, ICON_PADLOCK_UNLOCKED, INFO_MODAL_HTML
 from webui import static
@@ -54,6 +56,9 @@ def handle_setup_card_get(handler, state: WebUIState, auth, key: str) -> None:
         logging.exception("handle_setup_card_get: failed to build setup context for card %r", key)
         common.send_json(handler, 200, {"ok": False, "error": "config_error"})
         return
+    if not card.is_present(ctx):
+        common.send_json(handler, 404, {"ok": False, "error": "unknown_card"})
+        return
     common.send_json(handler, 200, {"ok": True, "html": card.render_detail(ctx)})
 
 
@@ -64,9 +69,8 @@ def handle_setup_card_get(handler, state: WebUIState, auth, key: str) -> None:
 # -----------------------------------------------------------------------------
 
 
-context.register_card("input1", "Input 1", cards_inputs.summary_input1, cards_inputs.detail_input1, detail_header="Setup Input 1")
-context.register_card("input2", "Input 2", cards_inputs.summary_input2, cards_inputs.detail_input2, detail_header="Setup Input 2")
-context.register_card("bluetooth", "Bluetooth", cards_bluetooth.summary_bluetooth, cards_bluetooth.detail_bluetooth, detail_header="Bluetooth")
+for _index in INPUT_INDICES:
+    cards_inputs.register_input_card(_index)
 context.register_card(
     "playback", "Playback", cards_playback.summary_playback, cards_playback.detail_playback,
     detail_header="Setup Playback Defaults",
@@ -124,7 +128,6 @@ def send_setup_page(
     bt_services_on = ctx.bt_services_on
     bt_onboard_on = ctx.bt_onboard_on
     bt_buffer_ms = ctx.bt_buffer_ms
-    bt_card_summary = ctx.bt_card_summary
     bt_paired_row_text = ctx.bt_paired_row_text
     sd_health = ctx.sd_health
     current_hostname = ctx.current_hostname
@@ -143,10 +146,11 @@ def send_setup_page(
     # (cheap -- no detail-panel HTML is built for cards the user hasn't
     # opened); each panel starts as an empty body placeholder filled in by
     # the browser's lazy `GET /api/setup/card/<key>` fetch on first open.
+    cards = context.present_cards(ctx)
     list_rows_html = "".join(
-        context._setup_list_row_html(card, card.render_summary(ctx)) for card in context.CARDS
+        context._setup_list_row_html(card, card.render_summary(ctx)) for card in cards
     )
-    panel_shells_html = "".join(context._setup_panel_shell_html(card) for card in context.CARDS)
+    panel_shells_html = "".join(context._setup_panel_shell_html(card) for card in cards)
 
     form_content_html = f"""<div class="setup-slide-viewport">
   <div class="setup-slide-track" id="setupSlideTrack">
@@ -376,7 +380,12 @@ def send_setup_page(
     _island = static.page_data_island({
         "app_version": _app_ver,
         "icons": {"padlock_locked": ICON_PADLOCK_LOCKED, "padlock_unlocked": ICON_PADLOCK_UNLOCKED},
-        "bt_loopback_hw": cards_bluetooth.BLUETOOTH_LOOPBACK_HW,
+        # The inputs whose cards are on this page, and the form field names
+        # that predate the numbering scheme, for the scripts' inputField().
+        "input_indices": cards_inputs.present_input_indices(ctx),
+        "bluetooth_input_index": BLUETOOTH_INPUT_INDEX,
+        "legacy_input_fields": cards_inputs.LEGACY_INPUT_FIELDS_JSON,
+        "input_disabled_text": cards_inputs.DISABLED_SUMMARY_JSON,
         "bt_paired": bool(bt_paired),
         "bt_link_state": str((bt_status or {}).get("link") or "disconnected"),
         "bt_services_enabled": bool(bt_services_on),

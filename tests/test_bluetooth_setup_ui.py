@@ -40,6 +40,7 @@ def _minimal_cfg(
     *,
     audio1_capture_device: str = "hw:1,0",
     audio2_capture_device: str = "hw:2,0",
+    audio3: dict | None = None,
 ) -> Path:
     cfg = tmp_path / "autostream.json"
     cfg.write_text(json.dumps({
@@ -66,6 +67,7 @@ def _minimal_cfg(
             "turntable": False,
             "enabled": False,
         },
+        "audio3": audio3 or {},
         "track_identification": {"enabled": False},
         "webui": {
             "dark_mode": False,
@@ -94,6 +96,7 @@ class _SetupRenderer:
         monitor_devices: list | None = None,
         audio1_capture_device: str = "hw:1,0",
         audio2_capture_device: str = "hw:2,0",
+        audio3: dict | None = None,
     ) -> str:
         from autostream_settings import SettingsStore
         from webui.session_state import WebUIState
@@ -104,6 +107,7 @@ class _SetupRenderer:
             tmp_path,
             audio1_capture_device=audio1_capture_device,
             audio2_capture_device=audio2_capture_device,
+            audio3=audio3,
         )
         store = SettingsStore(str(cfg), _save_interval_seconds=9999)
         state = WebUIState(str(cfg), str(tmp_path / "state.json"), settings=store)
@@ -196,15 +200,10 @@ class TestBluetoothDisabledGating:
         # free of it too.
         assert "data-prev" not in html
 
-    def test_card_always_rendered_with_disabled_body(self, html):
-        assert 'id="bluetooth-card-sub"' in html
-        assert ">Bluetooth<" in html
-        assert 'id="btDisabledBody"' in html
-        assert 'id="btnBtEnableServices"' in html
-        assert "Enable Bluetooth Services" in html
-
-    def test_card_summary_is_disabled(self, html):
-        assert 'id="bluetooth-card-sub">Disabled<' in html
+    def test_no_input3_card_and_no_bluetooth_card(self, html):
+        assert 'id="input3-card-sub"' not in html
+        assert 'id="bluetooth-card-sub"' not in html
+        assert 'id="btDisabledBody"' not in html
 
     def test_card_enabled_body_absent(self, html):
         # Not installed: the enabled-body isn't just hidden, it isn't
@@ -252,10 +251,6 @@ class TestBluetoothEnabledUnpaired:
             bt_enabled=True,
             bt_status={"adapter_present": True, "paired": None, "link": "disconnected",
                        "streaming": False, "scanning": False},
-            monitor_devices=[
-                {"hw": BT_LOOPBACK_HW, "card": "Loopback", "name": "Loopback",
-                 "label": "Bluetooth (not paired)"},
-            ],
         )
 
     def test_pairing_modal_div_present(self, html):
@@ -272,11 +267,11 @@ class TestBluetoothEnabledUnpaired:
         assert "It will appear below when autostream finds it" in html
 
     def test_open_bt_pairing_modal_fn_present(self, html):
-        assert "function openBtPairingModal(inputIndex, selectEl)" in html
+        assert "function openBtPairingModal()" in html
 
-    def test_is_bluetooth_device_fn_present(self, html):
-        assert "function isBluetoothDevice(value)" in html
-        assert BT_LOOPBACK_HW in html
+    def test_no_bluetooth_choice_in_a_device_select(self, html):
+        assert "isBluetoothDevice" not in html
+        assert BT_LOOPBACK_HW not in html
 
     def test_close_path_stops_the_poll_and_the_window(self, html):
         idx = html.find("function closeBtPairingModal()")
@@ -338,12 +333,10 @@ class TestBluetoothEnabledUnpaired:
         assert "_btStatusPoller = Poller(" in html
         assert "activeOnly: true" in html
 
-    def test_onchange_branch_present_for_input1(self, html):
-        assert "if (isBluetoothDevice(this.value) && !btPaired) { openBtPairingModal(1, this); return; }" in html
+    def test_wired_onchange_only_saves_the_device(self, html):
+        assert "openBtPairingModal(1" not in html
+        assert "openBtPairingModal(2" not in html
         assert "settingsSaveField('audio1.capture_device', this.value)" in html
-
-    def test_onchange_branch_present_for_input2(self, html):
-        assert "if (isBluetoothDevice(this.value) && !btPaired) { openBtPairingModal(2, this); return; }" in html
         assert "settingsSaveField('audio2.capture_device', this.value)" in html
 
     def test_bt_paired_initial_false(self, html):
@@ -356,10 +349,10 @@ class TestBluetoothEnabledUnpaired:
         assert "_btSyncAllManageButtons" not in html
         assert "_btUpdateManageButtons" not in html
 
-    def test_success_save_saves_capture_device_only(self, html):
-        # Turntable coupling was removed: pairing success saves only the
-        # capture device, never audioN.turntable.
-        assert "settingsSaveField('audio' + _btInputIndex + '.capture_device', BT_LOOPBACK_HW)" in html
+    def test_success_saves_no_input_setting(self, html):
+        # Bluetooth is input 3 with a fixed device: a pairing changes no
+        # input setting.
+        assert "_btInputIndex" not in html
         assert "'.turntable', true)" not in html
 
     def test_csrf_header_used_in_fetches(self, html):
@@ -378,91 +371,10 @@ class TestBluetoothEnabledUnpaired:
         assert "'btPairingModal'" in html
         assert "closeBtPairingModal" in html
 
-    # -- Revert-on-cancel wiring (data-prev, not .value at onchange time) --
-
-    def test_select_renders_data_prev_with_persisted_value(self, html):
-        # audio1/audio2 both start at "hw:1,0"/"hw:2,0" per _minimal_cfg.
-        assert "data-prev='hw:1,0'" in html
-        assert "data-prev='hw:2,0'" in html
-
-    def test_open_modal_reads_data_prev_not_value(self, html):
-        assert "selectEl.dataset.prev" in html
-        assert "_btPriorSelectValue = selectEl && selectEl.dataset.prev !== undefined ? selectEl.dataset.prev : null;" in html
-
-    def test_non_bluetooth_onchange_updates_data_prev(self, html):
-        assert (
-            "if(liveEnabled) settingsSaveField('audio1.capture_device', this.value); "
-            "this.dataset.prev = this.value;"
-        ) in html
-        assert (
-            "if(liveEnabled) settingsSaveField('audio2.capture_device', this.value); "
-            "this.dataset.prev = this.value;"
-        ) in html
-
-    def test_close_modal_reverts_from_data_prev_when_not_succeeded(self, html):
-        assert "if (_btSelectEl && !_btPairSucceeded && _btPriorSelectValue !== null)" in html
-        assert "_btSelectEl.value = _btPriorSelectValue;" in html
-        assert "_btSelectEl.dataset.prev = _btPriorSelectValue;" in html
-
-    def test_pair_succeeded_flag_reset_on_open_and_set_on_success(self, html):
-        assert "_btPairSucceeded = false;" in html
-        assert "_btPairSucceeded = true;" in html
-
-    def test_successful_pair_updates_data_prev_to_loopback(self, html):
-        assert "_btSelectEl.dataset.prev = BT_LOOPBACK_HW;" in html
-
-    # -- input_auto_configure surfaced from the window poll --
-
-    def test_poll_reads_input_auto_configure_from_the_window_poll(self, html):
-        assert "body.input_auto_configure" in html
-
-    def test_assigned_message_strings_present(self, html):
-        assert "Bluetooth assigned to" in html
-        assert "Input 1" in html
-        assert "Input 2" in html
-
-    def test_device_set_only_message_notes_setup_page(self, html):
-        assert "enable it on the Setup page" in html
-
-    def test_notice_action_appends_notice_text(self, html):
-        assert "auto.notice" in html
-
-    def test_already_configured_appends_nothing(self, html):
-        # No branch keyed on 'already_configured' -- it falls through the
-        # enabled/device_set_only/notice checks and leaves the base message
-        # untouched.
-        assert "already_configured" not in html
-
-    def test_apply_auto_configure_to_page_fn_present(self, html):
-        assert "function _btApplyAutoConfigureToPage(auto)" in html
-
-    def test_apply_auto_configure_uses_correct_field_names(self, html):
-        # Input 1's capture-device select is named "audio_capture_device"
-        # (no "1"), input 2's is "audio2_capture_device"; enable checkboxes
-        # are "audio1_enabled" / "audio2_enabled" -- must match the field
-        # names the Setup form itself renders (input_fieldset_html).
-        assert "audio2_capture_device" in html
-        assert "'audio_capture_device'" in html
-        assert "audio1_enabled" in html
-        assert "audio2_enabled" in html
-
-    def test_apply_auto_configure_checks_option_exists_before_setting(self, html):
-        assert "hasLoopbackOption" in html
-
-    def test_apply_auto_configure_only_checks_box_when_enabled(self, html):
-        idx = html.find("function _btApplyAutoConfigureToPage(auto)")
-        assert idx != -1
-        body = html[idx: idx + 2500]
-        assert "auto.action === 'enabled'" in body
-
-    def test_apply_auto_configure_calls_sync_helpers_when_defined(self, html):
-        idx = html.find("function _btApplyAutoConfigureToPage(auto)")
-        assert idx != -1
-        body = html[idx: idx + 2500]
-        assert "typeof syncInputUi === 'function'" in body
-        assert "syncInputUi(inputIndex)" in body
-        assert "typeof refreshInputCardSubs === 'function'" in body
-        assert "refreshInputCardSubs()" in body
+    def test_no_select_revert_or_auto_assignment(self, html):
+        for gone in ("data-prev", "_btPriorSelectValue", "_btPairSucceeded",
+                     "input_auto_configure", "_btApplyAutoConfigureToPage", "Bluetooth assigned to"):
+            assert gone not in html, gone
 
     def test_no_page_reload_in_poll_handler(self, html):
         idx = html.find("function _btFinish(body)")
@@ -486,10 +398,7 @@ class TestBluetoothEnabledPaired:
             bt_status={"adapter_present": True,
                        "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "My Turntable"},
                        "link": "connected", "streaming": True, "scanning": False},
-            monitor_devices=[
-                {"hw": BT_LOOPBACK_HW, "card": "Loopback", "name": "My Turntable",
-                 "label": "Bluetooth: My Turntable"},
-            ],
+            audio3={"enabled": True},
         )
 
     def test_bt_paired_initial_true(self, html):
@@ -499,11 +408,8 @@ class TestBluetoothEnabledPaired:
     def test_paired_row_shows_connected(self, html):
         assert "My Turntable · Connected" in html
 
-    def test_card_summary_shows_connected(self, html):
-        assert 'id="bluetooth-card-sub">Enabled · My Turntable connected<' in html
-
-    def test_option_carries_bt_data_attr(self, html):
-        assert "data-bt='1'" in html
+    def test_input3_summary_shows_the_device(self, html):
+        assert 'id="input3-card-sub">My Turntable · Line · 0 dB<' in html
 
     def test_forget_button_visible(self, html):
         import re
@@ -527,14 +433,11 @@ class TestBluetoothEnabledPairedDisconnected:
             bt_status={"adapter_present": True,
                        "paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "BT-Turntable"},
                        "link": "disconnected", "streaming": False, "scanning": False},
-            monitor_devices=[
-                {"hw": BT_LOOPBACK_HW, "card": "Loopback", "name": "BT-Turntable",
-                 "label": "Bluetooth: BT-Turntable"},
-            ],
+            audio3={"enabled": True},
         )
 
-    def test_card_summary_shows_not_connected_state(self, html):
-        assert 'id="bluetooth-card-sub">Enabled · BT-Turntable (not connected)<' in html
+    def test_input3_summary_shows_not_connected(self, html):
+        assert 'id="input3-card-sub">Not Connected · Line · 0 dB<' in html
 
     def test_paired_row_shows_not_connected(self, html):
         assert "BT-Turntable · Not Connected" in html
@@ -568,14 +471,15 @@ class TestBluetoothStatusPollJsIsServerAuthored:
     def test_no_duplicated_paired_row_conditional(self, html):
         assert "_btLinkState === 'connected' ? 'Connected' : 'Not Connected'" not in html
 
-    def test_card_summary_assigned_verbatim_from_ui(self, html):
-        assert "sub.textContent = (ui && ui.card_summary) || 'Disabled';" in html
+    def test_no_card_summary_from_the_poll(self, html):
+        assert "card_summary" not in html
+        assert "bluetooth-card-sub" not in html
 
     def test_paired_row_assigned_verbatim_from_ui(self, html):
         assert "pairedRow.textContent = (ui && ui.paired_text) || 'No device paired';" in html
 
     def test_input_card_fragment_uses_server_text(self, html):
-        assert "mode = window._btUiText || 'Not Connected';" in html
+        assert "dev = window._btUiText || 'Not Connected';" in html
         assert "bst.link === 'connected'" not in html
 
 
@@ -741,83 +645,34 @@ class TestSyntheticOptionSuppression:
         assert f"{BT_PLAYBACK_HW} (not currently detected)" not in html
 
 
-class TestBluetoothInputCardSummary:
-    """Input-card summary line for a Bluetooth input: 'Bluetooth · <device
-    name or Not Connected> · <gain>' instead of the ALSA card name and the
-    turntable flag."""
-
-    BT_HW = "hw:CARD=ASBT,DEV=1"
-
-    def test_js_card_sub_has_bluetooth_branch(self, tmp_path):
-        html_out = _SetupRenderer().render(tmp_path, bt_enabled=True, audio1_capture_device=self.BT_HW)
-        assert "dataset.bt === '1'" in html_out
-        assert "window._btLastStatus" in html_out
-
-
 # ---------------------------------------------------------------------------
-# Enable/Disable services buttons: immediate busy feedback on click, with
-# restore-on-failure so a slow request doesn't leave the button looking
-# unresponsive or permanently stuck in its busy state.
+# Input 3's Enable switch is the services switch: busy while the services
+# change, restored on failure, the page reloaded on success.
 # ---------------------------------------------------------------------------
 
-class TestBluetoothServicesButtonFeedback:
+class TestBluetoothServicesToggle:
     @pytest.fixture
-    def html(self, tmp_path: Path) -> str:
-        return _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
+    def segment(self, tmp_path: Path) -> str:
+        html = _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
+        start = html.index("function btServicesToggle(el)")
+        return html[start:html.index("function btOnboardToggleChanged", start)]
 
-    def test_enable_sets_disabled_before_fetch(self, html):
-        # The busy-state helper (which sets disabled=true) must run before
-        # settingsTransact performs the fetch.
-        idx_fn = html.index("function btEnableServices()")
-        idx_busy_call = html.index("_btSetBusy(btn,", idx_fn)
-        idx_transact = html.index("settingsTransact(", idx_fn)
-        assert idx_fn < idx_busy_call < idx_transact
-        assert "btn.disabled = true;" in html
+    def test_the_old_buttons_are_gone(self, tmp_path):
+        html = _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
+        for gone in ("btnBtEnableServices", "btnBtDisableServices", "btEnableServices()",
+                     "btDisableServices()"):
+            assert gone not in html, gone
 
-    def test_disable_sets_disabled_before_fetch(self, html):
-        idx_fn = html.index("function btDisableServices()")
-        idx_busy_call = html.index("_btSetBusy(btn,", idx_fn)
-        idx_transact = html.index("settingsTransact(", idx_fn)
-        assert idx_fn < idx_busy_call < idx_transact
-        assert "btn.disabled = true;" in html
+    def test_disable_is_confirmed_before_anything_changes(self, segment):
+        assert segment.index("window.confirm(") < segment.index("el.disabled = true;")
 
-    def test_enabling_busy_label_present(self, html):
-        assert "Enabling\\u2026" in html
+    def test_busy_before_the_request(self, segment):
+        assert segment.index("el.disabled = true;") < segment.index("settingsTransact(")
+        assert "'/api/bluetooth/services'" in segment
 
-    def test_disabling_busy_label_present(self, html):
-        assert "Disabling\\u2026" in html
-
-    def test_enable_restores_on_error(self, html):
-        idx_fn = html.index("function btEnableServices()")
-        idx_end = html.index("function btDisableServices()")
-        segment = html[idx_fn:idx_end]
-        assert "onError:" in segment
-        assert "restore()" in segment
-
-    def test_disable_restores_on_error(self, html):
-        idx_fn = html.index("function btDisableServices()")
-        idx_end = html.index("function btOnboardToggleChanged", idx_fn)
-        segment = html[idx_fn:idx_end]
-        assert "onError:" in segment
-        assert "restore()" in segment
-
-    def test_disable_confirm_precedes_busy_state_change(self, html):
-        # The confirm() gate must run before the button is touched, so a
-        # cancelled confirm leaves the button completely untouched.
-        idx_fn = html.index("function btDisableServices()")
-        idx_confirm = html.index("window.confirm(", idx_fn)
-        idx_busy_call = html.index("_btSetBusy(btn,", idx_fn)
-        assert idx_confirm < idx_busy_call
-
-    def test_success_path_reloads_without_manual_restore(self, html):
-        idx_fn = html.index("function btEnableServices()")
-        idx_end = html.index("function btDisableServices()")
-        segment = html[idx_fn:idx_end]
+    def test_success_reloads_and_failure_restores(self, segment):
         assert "onSuccess: function() { window.location.reload(); }" in segment
-
-    def test_button_ids_referenced_for_lookup(self, html):
-        assert "getElementById('btnBtEnableServices')" in html
-        assert "getElementById('btnBtDisableServices')" in html
+        assert "onError: function() { el.checked = !enable; el.disabled = false; }" in segment
 
 
 class TestUnconfiguredInputPlaceholder:
@@ -908,3 +763,60 @@ class TestOnboardRadioRefusal:
         html = _SetupRenderer().render(tmp_path, bt_enabled=True, bt_services_on=True)
         assert "onboardToggle.disabled = !btServicesEnabled || (!!body.onboard_refused && !btOnboardEnabled);" in html
         assert "var noAdapter = body.onboard_refused" in html
+
+
+# ---------------------------------------------------------------------------
+# Input 3: the Bluetooth input's card
+# ---------------------------------------------------------------------------
+
+class TestInput3Card:
+    _ON = {"enabled": True, "input_type": "turntable", "gain_db": 2}
+
+    def test_absent_without_bluetooth(self, tmp_path):
+        html_out = _SetupRenderer().render(tmp_path, bt_enabled=False, audio3=self._ON)
+        assert "input3-card-sub" not in html_out
+        assert "panel-input3" not in html_out
+        assert "audio3_enabled" not in html_out
+
+    def test_present_with_bluetooth_and_no_device_select(self, tmp_path):
+        html_out = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, bt_services_on=True, audio3=self._ON)
+        assert "input3-card-sub" in html_out
+        assert "Input 3 (Bluetooth)" in html_out
+        assert 'name="audio3_capture_device"' not in html_out
+        assert 'name="audio3_enabled" checked onchange="btServicesToggle(this)"' in html_out
+        for element_id in ("btAdapterRow", "btOnboardToggle", "btPairedRow", "btnBtForget",
+                           "btnBtPairNew", "btBufferRange", "audio3_input_type",
+                           "audio3_silence_threshold", "audio3_start_after_wrap",
+                           "audio3_dynamic_rate_matching", "audio3_gain_db", "audio3_buffer_card"):
+            assert f'id="{element_id}"' in html_out, element_id
+        assert 'onclick="openBtPairingModal()"' in html_out
+        assert 'name="bluetooth_present"' in html_out
+
+    def test_the_wired_cards_have_no_bluetooth_controls(self, tmp_path):
+        html_out = _SetupRenderer().render(tmp_path, bt_enabled=True, audio3=self._ON)
+        assert "data-bt=" not in html_out
+        assert "dataset.prev =" not in html_out
+        assert html_out.count('id="btAdapterRow"') == 1
+
+    def test_summary_names_the_bluetooth_device_type_and_gain(self, tmp_path):
+        status = {"paired": {"mac": "AA:BB:CC:DD:EE:FF", "name": "Test Player"}, "link": "connected"}
+        html_out = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, bt_services_on=True, bt_status=status, audio3=self._ON)
+        assert "Test Player · Turntable · +2 dB" in html_out
+
+    def test_summary_when_disabled(self, tmp_path):
+        html_out = _SetupRenderer().render(tmp_path, bt_enabled=True, audio3={"enabled": False})
+        assert '<span class="setup-list-card-sub" id="input3-card-sub">Disabled</span>' in html_out
+
+    def test_the_moved_note_is_on_input_3_and_the_input_it_came_from(self, tmp_path):
+        html_out = _SetupRenderer().render(
+            tmp_path, bt_enabled=True, audio3=dict(self._ON, moved_from=2))
+        assert "Bluetooth was moved here from Input 2 by the update." in html_out
+        assert "Bluetooth was moved to Input 3 by the update." in html_out
+        assert 'id="audio2_moved_note"' in html_out
+        assert 'id="audio1_moved_note"' not in html_out
+
+    def test_no_moved_note_without_a_move(self, tmp_path):
+        html_out = _SetupRenderer().render(tmp_path, bt_enabled=True, audio3=self._ON)
+        assert "moved_note" not in html_out

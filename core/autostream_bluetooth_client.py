@@ -16,21 +16,21 @@ absent, daemon down, timeout, malformed reply) is swallowed and surfaced as
 ``None`` so callers (the relabel hook, the web routes, the background
 status loop) can degrade gracefully without daemon-specific error handling.
 
-Also hosts the pinned wire/ALSA constants shared between the coordinator
-(relabel hook) and the web UI, and ``classify_loopback_hw()``/
-``is_loopback_playback()``, the small amount of loopback-hw-string
-classification logic built directly on those constants:
+Also hosts the pinned wire/ALSA constants shared between the coordinator,
+the configuration and the web UI, and ``classify_loopback_hw()``, the small
+amount of loopback-hw-string classification logic built directly on those
+constants:
 
   - ``BLUETOOTH_CAPTURE_DEVICE`` / ``BLUETOOTH_PLAYBACK_DEVICE`` -- the two
-    sides of the ``snd-aloop`` pseudo-device.
-  - ``classify_loopback_hw()`` / ``is_loopback_playback()`` -- the small
-    amount of logic the device-list relabel hook needs.
+    sides of the ``snd-aloop`` pseudo-device; the capture side is input 3's
+    fixed device.
+  - ``classify_loopback_hw()`` -- which side a device string is, so neither
+    can be listed or saved as a wired input's device.
 
-The three unprivileged fact-checks (``bluetooth_installed()`` /
+The unprivileged fact-checks (``bluetooth_installed()`` /
 ``bluetooth_services_enabled()`` / ``bluetooth_onboard_enabled()``) and the
-four presentation-string builders (``bluetooth_card_summary()`` /
-``bluetooth_paired_row_text()`` / ``bluetooth_input_fragment_text()`` /
-``bluetooth_capture_label()``) that used to live in this module have moved
+presentation-string builders (``bluetooth_paired_row_text()`` /
+``bluetooth_input_fragment_text()``) that used to live in this module have moved
 to ``autostream_bluetooth_facts.py`` and
 ``autostream_bluetooth_presentation.py`` respectively -- unprivileged reads
 and pure string formatting are not socket-adapter I/O. They are
@@ -54,8 +54,6 @@ from autostream_bluetooth_facts import (  # noqa: F401 -- re-exported for existi
     onboard_radio_refused,
 )
 from autostream_bluetooth_presentation import (  # noqa: F401 -- re-exported for existing importers
-    bluetooth_capture_label,
-    bluetooth_card_summary,
     bluetooth_input_fragment_text,
     bluetooth_paired_row_text,
 )
@@ -84,7 +82,7 @@ BLUETOOTH_CARD_ID = "ASBT"
 # The two loopback subdevices: DEV=0 is the playback side the pump feeds,
 # DEV=1 is the capture side the monitor opens.  Both are hw:-prefixed and
 # pass the monitor's existing capture-device enumeration/validation
-# unchanged -- only the Python relabel hook (below) treats them specially.
+# unchanged -- only classify_loopback_hw() (below) treats them specially.
 BLUETOOTH_PLAYBACK_DEVICE = f"hw:CARD={BLUETOOTH_CARD_ID},DEV=0"
 BLUETOOTH_CAPTURE_DEVICE = f"hw:CARD={BLUETOOTH_CARD_ID},DEV=1"
 
@@ -107,7 +105,7 @@ def classify_loopback_hw(hw: str) -> Optional[str]:
 
     Matches on the card id substring rather than full-string equality so
     minor formatting differences in how ALSA renders the hint name (case,
-    subdevice suffix) don't silently defeat the relabel hook.
+    subdevice suffix) don't let the loopback through as a wired device.
     """
     upper = (hw or "").upper()
     if f"CARD={BLUETOOTH_CARD_ID}" not in upper:
@@ -118,18 +116,6 @@ def classify_loopback_hw(hw: str) -> Optional[str]:
         return "capture"
     return None
 
-
-def is_loopback_playback(hw: str) -> bool:
-    """True when ``hw`` is the ASBT loopback's PLAYBACK side.
-
-    Thin wrapper around ``classify_loopback_hw`` for the two call sites that
-    only care about the playback classification (the Setup page's synthetic
-    "(not currently detected)" option builder, and the settings validator's
-    capture_device guard) -- both need "is this the internal device the pump
-    feeds, which must never be selectable/settable as a capture device" and
-    neither needs the full playback/capture/None tri-state.
-    """
-    return classify_loopback_hw(hw) == "playback"
 
 
 class BluetoothClient:

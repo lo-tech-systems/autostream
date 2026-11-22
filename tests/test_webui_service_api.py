@@ -241,9 +241,10 @@ class TestServiceResetValidation:
         code, data = _call_service_reset({"item": "stylus", "input": 0}, tmp_path)
         assert code == 400
 
-    def test_invalid_input_3_returns_400(self, tmp_path):
-        code, data = _call_service_reset({"item": "stylus", "input": 3}, tmp_path)
+    def test_invalid_input_4_returns_400(self, tmp_path):
+        code, data = _call_service_reset({"item": "stylus", "input": 4}, tmp_path)
         assert code == 400
+        assert data["error"] == "Input must be 1 to 3"
 
     def test_invalid_json_returns_400(self, tmp_path):
         code, data = _call_service_reset("not-json", tmp_path)

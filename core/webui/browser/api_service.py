@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from autostream_bluetooth_client import classify_loopback_hw
+from autostream_config import BLUETOOTH_INPUT_INDEX, INPUT_INDICES, audio_section_name
 from autostream_intents import Intent, submit
 from autostream_state import Origin, store
 from webui.common import _fallback_input_snapshot
@@ -42,10 +42,12 @@ from webui import common
 # shared table, rather than a second, separately maintained structure.
 # -----------------------------------------------------------------------------
 
+# The input each audio section belongs to.
+_SECTION_INPUT = {audio_section_name(_n): _n for _n in INPUT_INDICES}
+
 _SERVICE_FIELD_MAP: dict = {}
 for _si in _SERVICE_ITEMS:
-    for _n in (1, 2):
-        _sec = f"audio{_n}"
+    for _sec, _n in _SECTION_INPUT.items():
         _hours_path = f"service_{_si.key}_life_hours_input{_n}"
         register_field(_hours_path, _sec, _si.hours_config_key, normalise=_si.hours_normalizer)
         _SERVICE_FIELD_MAP[_hours_path] = (_sec, _si.hours_config_key, _si.hours_normalizer)
@@ -70,9 +72,10 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
         { "field": "<field_name>", "value": "<raw_value>" }
 
     Accepted fields (see _SERVICE_FIELD_MAP):
-        service_stylus_life_hours_input1/2
-        service_belt_life_hours_input1/2, service_belt_life_years_input1/2
-        service_bearing_life_hours_input1/2, service_bearing_life_years_input1/2
+        service_stylus_life_hours_inputN
+        service_belt_life_hours_inputN, service_belt_life_years_inputN
+        service_bearing_life_hours_inputN, service_bearing_life_years_inputN
+        (N is any input number)
 
     Response (JSON):
         { "ok": true, "field": "<field>", "value": "<normalised>",
@@ -110,34 +113,20 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
 
         # Build live-update args from the pre-write parse, substituting the one
         # changed key. This avoids a second parse_config call on the same object.
-        if section == "audio1":
-            a = p.audio1
-            _submit_playback_config(
-                1,
-                enabled=p.audio1_enabled,
-                is_turntable=a.is_turntable,
-                input_type=a.input_type,
-                is_bluetooth=classify_loopback_hw(a.capture_device) == "capture",
-                stylus_life_hours=normalised if key == "stylus_life_hours" else a.stylus_life_hours,
-                belt_life_hours=normalised if key == "belt_life_hours" else a.belt_life_hours,
-                belt_life_years=normalised if key == "belt_life_years" else a.belt_life_years,
-                bearing_life_hours=normalised if key == "bearing_life_hours" else a.bearing_life_hours,
-                bearing_life_years=normalised if key == "bearing_life_years" else a.bearing_life_years,
-            )
-        else:
-            a = p.audio2
-            _submit_playback_config(
-                2,
-                enabled=p.audio2_enabled,
-                is_turntable=a.is_turntable,
-                input_type=a.input_type,
-                is_bluetooth=classify_loopback_hw(a.capture_device) == "capture",
-                stylus_life_hours=normalised if key == "stylus_life_hours" else a.stylus_life_hours,
-                belt_life_hours=normalised if key == "belt_life_hours" else a.belt_life_hours,
-                belt_life_years=normalised if key == "belt_life_years" else a.belt_life_years,
-                bearing_life_hours=normalised if key == "bearing_life_hours" else a.bearing_life_hours,
-                bearing_life_years=normalised if key == "bearing_life_years" else a.bearing_life_years,
-            )
+        index = _SECTION_INPUT[section]
+        a = p.audio_section(index)
+        _submit_playback_config(
+            index,
+            enabled=p.audio_enabled(index),
+            is_turntable=a.is_turntable,
+            input_type=a.input_type,
+            is_bluetooth=index == BLUETOOTH_INPUT_INDEX,
+            stylus_life_hours=normalised if key == "stylus_life_hours" else a.stylus_life_hours,
+            belt_life_hours=normalised if key == "belt_life_hours" else a.belt_life_hours,
+            belt_life_years=normalised if key == "belt_life_years" else a.belt_life_years,
+            bearing_life_hours=normalised if key == "bearing_life_hours" else a.bearing_life_hours,
+            bearing_life_years=normalised if key == "bearing_life_years" else a.bearing_life_years,
+        )
     except Exception as e:
         logging.exception("send_service_config_json: save failed")
         common.send_json(handler, 200, {"ok": False, "error": str(e)})
@@ -146,10 +135,10 @@ def send_service_config_json(handler, state: WebUIState, body: str) -> None:
     # Build display dict so the client can update the DOM without recalculation.
     _display: dict = {}
     try:
-        _input_idx    = 1 if section == "audio1" else 2
+        _input_idx    = _SECTION_INPUT[section]
         _item         = key.split("_")[0]       # "stylus" | "belt" | "bearing"
         _dimension    = key.split("_")[-1]      # "hours" | "years"
-        _audio        = p.audio1 if _input_idx == 1 else p.audio2
+        _audio        = p.audio_section(_input_idx)
         _is_turntable = bool(getattr(_audio, "is_turntable", False))
         _life_hours   = normalised if _dimension == "hours" else int(getattr(_audio, f"{_item}_life_hours", 0) or 0)
         _life_years   = (normalised if _dimension == "years" else int(getattr(_audio, f"{_item}_life_years", 0) or 0)) if _item != "stylus" else 0
@@ -170,7 +159,7 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     """POST /api/service/reset -- reset one maintenance item counter.
 
     Request body (JSON):
-        { "item": "stylus"|"belt"|"bearing", "input": 1|2 }
+        { "item": "stylus"|"belt"|"bearing", "input": <an input number> }
 
     Response (JSON):
         { "ok": true, "persisted": true, "last_service_at": "<ISO>",
@@ -187,8 +176,8 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     if item not in ("stylus", "belt", "bearing"):
         common.send_json(handler, 400, {"ok": False, "error": "Unknown item"})
         return
-    if input_index not in (1, 2):
-        common.send_json(handler, 400, {"ok": False, "error": "Input must be 1 or 2"})
+    if input_index not in INPUT_INDICES:
+        common.send_json(handler, 400, {"ok": False, "error": f"Input must be {INPUT_INDICES[0]} to {INPUT_INDICES[-1]}"})
         return
 
     # Load config for life thresholds before resetting (used by display computation).
@@ -199,7 +188,7 @@ def send_service_reset_json(handler, state: WebUIState, body: str) -> None:
     _audio_cfg    = None
     try:
         _parsed = common._config_snapshot(state)
-        _audio_cfg    = _parsed.audio1 if input_index == 1 else _parsed.audio2
+        _audio_cfg    = _parsed.audio_section(input_index)
         _life_hours   = int(getattr(_audio_cfg, f"{item}_life_hours", 0) or 0)
         _life_years   = int(getattr(_audio_cfg, f"{item}_life_years", 0) or 0) if item != "stylus" else 0
         _is_turntable = bool(getattr(_audio_cfg, "is_turntable", False))
