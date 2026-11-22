@@ -87,6 +87,11 @@ RETRY_MAX_S = 60.0
 # then every 30 s while live input lasts.
 RETRY_GAPS_S = (10.0, 20.0, 30.0)
 RETRY_STEADY_S = 30.0
+
+
+def _retry_gap(n: int) -> float:
+    """The wait before retry *n* (from 0): 10 s, 20 s, 30 s, then every 30 s."""
+    return RETRY_GAPS_S[n] if n < len(RETRY_GAPS_S) else RETRY_STEADY_S
 # A speaker that fails while it plays is retried this many times (10 s and
 # 30 s after the failure, the first two gaps), then switched off
 MIDSESSION_RETRIES = 2
@@ -1909,11 +1914,15 @@ class OutputAuthority:
         if u.retry_allowed and self._session_active:
             u.availability = "failed"
             if u.retry_at is None:
-                gap = RETRY_GAPS_S[u.retry_n] if u.retry_n < len(RETRY_GAPS_S) else RETRY_STEADY_S
-                u.retry_at = now + gap
+                u.retry_at = now + _retry_gap(u.retry_n)
                 u.retry_n += 1
         else:
             self._revert_locked(u, now)
+
+    def _is_default_unit_locked(self, u: UnitState) -> bool:
+        """Whether the unit is one of the session's default speakers."""
+        return self._session_active and any(
+            mu is not None and mu.id == u.id for mu in (self._member_unit_locked(m) for m in self._members))
 
     def _merge_locked(self, rows: list, now: float, fx: _Effects) -> None:
         if any(row.session_state != "" for row in rows):
@@ -2067,18 +2076,22 @@ class OutputAuthority:
             u.reselect_retry = False
             self._queue_select_again_locked(u, None, None)
         if sel and avail == "ok" and result_shown and u.attempt:
-            # The start the authority made has shown its result.
+            # The start the authority made has shown its result. A group still
+            # missing a speaker keeps its place in the retry schedule.
             u.attempt = False
             u.failure_reported = False
             u.retry_at = None
-            u.retry_n = 0
+            if row.members_missing == 0:
+                u.retry_n = 0
             u.retry_limit = None
             u.group_hold_backoff = RETRY_MIN_S
         if (not outcome_handled and sel and self._rows_carry_session and avail == "failed" and was
-                and not u.attempt and self._session_active and u.retry_at is None):
+                and not u.attempt and self._session_active and u.retry_at is None
+                and not self._async_outputs_cap):
             # It failed while it played (it went away, or closed its session):
             # tried again a few times before it is given up, with no notice
-            # until then.
+            # until then. A player that reports events retries it itself, and
+            # its give-up is handled with the event (_handle_output_state).
             u.retry_allowed = True
             u.retry_n = 0
             u.retry_limit = MIDSESSION_RETRIES
@@ -2202,6 +2215,25 @@ class OutputAuthority:
             if r is None:
                 continue
             d = u.desired
+            if self._default_short_locked(u, r):
+                # A default speaker the player gave up on, or a group of one
+                # still missing a speaker: selected again on the retry
+                # schedule while the session plays. The select starts only
+                # what is not playing.
+                if u.retry_at is None:
+                    u.retry_at = now + _retry_gap(u.retry_n)
+                    u.retry_n += 1
+                elif now >= u.retry_at and not busy:
+                    u.retry_at = None
+                    self._queue_reapply_select_locked(u)
+                    busy = True
+                    changed = True
+                    continue
+            elif (self._async_outputs_cap and u.availability == "ok" and r.members_missing == 0
+                    and not u.attempt and u.retry_at is not None):
+                # Whole again on its own: the schedule starts afresh next time
+                u.retry_at = None
+                u.retry_n = 0
             if (d.selected and r.selected and u.availability == "failed" and u.retry_at is not None
                     and now >= u.retry_at and self._session_active and not busy):
                 # A speaker that failed while it played stays selected on the
@@ -2428,6 +2460,13 @@ class OutputAuthority:
                     if code is not None:
                         self._select_outcome_locked(u, code, notice, u.requester, u.claimant, False, now, fx)
                         handled = True
+                if not handled and self._player_gave_up_locked(u, ev):
+                    # The player has made its quick retry and given up: a speaker
+                    # that is not a default is switched off, and the failure
+                    # reported. A default one is retried by the reconcile.
+                    self._revert_locked(u, now)
+                    self._start_failure_locked(u, session_failure_for("failed", ev.reason))
+                    handled = True
                 self._settle_pin_locked(u, ev, fx)
                 u.reported = self._merged_row(u.reported, ev)
                 # A failure that belongs to an older attempt, or was applied
@@ -2439,6 +2478,24 @@ class OutputAuthority:
             pending.notify()
         fx.run()
         self._after_intent()
+
+    def _default_short_locked(self, u: UnitState, r: OutputInfo) -> bool:
+        """Whether a default speaker, with a player that reports events, is
+        wanted but not fully playing: the player gave up on it (it reads
+        failed), or its group is missing a speaker. No start of ours is
+        waiting for its result."""
+        return (self._async_outputs_cap and u.desired.selected and self._session_active and not u.attempt
+                and (u.availability == "failed" or r.members_missing > 0)
+                and self._is_default_unit_locked(u))
+
+    def _player_gave_up_locked(self, u: UnitState, ev: DeviceEvent) -> bool:
+        """Whether *ev* is a player that reports events giving up on a wanted
+        speaker that is not a default: its row reads failed (a speaker the
+        player still retries reads connecting), whatever its selection says,
+        and no start of ours is waiting for its result."""
+        return (self._async_outputs_cap and ev.state == "failed" and u.desired.selected
+                and self._session_active and (not u.attempt or u.outcome_applied)
+                and not self._is_default_unit_locked(u))
 
     @staticmethod
     def _merged_row(row: OutputInfo, ev: DeviceEvent) -> OutputInfo:

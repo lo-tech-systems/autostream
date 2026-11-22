@@ -1,10 +1,12 @@
 """tests/test_output_midsession_retry.py
 
 A speaker that fails while it plays (it went away, or closed its session)
-stays selected on the player with its session failed. The authority restarts
-it 10 s and 30 s after the failure, with no notice, and gives it up after
-that: it is switched off and the failure is reported. A speaker the player is
-already restarting is left to it, and one that comes back starts afresh.
+stays selected on the player with its session failed. With a player that is
+polled, the authority restarts it 10 s and 30 s after the failure, with no
+notice, and gives it up after that: it is switched off and the failure is
+reported. A speaker the player is already restarting is left to it, and one
+that comes back starts afresh. A player that reports events makes the quick
+retry itself; see TestByEvents for what follows its give-up.
 """
 from __future__ import annotations
 
@@ -123,25 +125,116 @@ class TestWhatIsLeftAlone:
         assert sent and True not in sent
 
 
+def selects(w):
+    """The selects sent to the speaker, a restart's included."""
+    return [c for c in w.fb.calls if c[0] == "update_output" and c[2].get("enabled") is True]
+
+
+def deselects(w):
+    return [c for c in w.fb.calls if c[0] == "update_output" and c[2].get("enabled") is False]
+
+
+@pytest.fixture
+def ev_playing(w):
+    """A player that reports events, the speaker playing in a session."""
+    async_hello(w.a)
+    read(w, "streaming", 0)
+    w.a.note_session(True)
+    tick(w, 0)
+    return w
+
+
+def event(w, at, *args, **fields):
+    w.t[0] = T0 + at
+    w.a.on_device_event(state_event("1", *args, **fields))
+    tick(w, at)
+
+
+def make_default(w):
+    w.a.set_default_members([("1", "Speaker 1", 40)], 40)
+
+
 class TestByEvents:
-    def test_a_lost_event_retries_like_a_failed_row(self, w):
-        async_hello(w.a)
-        read(w, "streaming", 0)
-        w.a.note_session(True)
-        tick(w, 0)
-        w.t[0] = T0 + 1
-        w.a.on_device_event(state_event("1", "failed", "lost", selected=True))
-        tick(w, 1)
-        u = snap().unit("1")
-        assert u.selected and u.availability == "failed" and snap().start_failure is None
-        tick(w, 11)
-        assert restarts(w) == [[False, True]]
-        # The restart fails as it starts: given up after the second retry
-        w.a.on_device_event(state_event("1", "failed", "unreachable", selected=False))
-        tick(w, 12)
-        tick(w, 32)
-        assert len(restarts(w)) == 2
-        w.a.on_device_event(state_event("1", "failed", "unreachable", selected=False))
-        tick(w, 33)
+    """A player that reports events retries a lost speaker once itself; the
+    authority acts only on its give-up: a default speaker is selected again
+    on the retry schedule, any other is switched off and reported."""
+
+    def test_the_player_retries_a_lost_speaker_itself(self, ev_playing):
+        w = ev_playing
+        # The row reads connecting while the player's retry waits
+        event(w, 1, "connecting", member_state="failed", selected=True)
+        for at in (11, 31):
+            tick(w, at)
+        assert selects(w) == [] and deselects(w) == []
+        assert snap().unit("1").selected and snap().start_failure is None
+
+    def test_its_give_up_switches_off_a_speaker_that_is_not_a_default(self, ev_playing):
+        w = ev_playing
+        event(w, 1, "connecting", member_state="failed", selected=True)
+        event(w, 7, "failed", "unreachable", selected=False)
         assert not snap().unit("1").selected
-        assert snap().start_failure.reason == "unreachable"
+        assert snap().start_failure is not None and snap().start_failure.reason == "unreachable"
+        for at in (20, 60):
+            tick(w, at)
+        assert selects(w) == []
+
+    def test_a_give_up_that_still_reads_selected_switches_it_off(self, ev_playing):
+        # A group whose leader gave up while its other members wait for it
+        w = ev_playing
+        event(w, 1, "failed", "unreachable", selected=True)
+        assert not snap().unit("1").selected
+        assert snap().start_failure is not None
+        tick(w, 5)
+        assert selects(w) == [] and len(deselects(w)) == 1
+
+    def test_a_default_speaker_is_selected_again_on_the_schedule(self, ev_playing):
+        w = ev_playing
+        make_default(w)
+        event(w, 1, "failed", "unreachable", selected=False)
+        assert snap().unit("1").selected and snap().start_failure is None
+        tick(w, 10.5)
+        assert selects(w) == []
+        tick(w, 11.5)
+        assert len(selects(w)) == 1
+        # That start fails too: the next one comes 20 s later
+        event(w, 12, "failed", "unreachable", selected=False)
+        tick(w, 31.5)
+        assert len(selects(w)) == 1
+        tick(w, 32.5)
+        assert len(selects(w)) == 2
+        assert snap().start_failure is None
+
+    def test_two_give_ups_arm_one_retry(self, ev_playing):
+        w = ev_playing
+        make_default(w)
+        event(w, 1, "failed", "unreachable", selected=False)
+        event(w, 2, "failed", "unreachable", selected=False)
+        tick(w, 11.5)
+        assert len(selects(w)) == 1
+        tick(w, 12.5)
+        assert len(selects(w)) == 1
+
+    def test_a_default_group_missing_a_speaker_is_selected_again(self, ev_playing):
+        w = ev_playing
+        make_default(w)
+        event(w, 1, "streaming", selected=True, members_missing=1)
+        tick(w, 11.5)
+        assert len(selects(w)) == 1
+        assert snap().unit("1").selected and snap().start_failure is None
+        # Still one missing after the select: the next comes 20 s later
+        event(w, 12, "streaming", selected=True, members_missing=1)
+        tick(w, 31.5)
+        assert len(selects(w)) == 1
+        tick(w, 32.5)
+        assert len(selects(w)) == 2
+        # Whole again: nothing more is sent
+        event(w, 33, "streaming", selected=True, members_missing=0)
+        tick(w, 120)
+        assert len(selects(w)) == 2
+
+    def test_a_group_missing_a_speaker_that_is_not_a_default_is_left(self, ev_playing):
+        w = ev_playing
+        event(w, 1, "streaming", selected=True, members_missing=1)
+        for at in (11, 31, 61):
+            tick(w, at)
+        assert selects(w) == [] and deselects(w) == []

@@ -78,6 +78,21 @@ Update every appliance and every dial together, as for 0.8.0.
   to reach it seven times over about three minutes, stalling the music and
   the web pages on a shared radio. It no longer does.
 
+### Speakers
+
+- fixed: a stereo pair, or HomePods with their Apple TV, no longer show as
+  failed and off while one of the speakers plays. One that fails to start
+  while the other plays is tried again a few seconds later.
+- changed: a speaker that drops out is tried again once, 5 seconds later.
+  After that, a speaker you chose is switched off and a message says it
+  failed; a default speaker keeps being tried again while the session plays,
+  after 10, 20 and 30 seconds and then every 30 seconds, with no message.
+- new: a default stereo pair, or HomePods behind an Apple TV, with one of its
+  speakers missing is asked again on the same schedule, which brings the
+  missing speaker back without interrupting the one playing.
+- changed: a speaker that comes back while its group is paused stays paused
+  with the rest of the group.
+
 ## Version 0.8.0-beta.1 - 2026-11-18
 
 Update every appliance and every dial to 0.8 together: a 0.7 dial or appliance

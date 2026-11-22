@@ -3273,15 +3273,28 @@ class TestOutputStateEvents:
         assert u.availability == "ok" and u.connecting is False and snap().start_failure is None
         assert len(selects(ew)) == 1
 
-    def test_lost_starts_the_midsession_retry(self, aw):
+    def test_a_lost_speaker_the_player_retries_is_left_to_it(self, aw):
+        # The player's quick retry: the row reads connecting meanwhile
+        ew = aw
+        ew.a.note_session(True)
+        put(ew, [group_row(1, "streaming", selected=True), group_row(2)])
+        send(ew, "1", "connecting", "none", member_state="failed", selected=True, at_s=1)
+        u = unit_state(ew)
+        assert snap().unit("1").selected is True
+        assert u.retry_limit is None and u.retry_at is None
+        assert snap().start_failure is None
+
+    def test_a_failed_row_is_the_players_give_up(self, aw):
+        # A speaker the player has given up on reads failed: it is switched
+        # off and reported, with no retry of autostream's own
         ew = aw
         ew.a.note_session(True)
         put(ew, [group_row(1, "streaming", selected=True), group_row(2)])
         send(ew, "1", "failed", "lost", selected=True, at_s=1)
         u = unit_state(ew)
-        assert snap().unit("1").selected is True and snap().unit("1").availability == "failed"
-        assert u.retry_limit == outputs.MIDSESSION_RETRIES and u.retry_at is not None
-        assert snap().start_failure is None
+        assert snap().unit("1").selected is False
+        assert u.retry_at is None
+        assert snap().start_failure is not None and snap().start_failure.unit_id == "1"
 
     def test_cancelled_changes_nothing(self, ew):
         ew.a.select("1", Origin.USER, volume=30).outcome.result()
