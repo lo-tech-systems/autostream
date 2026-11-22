@@ -38,6 +38,7 @@ from autostream_align import (
     _build_freq_table,
     parse_result_entries,
 )
+from autostream_runtime import TaskPool
 
 
 # ── Fakes ──────────────────────────────────────────────────────────────────
@@ -150,6 +151,12 @@ def _make_run(outputs, list_ok=True, launch_returncode=0, freq_file=None, **kwar
         freq_file=freq_file,
         **run_kwargs,
     )
+    # Each run gets a pool of its own. The cycle signals it is done just
+    # before the pool frees its key, so on a busy machine a run started
+    # straight after another test's abort could find the shared pool's key
+    # still held and be refused.
+    pool = TaskPool(max_workers=1)
+    run._get_task_pool = lambda: pool
     return run, player, fake_launcher, fake_clock
 
 
