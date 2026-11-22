@@ -84,8 +84,10 @@ Update every appliance and every dial together, as for 0.8.0.
   failed and off while one of the speakers plays. One that fails to start
   while the other plays is tried again a few seconds later.
 - changed: a speaker that fails to start or drops out is tried again twice,
-  2 seconds and then 3 seconds later. After that, a speaker you chose is
-  switched off and a message says it failed; a default speaker keeps being tried again while the session plays,
+  about 2 and 5 seconds after the first try, whether it said no or didn't
+  answer at all. One that isn't there is given up after about 7 seconds.
+  After that, a speaker you chose is switched off and a message says it
+  failed; a default speaker keeps being tried again while the session plays,
   after 10, 20 and 30 seconds and then every 30 seconds, with no message.
 - new: a default stereo pair, or HomePods behind an Apple TV, with one of its
   speakers missing is asked again on the same schedule, which brings the
