@@ -675,6 +675,13 @@ class TestModuleConfigFiles:
         assert "Class = 0x240414" in lines
         assert "JustWorksRepairing = confirm" in lines
 
+    def test_bluez_main_conf_never_reconnects(self):
+        text = _src(BLUEZ_CONF_FILE)
+        lines = [l.strip() for l in text.splitlines() if l.strip() and not l.startswith("#")]
+        assert "[Policy]" in lines
+        assert lines.index("[Policy]") > lines.index("[General]")
+        assert "ReconnectAttempts = 0" in lines[lines.index("[Policy]"):]
+
     def test_bluez_main_conf_comments_describe_the_pairing_window(self):
         text = _src(BLUEZ_CONF_FILE)
         assert "BLUETOOTH_MODE" not in text
