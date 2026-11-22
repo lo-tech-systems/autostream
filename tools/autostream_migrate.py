@@ -10,7 +10,7 @@ Applies only to main-appliance installations; autostream-dial uses the new
 layout from its first deployment and requires no migration.
 
 Usage:
-    sudo python3 autostream_migrate.py [--dry-run] [--verbose]
+    sudo python3 autostream_migrate.py [--dry-run] [--verbose] [--bluetooth-services on|off]
 
 Exits 0 on success (including "nothing to do") and non-zero on any unrecoverable error.
 """
@@ -24,6 +24,7 @@ import logging
 import os
 import pwd
 import shutil
+import stat
 import sys
 from pathlib import Path
 
@@ -44,6 +45,8 @@ _DATA_FILES = [
     ("sdcardhealth.json",    Path("/opt/autostream/sdcardhealth.json"),      Path("/var/lib/autostream/sdcardhealth.json")),
     ("cpuinfo",              Path("/opt/autostream/cpuinfo"),                Path("/var/lib/autostream/cpuinfo")),
 ]
+
+_PLAYBACK_STATS = Path("/var/lib/autostream/playback_stats.json")
 
 # Device sentinel
 _AUTOSTREAM_SENTINEL = Path("/opt/autostream/autostream_webui.py")
@@ -472,6 +475,138 @@ def _migrate_autostream(dry_run: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Bluetooth moves to input 3
+#
+# Bluetooth used to borrow input 1 or 2 by setting that input's capture
+# device to the loopback's capture side. It is now input 3, whose device is
+# fixed. An appliance with Bluetooth on a wired input has that input's
+# Bluetooth settings and counters moved to input 3, and the wired input
+# freed: no device, disabled, its own settings back to their defaults. The
+# move is recorded in input 3's section so the Setup cards can say so until
+# either input is next changed. Input 3's enable always follows the
+# Bluetooth services, which are the same switch.
+#
+# Kept in step with autostream_config: the section names, the move note's
+# key, and the loopback card id.
+# ---------------------------------------------------------------------------
+
+_BLUETOOTH_INPUT = 3
+_WIRED_INPUTS = (1, 2)
+_MOVED_FROM_KEY = "moved_from"
+_LOOPBACK_CARD = "CARD=ASBT"
+
+# The per-input settings that belong to the Bluetooth source, not the input.
+_BLUETOOTH_MOVED_KEYS = (
+    "input_type", "turntable", "silence_threshold", "gain_db",
+    "eq_40hz_db", "eq_100hz_db", "eq_8khz_db", "eq_10khz_db",
+    "dynamic_rate_matching", "start_after_ms",
+    "stylus_life_hours", "belt_life_hours", "belt_life_years",
+    "bearing_life_hours", "bearing_life_years",
+)
+
+
+def _loopback_side(device: object) -> str | None:
+    """"capture" or "playback" for either side of the Bluetooth loopback,
+    else None."""
+    upper = str(device or "").upper()
+    if _LOOPBACK_CARD not in upper:
+        return None
+    if "DEV=1" in upper:
+        return "capture"
+    if "DEV=0" in upper:
+        return "playback"
+    return None
+
+
+def _read_json_object(path: Path) -> dict:
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        LOG.warning("Could not parse %s (%s); leaving it as it is.", path, e)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _move_bluetooth_settings(config: dict) -> int | None:
+    """Move a Bluetooth binding on a wired input to input 3, in *config*.
+    Returns the wired input it came from, or None when there was none. Any
+    other loopback value on a wired input is cleared."""
+    moved_from = None
+    for index in _WIRED_INPUTS:
+        section = config.get(f"audio{index}")
+        if not isinstance(section, dict):
+            continue
+        side = _loopback_side(section.get("capture_device"))
+        if side is None:
+            continue
+        if side == "capture" and moved_from is None:
+            target = config.setdefault(f"audio{_BLUETOOTH_INPUT}", {})
+            for key in _BLUETOOTH_MOVED_KEYS:
+                if key in section:
+                    target[key] = section.pop(key)
+            moved_from = index
+        section["capture_device"] = ""
+        section["enabled"] = False
+        LOG.info("Input %d no longer uses the Bluetooth loopback (%s side)", index, side)
+    return moved_from
+
+
+def _move_playback_counters(stats: dict, moved_from: int) -> bool:
+    """Move the wired input's playback and wear counters to input 3, in
+    *stats*. Returns whether anything changed."""
+    inputs = stats.get("inputs")
+    if not isinstance(inputs, dict) or str(moved_from) not in inputs:
+        return False
+    inputs[str(_BLUETOOTH_INPUT)] = inputs.pop(str(moved_from))
+    return True
+
+
+def migrate_bluetooth_to_input3(
+    cfg_path: Path, stats_path: Path, services_enabled: bool | None, dry_run: bool,
+) -> None:
+    """Move a Bluetooth binding on input 1 or 2 to input 3 and make input
+    3's enable follow the Bluetooth services (*services_enabled*; None
+    leaves it as it is). Idempotent: a second run finds no binding to move
+    and an enable that already agrees, and writes nothing."""
+    config = _read_json_object(cfg_path)
+    if not config:
+        LOG.info("No configuration at %s; no Bluetooth input to move.", cfg_path)
+        return
+
+    moved_from = _move_bluetooth_settings(config)
+    section = config.setdefault(f"audio{_BLUETOOTH_INPUT}", {})
+    if moved_from is not None:
+        section[_MOVED_FROM_KEY] = moved_from
+        LOG.info("Bluetooth moved from input %d to input %d", moved_from, _BLUETOOTH_INPUT)
+    enable_changed = services_enabled is not None and section.get("enabled") != services_enabled
+    if enable_changed:
+        section["enabled"] = services_enabled
+        LOG.info("Input %d enabled set to %s to match the Bluetooth services",
+                 _BLUETOOTH_INPUT, services_enabled)
+
+    # The counters first: if the run stops between the two writes, the next
+    # run still finds the binding and the counters already where they go.
+    if moved_from is not None:
+        stats = _read_json_object(stats_path)
+        if _move_playback_counters(stats, moved_from):
+            LOG.info("Playback counters moved from input %d to input %d", moved_from, _BLUETOOTH_INPUT)
+            _replace_json_keeping_owner(stats_path, stats, dry_run)
+
+    if moved_from is not None or enable_changed:
+        _replace_json_keeping_owner(cfg_path, config, dry_run)
+
+
+def _replace_json_keeping_owner(path: Path, data: dict, dry_run: bool) -> None:
+    """_replace_json, keeping the file's owner, group and mode."""
+    st = path.stat()
+    _replace_json(path, data, dry_run)
+    _set_ownership_mode(path, st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode), dry_run)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -481,6 +616,10 @@ def main() -> None:
     )
     parser.add_argument("--dry-run", action="store_true", help="Log actions without writing files.")
     parser.add_argument("--verbose", action="store_true", help="Enable DEBUG logging.")
+    parser.add_argument(
+        "--bluetooth-services", choices=("on", "off"),
+        help="Whether the Bluetooth services are enabled; input 3's enable is set to match.",
+    )
     args = parser.parse_args()
 
     _setup_logging(args.verbose)
@@ -499,8 +638,10 @@ def main() -> None:
         )
         sys.exit(0)
 
+    services = None if args.bluetooth_services is None else args.bluetooth_services == "on"
     try:
         _migrate_autostream(dry_run=args.dry_run)
+        migrate_bluetooth_to_input3(_NEW_CFG, _PLAYBACK_STATS, services, dry_run=args.dry_run)
     except OSError as e:
         LOG.error("Migration failed with OS error: %s", e)
         LOG.error("Partial state may exist — check logs above before starting services.")

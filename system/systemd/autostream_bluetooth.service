@@ -3,8 +3,8 @@
 # This file is part of autostream.
 # Copyright (c) 2026 Lo-tech Systems Limited. All rights reserved.
 #
-# Always installed, but disabled and not started until the Bluetooth input
-# subsystem is enabled through a separate, later, privileged action.
+# Always installed, but disabled and not started until Input 3 (Bluetooth)
+# is enabled on the Setup page, whose switch enables and starts it.
 
 [Unit]
 Description=Autostream Bluetooth input service

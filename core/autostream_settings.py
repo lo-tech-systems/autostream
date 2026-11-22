@@ -28,6 +28,7 @@ from typing import Callable, NamedTuple, Optional
 
 from autostream_config import (
     AutostreamConfig,
+    clear_bluetooth_move_note,
     load_config,
     parse_config,
     save_config,
@@ -216,6 +217,7 @@ class SettingsStore:
         with self._lock:
             raw_copy = copy.deepcopy(self._raw)
             mutator(raw_copy)          # raises → canonical state unchanged
+            clear_bluetooth_move_note(self._raw, raw_copy)
             self._raw = raw_copy
             self._generation += 1
             self._dirty = True

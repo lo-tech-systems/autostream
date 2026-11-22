@@ -801,6 +801,24 @@ def bluetooth_moved_from(data: dict) -> Optional[int]:
     return value
 
 
+def clear_bluetooth_move_note(before: dict, after: dict) -> None:
+    """Drop the move note from *after* (a raw config about to replace
+    *before*) when the write changes input 3's settings or those of the
+    input Bluetooth was moved from: the note lasts until either input is
+    next changed."""
+    moved_from = bluetooth_moved_from(after)
+    if moved_from is None:
+        return
+
+    def settings(raw: dict, index: int) -> dict:
+        section = dict(raw.get(audio_section_name(index)) or {})
+        section.pop(BLUETOOTH_MOVED_FROM_KEY, None)
+        return section
+
+    if any(settings(before, i) != settings(after, i) for i in (BLUETOOTH_INPUT_INDEX, moved_from)):
+        after[audio_section_name(BLUETOOTH_INPUT_INDEX)].pop(BLUETOOTH_MOVED_FROM_KEY, None)
+
+
 def _wired_capture_device(section_name: str, section: dict) -> str:
     """A wired input's capture device. The Bluetooth loopback belongs to
     input 3, so on a wired input it reads as no device, with one warning."""

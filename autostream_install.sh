@@ -1225,7 +1225,12 @@ configure_phase() {
   validate_sudoers
 
   info "Running config layout migration (idempotent)"
-  python3 "${AUTOSTREAM_DIR}/tools/autostream_migrate.py"
+  # Input 3 (Bluetooth) is enabled exactly when the Bluetooth services are.
+  local bt_services=off
+  if systemctl is-enabled --quiet autostream_bluetooth 2>/dev/null; then
+    bt_services=on
+  fi
+  python3 "${AUTOSTREAM_DIR}/tools/autostream_migrate.py" --bluetooth-services "${bt_services}"
 
   update_progress "Applying settings directives..." 70
   info "Applying settings directives"
