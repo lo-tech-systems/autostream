@@ -89,9 +89,10 @@ Update every appliance and every dial together, as for 0.8.0.
   After that, a speaker you chose is switched off and a message says it
   failed; a default speaker keeps being tried again while the session plays,
   after 10, 20 and 30 seconds and then every 30 seconds, with no message.
-- new: a default stereo pair, or HomePods behind an Apple TV, with one of its
-  speakers missing is asked again on the same schedule, which brings the
-  missing speaker back without interrupting the one playing.
+- new: a stereo pair, or HomePods behind an Apple TV, playing with one of its
+  speakers missing is asked again on the same schedule while the session
+  plays, default or not, which brings the missing speaker back without
+  interrupting the one playing.
 - changed: a speaker that comes back while its group is paused stays paused
   with the rest of the group.
 - fixed: with "Pause all speakers when pause is pressed on a speaker" on, the

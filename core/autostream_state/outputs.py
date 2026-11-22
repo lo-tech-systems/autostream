@@ -2198,11 +2198,11 @@ class OutputAuthority:
             if r is None:
                 continue
             d = u.desired
-            if self._default_short_locked(u, r):
-                # A default speaker the player gave up on, or a group of one
-                # still missing a speaker: selected again on the retry
-                # schedule while the session plays. The select starts only
-                # what is not playing.
+            if self._short_locked(u, r):
+                # A default speaker the player gave up on, or a group still
+                # missing a speaker: selected again on the retry schedule
+                # while the session plays. The select starts only what is
+                # not playing.
                 if u.retry_at is None:
                     u.retry_at = now + _retry_gap(u.retry_n)
                     u.retry_n += 1
@@ -2462,14 +2462,14 @@ class OutputAuthority:
         fx.run()
         self._after_intent()
 
-    def _default_short_locked(self, u: UnitState, r: OutputInfo) -> bool:
-        """Whether a default speaker, with a player that reports events, is
-        wanted but not fully playing: the player gave up on it (it reads
-        failed), or its group is missing a speaker. No start of ours is
-        waiting for its result."""
+    def _short_locked(self, u: UnitState, r: OutputInfo) -> bool:
+        """Whether a speaker, with a player that reports events, is wanted but
+        not fully playing: the player gave up on a default speaker (it reads
+        failed), or any group plays with a speaker missing. No start of ours
+        is waiting for its result."""
+        failed = u.availability == "failed"
         return (self._model.outcome_events and u.desired.selected and self._session_active and not u.attempt
-                and (u.availability == "failed" or r.members_missing > 0)
-                and self._is_default_unit_locked(u))
+                and ((failed and self._is_default_unit_locked(u)) or (not failed and r.members_missing > 0)))
 
     def _player_gave_up_locked(self, u: UnitState, ev: DeviceEvent) -> bool:
         """Whether *ev* is a player that reports events giving up on a wanted

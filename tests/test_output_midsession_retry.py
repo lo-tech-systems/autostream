@@ -232,9 +232,22 @@ class TestByEvents:
         tick(w, 120)
         assert len(selects(w)) == 2
 
-    def test_a_group_missing_a_speaker_that_is_not_a_default_is_left(self, ev_playing):
+    def test_a_group_missing_a_speaker_that_is_not_a_default_is_selected_again(self, ev_playing):
+        # A HomePod pair that lost one member plays on: the missing one
+        # rejoins when it comes back
         w = ev_playing
+        event(w, 1, "streaming", selected=True, members_missing=1)
+        tick(w, 11.5)
+        assert len(selects(w)) == 1 and deselects(w) == []
+        assert snap().unit("1").selected and snap().start_failure is None
+        event(w, 12, "streaming", selected=True, members_missing=0)
+        tick(w, 120)
+        assert len(selects(w)) == 1
+
+    def test_a_group_that_is_not_a_default_is_not_retried_outside_a_session(self, ev_playing):
+        w = ev_playing
+        w.a.note_session(False)
         event(w, 1, "streaming", selected=True, members_missing=1)
         for at in (11, 31, 61):
             tick(w, at)
-        assert selects(w) == [] and deselects(w) == []
+        assert selects(w) == []
